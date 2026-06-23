@@ -1,39 +1,60 @@
-# Graph Construction 瀹炵幇鏂规
+# Graph Construction 实现方案
 
-鏃ユ湡: 2026-06-23
+日期: 2026-06-23
 
-鐩爣: 鍦?`external/wildos` 婧愮爜鐩綍涓柊澧?`graph_construction` 妯″潡, 鍏堝疄鐜板彲鑱旇皟鐨勫熀纭€鐗堟湰, 鎵撻€?`T_geo -> NavigationGraph -> WildOS scoring -> graphnav_planner` 杩欐潯閾捐矾
+目标: 在 `external/wildos` 中新增 `graph_construction` 模块, 先实现一个可运行, 可调试, 可接入 WildOS 现有评分和路径规划链路的基础版本
 
-## 褰撳墠杈圭晫
-
-鏈樁娈靛彧瀹炵幇 Graph Construction 妯″潡, 涓嶆敼 `graphnav_msgs`, 涓嶉噸鍐?`graphnav_planner`, 涓嶆敼 WildOS 瑙嗚璇勫垎涓绘祦绋?
-Graph Construction 璐熻矗鍙戝竷鍘熷鍑犱綍鍥?
+核心链路:
 
 ```text
-/spot1/nav_graph
+traversability grid + odom
+    -> graph_construction
+    -> /spot1/nav_graph
+    -> WildOS visual scoring
+    -> /spot1/scored_nav_graph
+    -> graphnav_planner
+    -> path
 ```
 
-WildOS 宸叉湁瑙嗚妯″潡璐熻矗鎶婂師濮嬪浘璇勫垎涓?
+## 设计边界
 
-```text
-/spot1/scored_nav_graph
-```
+本阶段只复现 Graph Construction 的基础几何图能力, 不重写 WildOS 已开源的视觉评分和图规划器
 
-宸叉湁 `graphnav_planner` 璐熻矗璺緞鎼滅储:
+需要完成:
 
-```text
-scored_nav_graph -> Dijkstra -> graphnav_planner/path
-```
+- 从局部可通行栅格中生成稀疏导航图
+- 生成 free node, frontier node, edge, current node
+- 输出 `graphnav_msgs/NavigationGraph`
+- 接入 WildOS scoring 所需要的 frontier 几何字段
+- 给 `graphnav_planner` 提供可连通, 可计算代价的图
+- 提供 RViz Marker 可视化, 方便检查节点, 边, frontier, 半径
+- 加入基础死路回退逻辑, 避免刚消失的 frontier 反复被选中
 
-## 鏂板妯″潡浣嶇疆
+暂不完成:
 
-鏂板 ROS 2 Python 鍖?
+- 不实现论文中未开源的雷达与视觉融合可通行区域生成
+- 不直接生成语义 `frontier_scores`
+- 不修改 `graphnav_msgs`
+- 不重写 `graphnav_planner`
+- 不实现 Web UI 或项目主页视频中的完整交互界面
+
+## ROS2 版本
+
+实现目标版本为 ROS2 Humble
+
+模块形式为 Python ROS2 package:
 
 ```text
 external/wildos/graph_construction
 ```
 
-寤鸿鐩綍:
+启动方式:
+
+```text
+ros2 launch graph_construction graph_construction.launch.py ns:=spot1
+```
+
+## 模块目录
 
 ```text
 graph_construction/
@@ -42,6 +63,7 @@ graph_construction/
   resource/graph_construction
   configs/graph_construction.yaml
   launch/graph_construction.launch.py
+  docs/
   graph_construction/
     __init__.py
     node.py
@@ -55,364 +77,415 @@ graph_construction/
     viz.py
 ```
 
-閫夋嫨 Python 鐨勫師鍥?
+各文件职责:
 
-- 绗竴鐗堥噸鐐规槸绠楁硶闂幆鍜屽彲璋冭瘯鎬?- 渚夸簬蹇€熸帴涓嶅悓 grid topic
-- 渚夸簬鍐欐竻妤氭敞閲婂拰鍒嗘ā鍧楅獙璇?- 鍚庣画鎬ц兘鐡堕鏄庣‘鍚? 鍐嶆妸 SDF 鎴?edge collision check 绉诲埌 C++
+- `node.py`, ROS2 节点入口, 负责订阅 grid 和 odom, 周期发布 graph 和 marker
+- `graph_builder.py`, 图构建主流程, 串联节点更新, 采样, frontier, 建边, current node
+- `grid_adapter.py`, 把 `OccupancyGrid` 转成 free, obstacle, unknown 三类栅格, 并提供 collision check
+- `frontier_detector.py`, 检测 free 和 unknown 的边界, 并分配给附近 graph node
+- `edge_builder.py`, 根据距离和碰撞检测生成图边
+- `graph_memory.py`, 保存内部节点, 边, UUID, frontier 生命周期状态
+- `deadend_recovery.py`, 记录已经消失的 frontier, 降低死路附近反复探索
+- `msg_utils.py`, 把内部图转换为 `NavigationGraph`
+- `viz.py`, 输出 RViz MarkerArray 可视化
 
-## 杈撳叆杈撳嚭
+## 输入
 
-绗竴鐗堣緭鍏?
+第一版输入保持最小:
 
 ```text
 /spot1/odom, nav_msgs/Odometry
 /spot1/traversability_grid, nav_msgs/OccupancyGrid
 ```
 
-鍚庣画杈撳叆:
+`OccupancyGrid` 的含义:
+
+- 小于 `free_threshold` 的 cell 视为 free
+- 大于等于 `obstacle_threshold` 的 cell 视为 obstacle
+- 小于 0 或处于中间值的 cell 视为 unknown
+
+后续如果接入更接近论文的实现, 输入可替换为:
 
 ```text
 grid_map_msgs/GridMap
 elevation_mapping_cupy output
+terrain traversability map
 ```
 
-绗竴鐗堣緭鍑?
+## 输出
+
+主要输出:
 
 ```text
 /spot1/nav_graph, graphnav_msgs/NavigationGraph
+```
+
+调试输出:
+
+```text
 /spot1/graph_construction_viz, visualization_msgs/MarkerArray
-/spot1/debug_traversability_grid, nav_msgs/OccupancyGrid
 ```
 
-## 鏁版嵁妯″瀷
-
-鍐呴儴缁存姢涓€涓交閲?graph memory:
+输出图需要满足 WildOS 当前代码的接口期望:
 
 ```text
-GraphState:
-    nodes: dict[node_id, InternalNode]
-    edges: set[(from_id, to_id)]
-    current_node_id: node_id
-    removed_frontiers: list[position]
+NavigationGraph
+  header
+  nodes
+  edges
+  current_node_idx
+  trav_classes = ["default"]
 ```
 
-鑺傜偣瀛楁:
+每个 node 至少需要:
 
 ```text
-InternalNode:
-    uuid
-    position
-    free_radius
-    explored_radius
-    frontier_points
-    is_frontier
-    last_seen_time
-    failed_frontier_count
+uuid
+position
+free_radius
+explored_radius
+trav_properties[0].is_frontier
+trav_properties[0].frontier_points
+trav_properties[0].traversability_score
 ```
 
-ROS 杈撳嚭鏄犲皠:
+每条 edge 至少需要:
 
 ```text
-InternalNode -> graphnav_msgs/Node
-InternalEdge -> graphnav_msgs/Edge
-GraphState -> graphnav_msgs/NavigationGraph
+start_node_idx
+end_node_idx
+weight
+trav_properties[0].traversability_score
 ```
 
-## 鍩虹绠楁硶
+## 与 WildOS 的关系
 
-鏁翠綋娴佺▼:
+Graph Construction 输出的是几何图, 不直接决定目标在哪里
+
+WildOS 视觉模块会读取 `/spot1/nav_graph`, 找出 `is_frontier = true` 的节点, 把它们投影到图像上, 根据视觉可通行性, 视觉 frontier, 目标相似度生成 `frontier_scores`
+
+之后视觉模块发布:
 
 ```text
-function UpdateGraph(grid, odom, previous_graph):
-    classified_grid = ClassifyGrid(grid)
-    sdf_obstacle = DistanceToObstacle(classified_grid)
-    sdf_unknown = DistanceToUnknown(classified_grid)
-
-    UpdateExistingNodes(previous_graph, sdf_obstacle, sdf_unknown)
-    SampleFreeNodes(classified_grid, previous_graph)
-    DetectAndAssignFrontiers(classified_grid, previous_graph)
-    BuildCollisionFreeEdges(classified_grid, previous_graph)
-    UpdateCurrentNode(odom, previous_graph)
-    ApplyDeadendRecovery(previous_graph)
-
-    return NavigationGraph
+/spot1/scored_nav_graph
 ```
 
-### 鍦板浘鍒嗙被
+`graphnav_planner` 实际使用 scored graph, 它会在图上运行 Dijkstra, 并把 frontier score 转成到虚拟目标节点的代价
 
-绗竴鐗堝皢 `OccupancyGrid` 鏄犲皠涓?
+所以 Graph Construction 最重要的契约是:
+
+- frontier node 要稳定
+- frontier points 要指向 unknown 边界
+- graph edge 要表示可通行连通关系
+- current node 要能匹配机器人当前位置
+- UUID 不要频繁抖动, 否则视觉评分缓存会失效
+
+## 核心图论模型
+
+Graph Construction 维护一个无向加权图:
 
 ```text
-unknown: value < 0
-free: 0 <= value <= free_threshold
-obstacle: value >= obstacle_threshold
+G_t = (V_t, E_t)
 ```
 
-榛樿鍙傛暟:
+解释:
+
+- `G_t` 是时刻 `t` 的导航图
+- `V_t` 是节点集合, 每个节点表示一个可站立或可经过的位置
+- `E_t` 是边集合, 每条边表示两个节点之间可以直线通行
+
+节点:
 
 ```text
-free_threshold: 20
-obstacle_threshold: 65
+v_i = (p_i, r_i, e_i, f_i)
 ```
 
-鍚庣画鎺?`GridMap` 鏃? 鍐嶄粠 elevation, traversability, variance, is_valid 绛?layer 鐢熸垚鍚屾牱鐨勪笁鍊?grid
+解释:
 
-### SDF 鍜屽崐寰?
-瀵?obstacle 鍜?unknown 鍒嗗埆璁＄畻璺濈鍦?
+- `p_i` 是节点世界坐标
+- `r_i` 是 free radius, 表示节点附近安全可通行半径
+- `e_i` 是 explored radius, 表示节点附近已经被观察过的范围
+- `f_i` 表示是否为 frontier node
+
+边:
 
 ```text
-SDF_obs(p) = distance from p to nearest obstacle
-SDF_unk(p) = distance from p to nearest unknown
+e_ij = (v_i, v_j, w_ij)
 ```
 
-鑺傜偣鍗婂緞:
+第一版边权:
 
 ```text
-free_radius = min(SDF_obs(node), SDF_unk(node), max_free_radius)
-explored_radius = max(previous_explored_radius, SDF_unk(node))
+w_ij = ||p_i - p_j||_2
 ```
 
-瑙ｉ噴:
+解释:
 
-- `free_radius` 琛ㄧず鑺傜偣闄勮繎鏈夊澶ц寖鍥存槸瀹夊叏宸茬煡鍖哄煙
-- `explored_radius` 琛ㄧず鑺傜偣闄勮繎鏈夊澶ц寖鍥村凡缁忚瑙傚療杩?- `explored_radius` 鏄璺洖閫€鍜岄伩鍏嶉噸澶嶆帰绱㈢殑鍏抽敭
+- 两个节点之间直线无碰撞时才建立边
+- 权重先用欧氏距离, 后续可以叠加坡度, 粗糙度, traversability cost
 
-### 鑺傜偣閲囨牱
+## 节点采样公式
 
-绗竴鐗堜娇鐢ㄨ鍒欓噰鏍? 涓嶆槸闅忔満閲囨牱:
+从 free cell 中采样节点, 但需要保证节点之间不要太密:
 
 ```text
-for each free cell with stride sample_stride:
-    if distance to nearest existing node > min_node_separation:
-        if SDF_obs(cell) > min_obstacle_clearance:
-            create node
+min_j ||p_new - p_j||_2 >= d_min
 ```
 
-鐞嗙敱:
+解释:
 
-- 杈撳嚭绋冲畾
-- 鏇村鏄撹皟璇?- UUID 鏇村鏄撲繚鎸?
-鍚庣画鍙互鍔犲叆璁烘枃涓殑 `N_samples = 1000` 闅忔満閲囨牱妯″紡
+- `p_new` 是新候选节点
+- `p_j` 是已有节点
+- `d_min` 是最小节点间距, 对应配置 `min_node_separation`
+- 这样可以把 dense grid 压缩成 sparse graph
 
-### frontier 妫€娴?
-frontier cell 瀹氫箟:
+节点安全半径:
 
 ```text
-frontier_cell = free cell with at least one unknown neighbor
+r_i = min(d_obstacle(p_i), d_unknown(p_i), r_max)
 ```
 
-浼唬鐮?
+解释:
+
+- `d_obstacle(p_i)` 是到最近 obstacle 的距离
+- `d_unknown(p_i)` 是到最近 unknown 的距离
+- `r_max` 是最大半径上限
+- 这个半径既用于可视化, 也用于判断 explored area
+
+## Frontier 定义
+
+frontier cell 是 free 和 unknown 的边界:
 
 ```text
-for each free cell:
-    if any 8-connected neighbor is unknown:
-        add to frontier_cells
+c is frontier <=> c is free and exists n in N(c), n is unknown
 ```
 
-### frontier 鍒嗛厤
+解释:
 
-鎶婂瘑闆?frontier cells 鍒嗛厤缁欓檮杩?graph node:
+- `c` 是一个 free cell
+- `N(c)` 是它的邻域
+- 如果它旁边有 unknown cell, 说明从这里附近继续走可能进入未探索区域
+
+frontier node 不是每个 frontier cell 都单独生成一个节点
+
+第一版做法是:
 
 ```text
-for each frontier_cell:
-    if inside explored_radius of any node:
-        continue
-
-    owner = nearest node within frontier_assign_radius
-
-    if owner exists and line from owner to frontier_cell is collision-free:
-        owner.frontier_points.append(frontier_cell_position)
-        owner.is_frontier = true
+frontier cell -> nearest collision-free graph node -> node.frontier_points
 ```
 
-闇€瑕佷繚璇?
+这样可以保持图稀疏, 也符合 WildOS 对 frontier node 的接口期望
+
+## Frontier 分配公式
+
+给一个 frontier point `p_f`, 找最近的可达 graph node:
 
 ```text
-frontier node 鍦?free 鍖哄煙
-frontier_points 鎸囧悜 unknown 杈圭晫
-mean(frontier_points) - node.position 鑳借〃绀?frontier heading
+v* = argmin_v ||p_v - p_f||_2
 ```
 
-杩欐槸鎺ュ叆 WildOS 瑙嗚璇勫垎鐨勫叧閿?
-### 寤鸿竟
-
-绗竴鐗堜娇鐢ㄧ┖闂磋繎閭诲拰鐩寸嚎纰版挒妫€娴?
+约束:
 
 ```text
-for each node_i:
-    neighbors = nodes within edge_radius
-
-    for each node_j in neighbors:
-        if BresenhamLine(node_i, node_j) has no obstacle:
-            add edge
+||p_v - p_f||_2 <= R_frontier
+line(p_v, p_f) is collision-free
+p_f not in removed_frontiers
 ```
 
-杈规潈閲嶇涓€鐗?
+解释:
+
+- `R_frontier` 对应 `frontier_assign_radius`
+- collision-free 保证该 frontier 可以从图节点附近安全接近
+- removed frontier suppression 用来减少死路附近反复尝试
+
+如果一个节点挂载的 frontier points 足够多:
 
 ```text
-traversability_cost = EuclideanDistance(node_i, node_j)
+|frontier_points(v_i)| >= N_min
 ```
 
-鍚庣画鍗囩骇:
+则:
 
 ```text
-traversability_cost = distance + obstacle_clearance_penalty + unknown_penalty + slope_penalty
+is_frontier(v_i) = true
 ```
 
-### current_node_idx
-
-褰撳墠鑺傜偣閫夋嫨:
+否则:
 
 ```text
-current_node = nearest node to odom pose among reachable free nodes
+is_frontier(v_i) = false
 ```
 
-濡傛灉鏈€杩戣妭鐐逛笉鍙揪, fallback:
+## 建边公式
+
+两个节点满足距离约束:
 
 ```text
-current_node = nearest node with collision-free line to robot pose
+||p_i - p_j||_2 <= R_edge
 ```
 
-## 鎺ュ叆 WildOS 璇勫垎
-
-Graph Construction 涓嶇洿鎺ュ啓 `frontier_scores`
-
-瀹冨彂甯?
+并且两点连线穿过的 grid cell 都不是 obstacle:
 
 ```text
-NavigationGraph.trav_classes = ["default"]
-Node.trav_properties[0].is_frontier
-Node.trav_properties[0].frontier_points
-Node.trav_properties[0].free_radius
-Node.trav_properties[0].explored_radius
-Edge.traversability[0].traversability_cost
+collision_free(p_i, p_j) = true
 ```
 
-WildOS 瑙嗚妯″潡浼氳鍙?frontier nodes, 鎶曞奖鍒板浘鍍? 骞惰拷鍔?
+才建立边:
 
 ```text
-node.properties:
-    key = frontier_scores
-    value = [score_bin_0, ..., score_bin_15]
+(v_i, v_j) in E_t
 ```
 
-鍥犳瀹炵幇閲嶇偣鏄?
+第一版边权:
 
 ```text
-frontier geometry 姝ｇ‘
-node uuid 绋冲畾
-graph frame 鍜?odom frame 涓€鑷?frontier_points 闈炵┖
+w_ij = ||p_i - p_j||_2
 ```
 
-## 鎺ュ叆璺緞绠楁硶
-
-绗竴鐗堝鐢ㄥ凡鏈?`graphnav_planner`
-
-宸叉湁 planner 閫昏緫:
+后续可扩展为:
 
 ```text
-scored_nav_graph -> internal weighted graph
-frontier_scores -> virtual goal edge cost
-Dijkstra -> high level path
+w_ij = distance_ij * (1 + alpha * terrain_cost_ij)
 ```
 
-Graph Construction 鍙渶瑕佷繚璇佸浘婊¤冻 planner 鐨勮緭鍏ュ绾?
-## 姝昏矾鍥為€€
+解释:
 
-姝昏矾鍥為€€涓嶅崟鐙啓涓€涓帶鍒跺櫒, 鍏堥€氳繃 graph memory 鏀寔
+- `distance_ij` 是几何距离
+- `terrain_cost_ij` 可以来自坡度, 粗糙度, 雷达可通行性
+- `alpha` 控制地形代价对路径的影响
 
-鍩虹瑙勫垯:
+## 死路回退
+
+死路的典型现象:
 
 ```text
-濡傛灉 frontier 闄勮繎 unknown 琚?explored_radius 瑕嗙洊, 绉婚櫎 frontier
-濡傛灉 frontier 杩炵画 N 娆℃病鏈夊甫鏉ユ柊澧?unknown 杈圭晫, 闄嶄綆浼樺厛绾?濡傛灉褰撳墠 path 鐨勬湯绔?frontier 娑堝け, 閲嶆柊鍙戝竷 graph
-濡傛灉娌℃湁瑙嗚璇勫垎, planner fallback 鍒板嚑浣?frontier distance
+frontier node 被选中
+机器人走过去
+局部地图更新后发现该 frontier 不再连接新的 unknown 区域
+planner 又因为几何距离近反复选择同一片区域
 ```
 
-鍐呴儴璁板綍:
+第一版处理方式:
 
 ```text
-removed_frontiers
-low_value_frontiers
-frontier_failed_count
+removed_frontiers = recently disappeared frontier points
 ```
 
-绗竴鐗堜笉鏀?`graphnav_planner`, 鎵€浠ラ檷鏉冨彲浠ュ厛浣撶幇鍦?Graph Construction 杈撳嚭涓?
+如果新的 frontier point 离 removed frontier 太近:
 
 ```text
-绉婚櫎澶辨晥 frontier
-鍑忓皯 frontier_points
-鎴栧皢 frontier 鏍囪涓洪潪 frontier
+||p_f - p_removed||_2 <= R_suppress
 ```
 
-鍚庣画濡傛灉闇€瑕佹洿寮烘帶鍒? 鍐嶈€冭檻缁?node.properties 鍔?
+则跳过它
+
+解释:
+
+- 这不是完整的全局行为树回退
+- 但可以让图构建层不要把刚失败的边界马上重新发布出去
+- planner 在没有这个 frontier 后, 会倾向选择其它 frontier
+
+## 视觉边界节点探索
+
+论文中的视觉探索不是 Graph Construction 单独完成的, 而是几何 frontier 和视觉 scoring 共同完成
+
+Graph Construction 负责:
 
 ```text
-key = graph_construction_penalty
-value = [penalty]
+is_frontier
+frontier_points
+node position
+node uuid
+graph edges
 ```
 
-浣嗙涓€鐗堜笉渚濊禆杩欎釜瀛楁
-
-## 瑙嗚杈圭晫鑺傜偣鎺㈢储
-
-瑙嗚杈圭晫鎺㈢储渚濊禆涓ゅ眰 frontier:
+WildOS 视觉模块负责:
 
 ```text
-geometric frontier: Graph Construction 鐢熸垚
-visual frontier: ExploRFM 浠?RGB 棰勬祴
+project frontier into camera images
+estimate visual traversability
+estimate visual frontier direction
+estimate object similarity
+write frontier_scores
 ```
 
-宸ヤ綔鏂瑰紡:
+planner 负责:
 
 ```text
-Graph Construction 鐢熸垚 F_geo
-WildOS 灏?F_geo 鎶曞奖鍒?camera image
-ExploRFM 杈撳嚭 F_vis 鍜?T_vis
-Scoring 璁＄畻姣忎釜 F_geo 鍦ㄤ笉鍚?heading bin 鐨勫垎鏁?Planner 閫夋嫨楂樺垎 frontier
+choose best frontier by graph cost and score
+run Dijkstra
+publish path
 ```
 
-鍥犳绗竴鐗?Graph Construction 瑕佷紭鍏堜繚璇佸嚑浣?frontier 绋冲畾, 涓嶉渶瑕佽嚜宸卞疄鐜拌瑙?frontier
+因此第一版 Graph Construction 只要把几何 frontier 做稳定, 就可以接入后续视觉评分链路
 
-## 鍙鍖?
-鏂板 `graph_construction/viz.py`, 鍙戝竷 RViz markers:
+## 主流程伪代码
 
 ```text
-free nodes: green sphere
-frontier nodes: blue sphere
-frontier_points: purple cube
-edges: red line
-current node: yellow sphere
-free_radius: red transparent disk
-explored_radius: cyan transparent disk
-removed frontier: gray marker
+function UpdateGraph(occupancy_grid, odom):
+    grid = ClassifyGrid(occupancy_grid)
+
+    obstacle_sdf = DistanceToObstacle(grid)
+    unknown_sdf = DistanceToUnknown(grid)
+
+    for each existing node v:
+        if v is outside current grid:
+            keep v as memory node
+            continue
+
+        if v is no longer free:
+            remove v
+            continue
+
+        v.free_radius = min(obstacle_sdf[v], unknown_sdf[v], max_free_radius)
+        v.explored_radius = max(v.explored_radius, unknown_sdf[v])
+
+        if v.free_radius < min_obstacle_clearance:
+            remove v
+
+    for each sampled free cell c:
+        p = CellCenter(c)
+
+        if DistanceToNearestNode(p) < min_node_separation:
+            continue
+
+        if obstacle_sdf[c] < min_obstacle_clearance:
+            continue
+
+        create graph node at p
+
+    frontier_cells = DetectFrontierCells(grid)
+
+    for each node v:
+        clear v.frontier_points
+        v.is_frontier = false
+
+    for each frontier cell c_f:
+        p_f = CellCenter(c_f)
+
+        if NearRemovedFrontier(p_f):
+            continue
+
+        owner = NearestNodeWithinRadius(p_f, frontier_assign_radius)
+
+        if owner exists and CollisionFree(owner.position, p_f):
+            owner.frontier_points.append(p_f)
+
+    for each node v:
+        if count(v.frontier_points) >= frontier_min_points:
+            v.is_frontier = true
+
+    UpdateDeadendMemory()
+
+    edges = BuildCollisionFreeEdges(nodes, grid, edge_radius)
+    current_node = NearestCollisionFreeNode(odom.position)
+
+    return NavigationGraph(nodes, edges, current_node)
 ```
 
-宸叉湁 WildOS 鍙鍖栫户缁娇鐢?
+## 当前参数
 
 ```text
-/spot1/nav_graph_viz
-/spot1/score_rings
-/spot1/model_visualization
-```
-
-## 閰嶇疆鏂囦欢
-
-`configs/graph_construction.yaml`:
-
-```yaml
-robot_namespace: spot1
-global_frame: spot1/odom
-odom_topic: /spot1/odom
-grid_topic: /spot1/traversability_grid
-nav_graph_topic: /spot1/nav_graph
-viz_topic: /spot1/graph_construction_viz
-debug_grid_topic: /spot1/debug_traversability_grid
-
-trav_class: default
-map_resolution: 0.1
-local_map_radius: 10.0
-
 free_threshold: 20
 obstacle_threshold: 65
 sample_stride: 8
@@ -422,156 +495,137 @@ min_obstacle_clearance: 0.5
 edge_radius: 8.0
 frontier_assign_radius: 5.0
 frontier_min_points: 2
-
 deadend_observation_count: 3
+removed_frontier_suppression_radius: 1.0
 publish_rate_hz: 2.0
 ```
 
-## 瀹炵幇闃舵
+这些参数是第一版调试值, 重点是输出稳定, 可观察, 能接入 planner
 
-### 闃舵 1, 鍖呭拰娑堟伅闂幆
+后续实测时需要根据地图分辨率和机器人尺寸调整:
 
-鐩爣:
+- `sample_stride`, 控制节点密度
+- `min_node_separation`, 控制图稀疏程度
+- `edge_radius`, 控制图连通性
+- `frontier_assign_radius`, 控制 frontier 能挂到多远的节点
+- `min_obstacle_clearance`, 控制安全距离
+
+## 可视化
+
+第一版包含 RViz Marker 可视化, 不包含项目主页视频中的完整 Web UI
+
+可视化内容:
+
+- free nodes
+- frontier nodes
+- graph edges
+- frontier points
+- free radius 或 explored radius
+- current node
+
+用途:
+
+- 检查节点是否落在 free space
+- 检查 edge 是否穿过 obstacle
+- 检查 frontier points 是否贴近 unknown 边界
+- 检查 current node 是否跟随机器人位置
+- 检查死路 frontier 是否会消失
+
+## 与论文公式的对应关系
+
+论文中的 Graph Construction 主要提供:
 
 ```text
-graph_construction 鍖呭彲 build
-node 鍙惎鍔?鍙戝竷涓€涓渶灏?NavigationGraph
-RViz 鍙湅鍒拌妭鐐瑰拰杈?```
-
-### 闃舵 2, OccupancyGrid 鍒?graph
-
-鐩爣:
-
-```text
-璁㈤槄 OccupancyGrid
-鐢熸垚 free nodes
-鐢熸垚 frontier nodes
-鐢熸垚 edges
-鍙戝竷 /spot1/nav_graph
+T_geo = (G_t, F_geo_t)
 ```
 
-### 闃舵 3, 鎺ュ叆 WildOS scoring
+解释:
 
-鐩爣:
+- `G_t` 是稀疏导航图
+- `F_geo_t` 是几何 frontier node 集合
+- 本模块输出的 `NavigationGraph` 对应这个几何图
 
-```text
-WildOS 璁㈤槄 /spot1/nav_graph
-鍙戝竷 /spot1/scored_nav_graph
-frontier_scores 鍐欏叆 node.properties
-score_rings 姝ｅ父鏄剧ず
-```
-
-### 闃舵 4, 鎺ュ叆 planner
-
-鐩爣:
+frontier node 集合:
 
 ```text
-graphnav_planner 璁㈤槄 /spot1/scored_nav_graph
-鑳藉杈撳嚭 graph path
-current_node_idx 姝ｇ‘
-frontier 鍙樺寲鍚庤兘閲嶆柊瑙勫垝
+F_geo_t = {v_i in V_t | is_frontier(v_i) = true}
 ```
 
-### 闃舵 5, 姝昏矾鍥為€€
+视觉评分后, planner 使用 scored graph 计算路径
 
-鐩爣:
+简化代价可以理解为:
 
 ```text
-澶辨晥 frontier 琚Щ闄?鍘嗗彶 free nodes 淇濈暀
-璧拌繘姝昏矾鍚庤兘閫夋嫨鍏跺畠 frontier
+cost(path) = sum edge_cost + frontier_virtual_cost
 ```
 
-### 闃舵 6, GridMap / elevation map 鎺ュ叆
-
-鐩爣:
+其中 frontier virtual cost 会被视觉分数影响:
 
 ```text
-浠?elevation_mapping_cupy 鎴?grid_map_msgs/GridMap 璇诲彇鐪熷疄鍑犱綍 layer
-鏇挎崲 OccupancyGrid adapter
-淇濈暀 GraphBuilder 涓婚€昏緫涓嶅彉
+frontier_virtual_cost = d_frontier_goal * (1 - beta * log(score))
 ```
 
-## 楠岃瘉鏂瑰紡
+解释:
 
-鍩虹鍛戒护:
+- `score` 越高, 该 frontier 越可能指向目标
+- `frontier_virtual_cost` 越小, Dijkstra 越倾向选择它
+- Graph Construction 不计算 `score`, 但必须保证 frontier node 和 frontier_points 正确
+
+## 第一版验收标准
+
+构建:
 
 ```text
 colcon build --packages-select graph_construction graphnav_msgs graphnav_planner visual_navigation
+```
+
+启动:
+
+```text
 ros2 launch graph_construction graph_construction.launch.py ns:=spot1
 ```
 
-妫€鏌?topic:
+Topic 检查:
 
 ```text
 ros2 topic echo /spot1/nav_graph --once
-ros2 topic echo /spot1/scored_nav_graph --once
-ros2 topic list | grep graph
+ros2 topic echo /spot1/graph_construction_viz --once
 ```
 
-RViz 妫€鏌?
+应看到:
 
-```text
-/spot1/graph_construction_viz
-/spot1/nav_graph_viz
-/spot1/score_rings
-/spot1/graphnav_planner/path
-```
+- `nodes` 非空
+- `edges` 非空
+- `trav_classes` 包含 `default`
+- `current_node_idx` 在 nodes 范围内
+- frontier nodes 有 `frontier_points`
+- RViz 中节点和边不明显穿过障碍
 
-鍏抽敭楠屾敹:
+## 风险和后续工作
 
-```text
-NavigationGraph 闈炵┖
-trav_classes 鍖呭惈 default
-current_node_idx 鍦?nodes 鑼冨洿鍐?frontier nodes 鏈?frontier_points
-edges 鐨?from_idx 鍜?to_idx 鍚堟硶
-planner 鑳借緭鍑?path
-```
+当前第一版可以帮助接通链路, 但还不是论文级完整实现
 
-## 椋庨櫓鍜屽緟纭
+主要风险:
 
-闇€瑕佺‘璁ょ湡瀹?`T_geo` 鏉ユ簮:
+- `OccupancyGrid` 表达不了完整 2.5D 地形, 坡度和粗糙度暂时缺失
+- 节点采样是规则 stride, 不是论文中更灵活的局部随机采样
+- frontier 生命周期只做基础 suppression, 还没有完整任务层回退策略
+- 没有接入雷达生成的 traversability cost
+- 没有实现主页视频里的 UI
 
-```text
-OccupancyGrid topic
-GridMap topic
-elevation_mapping_cupy layer names
-frame_id 鍜?odom frame
-```
+后续优先级:
 
-闇€瑕佺‘璁?robot footprint:
+1. 用真实 WildOS bag 或仿真 grid 验证 graph topic
+2. 调整节点密度和 edge radius, 保证 planner 可以连通
+3. 检查视觉模块是否能正确投影 frontier
+4. 接入 elevation 或 radar traversability, 替换简单 OccupancyGrid 阈值
+5. 增强死路回退, 增加 frontier failed count 和低价值 frontier 记忆
+6. 如果需要主页视频效果, 再单独实现 graph debug UI 或接入现有 RViz/Web 可视化
 
-```text
-鍗婂緞鎴?footprint polygon
-inflation radius
-鏈€灏忛殰纰嶈窛绂?```
+## 本阶段结论
 
-闇€瑕佺‘璁よ繍琛岀幆澧?
+本方案先把 Graph Construction 定义为 WildOS 中的几何图生成层
 
-```text
-ROS 2 Humble
-Python package dependencies
-grid_map_msgs 鏄惁鍙敤
-scipy 鏄惁鍙敤, 鐢ㄤ簬 distance transform
-```
+它不直接做目标识别, 也不直接做语义评分, 而是负责把可通行区域组织成稳定的稀疏图, 并把未知边界表达成 frontier nodes
 
-濡傛灉 `scipy` 涓嶅彲鐢? 绗竴鐗堝彲浠ョ敤 OpenCV distance transform 鎴栫函 numpy BFS 鍏滃簳
-
-## 绗竴鐗堜氦浠樿寖鍥?
-绗竴鐗堝疄鐜板畬鎴愬悗, 搴旇鍏峰:
-
-```text
-涓€涓彲鍚姩鐨?graph_construction ROS2 package
-鍙粠 OccupancyGrid 鐢熸垚 NavigationGraph
-鍙鍖?free nodes, frontier nodes, edges, radius
-鍙帴鍏?WildOS scoring
-鍙 graphnav_planner 鍩轰簬 scored graph 瑙勫垝
-鍏峰鍩虹姝昏矾 frontier 绉婚櫎鑳藉姏
-```
-
-绗竴鐗堜笉鎵胯:
-
-```text
-瀹屽叏澶嶇幇 NASA/JPL 鏈紑婧愬疄鐜?瀹屽叏澶嶇幇 elevation traversability filter
-澶嶆潅鍦板舰 slope / roughness cost
-鐙珛 Web UI
-```
+只要 `/spot1/nav_graph` 满足 WildOS 的消息契约, 后续视觉 scoring 和 `graphnav_planner` 就可以在这个图上继续工作
