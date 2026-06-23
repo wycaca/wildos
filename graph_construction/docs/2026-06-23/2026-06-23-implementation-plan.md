@@ -588,8 +588,8 @@ ros2 launch graph_construction graph_construction.launch.py ns:=spot1
 Topic 检查:
 
 ```text
-ros2 topic echo /spot1/nav_graph --once
-ros2 topic echo /spot1/graph_construction_viz --once
+ros2 topic echo --once /spot1/nav_graph
+ros2 topic echo --once /spot1/graph_construction_viz
 ```
 
 应看到:
@@ -629,3 +629,4 @@ ros2 topic echo /spot1/graph_construction_viz --once
 它不直接做目标识别, 也不直接做语义评分, 而是负责把可通行区域组织成稳定的稀疏图, 并把未知边界表达成 frontier nodes
 
 只要 `/spot1/nav_graph` 满足 WildOS 的消息契约, 后续视觉 scoring 和 `graphnav_planner` 就可以在这个图上继续工作
+
