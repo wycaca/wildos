@@ -13,6 +13,7 @@
 #include "graphnav_msgs/msg/navigation_graph.hpp"
 #include "graphnav_msgs/msg/uuid.hpp"
 #include <grid_map_msgs/msg/grid_map.hpp>
+#include <queue>
 #include <visualization_msgs/msg/marker_array.hpp>
 
 namespace graphnav_planner
@@ -137,7 +138,7 @@ public:
           continue;
         if (map_(nx, ny) == 0)
           continue;  // skip explored
-        float new_dist = dist_map_(x, y) + cost[dir] * resolution_;
+        float new_dist = dist_map_(static_cast<int>(x), static_cast<int>(y)) + cost[dir] * resolution_;
         if (new_dist < dist_map_(nx, ny))
         {
           dist_map_(nx, ny) = new_dist;
