@@ -1,0 +1,56 @@
+[project]
+name = "wildos-local-env"
+version = "0.1.0"
+description = "Local uv environment for nebula2-wildos reproduction"
+requires-python = ">=3.10,<3.11"
+dependencies = [
+  # local editable packages
+  "explorfm",
+  "nvidia-radio",
+
+  # ROS 2 Humble build-time Python deps
+  "empy==3.3.4",
+  "catkin_pkg",
+  "lark",
+  "PyYAML",
+  "setuptools<70",
+  "wheel",
+
+  # core
+  "torch==2.7.0",
+  "torchaudio==2.7.0",
+  "torchvision==0.22.0",
+
+  # vision
+  "timm==1.0.15",
+  "open-clip-torch==2.32.0",
+  "transformers==4.51.3",
+  "einops==0.8.1",
+  "fairscale==0.4.4",
+  "scikit-image",
+  "onnx",
+  "opencv-python",
+  "matplotlib",
+  "numpy>=1.23,<2",
+
+  # config
+  "ruamel.yaml==0.18.11",
+  "omegaconf",
+
+  # gps utils
+  "folium",
+  "selenium",
+
+  # common runtime helpers
+  "pillow",
+  "scipy",
+  "huggingface_hub",
+  "safetensors",
+  "ftfy",
+  "regex",
+  "tqdm",
+]
+
+[tool.uv.sources]
+explorfm = { path = "explorfm", editable = true }
+nvidia-radio = { path = "nvidia_radio", editable = true }

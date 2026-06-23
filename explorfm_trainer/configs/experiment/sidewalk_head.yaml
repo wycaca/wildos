@@ -1,0 +1,66 @@
+# @package _global_
+
+# 执行此实验的命令:
+# python src/train.py experiment=sidewalk_head
+
+defaults:
+  - override /data: cityscapes          # 切换到包含人行道类别的 RUGD 数据集
+  - override /model: binary_seg    # 沿用二值分割模型逻辑
+  - override /trainer: gpu
+  - override /logger: wandb
+
+# 标签和实验元数据
+tags: ["RADIO", "c-radio_v3-b", "sidewalk"]
+seed: 42
+
+model:
+  _target_: src.models.sidewalk_binary_segmentation_module.BinarySegmentationLitModule
+  strict_loading: false
+  net:
+    _target_: src.models.components.radio_upsample.RADIO_UPSAMPLE
+    model_version: "c-radio_v3-b"
+    adaptor_version: null
+    use_naclip: true  # 开启 NACLIP 以增强局部特征一致性，有利于边缘分割
+
+  optimizer:
+    lr: 0.0005         # 推荐学习率
+    weight_decay: 1e-4 # AdamW 权重衰减
+
+  scheduler:
+    patience: 5       # 稍微增加容忍度
+
+  # ============= PAMR (Pixel-Adaptive Mask Refinement) 参数 =============
+  use_pamr: true                    # 启用 PAMR 边缘精细化
+  pamr_num_iter: 10                  # 迭代次数 (推荐: 5-10)
+  pamr_dilations: [1, 2, 4, 8]         # 多尺度空洞卷积 (推荐: [1,2,4] 或 [1,2,4,8])
+
+logger:
+  wandb:
+    tags: ${tags}
+    project: "sidewalk"
+    name: train_rugd_radio_cnn_naclip-sidewalkOnly
+
+paths:
+  root_dir: /mnt/hhd/han/train_log/explorfm_trainer
+  data_dir: /mnt/hhd/han/dataset/cityspaces
+
+trainer:
+  max_epochs: 60
+
+callbacks:
+  model_checkpoint:
+    _target_: src.models.components.model_ckpt_without_backbone.ModelCheckpointWithoutBackbone
+    monitor: val/loss
+    mode: min
+    backbone_name: radio_model
+  
+  lr_monitor:
+    _target_: lightning.pytorch.callbacks.LearningRateMonitor
+    logging_interval: epoch
+
+data:
+  batch_size: 16
+  num_workers: 4
+  pin_memory: True
+  # 将标签指定为 RUGD 中的 sidewalk
+  labels: ['sidewalk']

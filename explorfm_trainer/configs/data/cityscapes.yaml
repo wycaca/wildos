@@ -1,0 +1,6 @@
+_target_: src.data.cityscapes_datamodule.CityscapesDataModule
+data_dir: ${paths.data_dir} 
+batch_size: 4
+num_workers: 8
+pin_memory: True
+
