@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from math import hypot
+from math import ceil, hypot
 from typing import List, Sequence, Tuple
 
 from graph_construction.graph_memory import GraphState, Point3
@@ -22,10 +22,14 @@ class FrontierDetector:
         self,
         frontier_assign_radius: float,
         frontier_min_points: int,
+        frontier_min_span: float,
+        frontier_border_margin: float,
         removed_frontier_suppression_radius: float,
     ) -> None:
         self.frontier_assign_radius = frontier_assign_radius
         self.frontier_min_points = frontier_min_points
+        self.frontier_min_span = frontier_min_span
+        self.frontier_border_margin = frontier_border_margin
         self.removed_frontier_suppression_radius = removed_frontier_suppression_radius
 
     def detect_frontier_cells(self, grid: ClassifiedGrid) -> List[GridIndex]:
@@ -34,6 +38,8 @@ class FrontierDetector:
         for iy in range(grid.height):
             for ix in range(grid.width):
                 if not grid.is_free_index(ix, iy):
+                    continue
+                if self._near_grid_border(grid, ix, iy):
                     continue
                 if self._touches_unknown(grid, ix, iy):
                     frontier_cells.append((ix, iy))
@@ -65,11 +71,26 @@ class FrontierDetector:
                 continue
             owner.frontier_points.append(frontier_point)
 
-        # frontier_min_points 用于过滤孤立噪声点, 避免单个 unknown 毛刺生成探索目标
+        # frontier_min_points 和 frontier_min_span 共同过滤孤立噪声边界
         for node in graph.nodes.values():
-            node.is_frontier = len(node.frontier_points) >= self.frontier_min_points
+            node.is_frontier = (
+                len(node.frontier_points) >= self.frontier_min_points
+                and self._frontier_span(node.frontier_points) >= self.frontier_min_span
+            )
             if not node.is_frontier:
                 node.frontier_points.clear()
+
+    def _near_grid_border(self, grid: ClassifiedGrid, ix: int, iy: int) -> bool:
+        """过滤局部滑窗外边界, 避免把地图边缘当作 frontier"""
+        margin_cells = max(0, int(ceil(self.frontier_border_margin / grid.resolution)))
+        if margin_cells <= 0:
+            return False
+        return (
+            ix < margin_cells
+            or iy < margin_cells
+            or ix >= grid.width - margin_cells
+            or iy >= grid.height - margin_cells
+        )
 
     def _touches_unknown(self, grid: ClassifiedGrid, ix: int, iy: int) -> bool:
         """检查一个 free cell 的 8 邻域是否包含 unknown"""
@@ -83,10 +104,20 @@ class FrontierDetector:
 
     def _near_removed_frontier(self, graph: GraphState, frontier_point: Point3) -> bool:
         """抑制最近刚消失的 frontier, 降低死路附近反复探索的概率"""
+        if self.removed_frontier_suppression_radius <= 0.0:
+            return False
         for removed in graph.removed_frontiers:
             if hypot(removed[0] - frontier_point[0], removed[1] - frontier_point[1]) <= self.removed_frontier_suppression_radius:
                 return True
         return False
+
+    def _frontier_span(self, points: Sequence[Point3]) -> float:
+        """估计 frontier points 的空间跨度, 用于过滤短小噪声"""
+        if not points:
+            return 0.0
+        xs = [point[0] for point in points]
+        ys = [point[1] for point in points]
+        return hypot(max(xs) - min(xs), max(ys) - min(ys))
 
     def _inside_explored_area(
         self,

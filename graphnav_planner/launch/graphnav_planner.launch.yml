@@ -18,6 +18,10 @@ launch:
       default: $(var remap_ros_topics_to_ns)
       description: "Remap tf/tf_static to namespace"
 
+  - arg:
+      name: "odom_topic"
+      default: "odom"
+      description: "Odometry topic relative to namespace or absolute"
 
   - node:
       pkg: "graphnav_planner"
@@ -49,22 +53,22 @@ launch:
         - from: "~/nav_graph"
           to: "scored_nav_graph"
         - from: "~/odom"
-          to: "odom"
+          to: $(var odom_topic)
         - from: "~/goal_pose"
           to: "imgnav_waypoint"
         # - from: "~/path"
         #   to: "graph_nav_path"
         # namespaced default ros topics
         - from: "/tf"
-          to: $(eval "'/$(var ns)/tf' if $(var remap_tf_to_ns) else '/tf'")
+          to: $(eval "'/$(var ns)/tf' if '$(var remap_tf_to_ns)'.lower() == 'true' else '/tf'")
         - from: "/tf_static"
-          to: $(eval "'/$(var ns)/tf_static' if $(var remap_tf_to_ns) else '/tf_static'")
+          to: $(eval "'/$(var ns)/tf_static' if '$(var remap_tf_to_ns)'.lower() == 'true' else '/tf_static'")
         - from: "/rosout"
-          to: $(eval "'/$(var ns)/rosout' if $(var remap_ros_topics_to_ns) else '/rosout'")
+          to: $(eval "'/$(var ns)/rosout' if '$(var remap_ros_topics_to_ns)'.lower() == 'true' else '/rosout'")
         - from: "/parameter_events"
-          to: $(eval "'/$(var ns)/parameter_events' if $(var remap_ros_topics_to_ns) else '/parameter_events'")
+          to: $(eval "'/$(var ns)/parameter_events' if '$(var remap_ros_topics_to_ns)'.lower() == 'true' else '/parameter_events'")
         - from: "/diagnostics"
-          to: $(eval "'/$(var ns)/diagnostics' if $(var remap_ros_topics_to_ns) else '/diagnostics'")
+          to: $(eval "'/$(var ns)/diagnostics' if '$(var remap_ros_topics_to_ns)'.lower() == 'true' else '/diagnostics'")
   - node:
       pkg: "graphnav_planner"
       exec: "path_follower_node"
@@ -75,20 +79,20 @@ launch:
         - from: "~/path"
           to: "graphnav_planner/path"
         - from: "~/odom"
-          to: "odom"
+          to: $(var odom_topic)
         - from: "~/goal_pose"
           to: "goal_pose"
         # namespaced default ros topics
         - from: "/tf"
-          to: $(eval "'/$(var ns)/tf' if $(var remap_tf_to_ns) else '/tf'")
+          to: $(eval "'/$(var ns)/tf' if '$(var remap_tf_to_ns)'.lower() == 'true' else '/tf'")
         - from: "/tf_static"
-          to: $(eval "'/$(var ns)/tf_static' if $(var remap_tf_to_ns) else '/tf_static'")
+          to: $(eval "'/$(var ns)/tf_static' if '$(var remap_tf_to_ns)'.lower() == 'true' else '/tf_static'")
         - from: "/rosout"
-          to: $(eval "'/$(var ns)/rosout' if $(var remap_ros_topics_to_ns) else '/rosout'")
+          to: $(eval "'/$(var ns)/rosout' if '$(var remap_ros_topics_to_ns)'.lower() == 'true' else '/rosout'")
         - from: "/parameter_events"
-          to: $(eval "'/$(var ns)/parameter_events' if $(var remap_ros_topics_to_ns) else '/parameter_events'")
+          to: $(eval "'/$(var ns)/parameter_events' if '$(var remap_ros_topics_to_ns)'.lower() == 'true' else '/parameter_events'")
         - from: "/diagnostics"
-          to: $(eval "'/$(var ns)/diagnostics' if $(var remap_ros_topics_to_ns) else '/diagnostics'")
+          to: $(eval "'/$(var ns)/diagnostics' if '$(var remap_ros_topics_to_ns)'.lower() == 'true' else '/diagnostics'")
       param:
         - name: wp_lookahead_dist
           value: 5.0

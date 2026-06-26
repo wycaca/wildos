@@ -29,6 +29,8 @@ setup(
     entry_points={
         "console_scripts": [
             "graph_construction = graph_construction.node:main",
+            "livox_grid_builder = graph_construction.livox_grid_builder:main",
+            "grid_map_to_occupancy = graph_construction.grid_map_to_occupancy:main",
         ],
     },
 )

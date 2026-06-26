@@ -1,6 +1,8 @@
 #include <rclcpp/rclcpp.hpp>
 #include <graaflib/graph.h>
 #include <graaflib/algorithm/shortest_path/dijkstra_shortest_path.h>
+#include <algorithm>
+#include <cmath>
 #include <unordered_map>
 #include <map>
 
@@ -125,13 +127,18 @@ std::vector<Eigen::Vector3d> Planner::plan_to_goal(Eigen::Vector3d& goal, double
         {
           has_frontier_scores = true;
           int num_bins = kv.value.size();
+          if (num_bins == 0)
+          {
+            continue;
+          }
           double angle_per_bin = 2 * M_PI / num_bins;
           double heading_angle = std::atan2(heading.y(), heading.x());
           if (heading_angle < 0)
             heading_angle += 2 * M_PI;
           int best_bin = static_cast<int>(std::round(heading_angle / angle_per_bin)) % num_bins;
-          frontier_score = kv.value[best_bin];
-          cur_frontier_dist_cost_factor = 1.0 - frontier_score_factor_ * std::log(frontier_score);
+          frontier_score = std::clamp(static_cast<double>(kv.value[best_bin]), 0.0, 1.0);
+          double planner_score = std::max(frontier_score, 1e-3);
+          cur_frontier_dist_cost_factor = 1.0 - frontier_score_factor_ * std::log(planner_score);
 
           if (latest_frontier_){
             double distance_to_latest_frontier = (node_pos - *latest_frontier_).norm();
@@ -242,7 +249,7 @@ std::vector<Eigen::Vector3d> Planner::plan_to_goal(Eigen::Vector3d& goal, double
   if (!has_frontier_in_path)
   {
     latest_frontier_.reset();
-    RCLCPP_WARN(logger_, "NO FRONTIER IN PATH!!!!!");
+    RCLCPP_DEBUG(logger_, "Path does not end at a frontier node");
   }
 
   graph_.remove_vertex(virtual_goal);
@@ -375,8 +382,8 @@ visualization_msgs::msg::MarkerArray Planner::get_score_visualization(const rclc
       text_marker.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
       text_marker.action = visualization_msgs::msg::Marker::ADD;
       text_marker.pose = node.pose;
-      text_marker.pose.position.z += 0.1;  // raise text above the node
-      text_marker.scale.z = 0.5;           // only scale.z is used for text
+      text_marker.pose.position.z += 0.2;  // raise text above the node
+      text_marker.scale.z = 0.28;          // only scale.z is used for text
       text_marker.color.a = 1.0;
       text_marker.color.r = 1.0;
       text_marker.color.g = 1.0;
@@ -385,7 +392,14 @@ visualization_msgs::msg::MarkerArray Planner::get_score_visualization(const rclc
       // ss << "Score: " << frontier_score << " Cost: " << frontier_cost;
       // upto 2 decimal places
       ss << std::fixed << std::setprecision(2);
-      ss << frontier_score << "/" << frontier_cost;
+      if (std::isfinite(frontier_score) && frontier_score >= 0.0)
+      {
+        ss << std::clamp(frontier_score, 0.0, 1.0);
+      }
+      else
+      {
+        ss << "--";
+      }
       text_marker.text = ss.str();
       markers.markers.push_back(text_marker);
     }

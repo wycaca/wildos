@@ -106,6 +106,11 @@ class TFLookupSubscriber(Node, ABC):
                     except Exception as e:
                         self.get_logger().info(f"TF not found for {edge.source_frame} at time {old_msg_stamp}: {e}")
                         if not found_one_valid_ts:
+                            if self._is_past_extrapolation(e):
+                                self.get_logger().warn(
+                                    f"Dropping stale message at time {old_msg_tm}, TF buffer cannot serve older data"
+                                )
+                                self.msg_buffer.pop_oldest_msg()
                             return
                         else:
                             found_invalid_after_valid = True
@@ -125,10 +130,10 @@ class TFLookupSubscriber(Node, ABC):
                 if self.clear_buffer_on_process:
                     self.msg_buffer.clear()
             else:
-                self.get_logger().warn(f"Already processed TF for time {valid_ts}, skipping processing.")
+                self.get_logger().debug(f"Already processed TF for time {valid_ts}, skipping processing.")
                 self.msg_buffer.pop_oldest_msg()
         else:
-            self.get_logger().warn("Message buffer is empty, waiting for messages...")
+            self.get_logger().debug("Message buffer is empty, waiting for messages...")
 
     def fetch_cam_intrinsics_extrinsics(self, cam_info, tf_world_from_cam):
         """
@@ -159,6 +164,14 @@ class TFLookupSubscriber(Node, ABC):
             "t_wc": t_wc,
             "frame_id": frame_id,
         }
+
+    @staticmethod
+    def _is_past_extrapolation(error: Exception) -> bool:
+        msg = str(error)
+        return (
+            "extrapolation into the past" in msg
+            or "only time" in msg and "is in the buffer" in msg
+        )
 
     @abstractmethod
     def do_processing(self, msg: Dict, tfs: List):

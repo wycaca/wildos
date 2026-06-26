@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from typing import Iterable, Tuple
+from typing import Iterable, Optional, Tuple
 
 from geometry_msgs.msg import Point
+from nav_msgs.msg import OccupancyGrid
 from std_msgs.msg import ColorRGBA, Header
 from visualization_msgs.msg import Marker, MarkerArray
 
@@ -17,12 +18,29 @@ class GraphVisualizer:
     第一版可视化重点是检查节点, 边, frontier_points, radius 是否合理
     """
 
-    def build_markers(self, graph: GraphState, header: Header) -> MarkerArray:
+    def build_markers(
+        self,
+        graph: GraphState,
+        header: Header,
+        grid_msg: Optional[OccupancyGrid] = None,
+    ) -> MarkerArray:
         """构建一帧完整 marker array"""
         markers = MarkerArray()
         markers.markers.append(self._delete_all_marker(header))
 
-        free_nodes = [node for node in graph.nodes.values() if not node.is_frontier]
+        stamp_seconds = _stamp_to_seconds(header)
+        current_nodes = [
+            node
+            for node in graph.nodes.values()
+            if self._is_current_node(node, stamp_seconds)
+        ]
+        memory_nodes = [
+            node
+            for node in graph.nodes.values()
+            if not self._is_current_node(node, stamp_seconds)
+        ]
+        free_nodes = [node for node in current_nodes if not node.is_frontier]
+        memory_free_nodes = [node for node in memory_nodes if not node.is_frontier]
         frontier_nodes = [node for node in graph.nodes.values() if node.is_frontier]
 
         markers.markers.append(
@@ -39,17 +57,30 @@ class GraphVisualizer:
             self._sphere_list(
                 header,
                 marker_id=2,
+                namespace="memory_free_nodes",
+                nodes=memory_free_nodes,
+                color=ColorRGBA(r=0.0, g=0.35, b=0.0, a=0.25),
+                scale=0.18,
+            )
+        )
+        markers.markers.append(
+            self._sphere_list(
+                header,
+                marker_id=3,
                 namespace="frontier_nodes",
                 nodes=frontier_nodes,
                 color=ColorRGBA(r=0.0, g=0.2, b=1.0, a=0.95),
-                scale=0.4,
+                scale=0.32,
             )
         )
         markers.markers.append(self._edge_marker(header, graph))
         markers.markers.append(self._frontier_point_marker(header, frontier_nodes))
+        markers.markers.append(self._trajectory_marker(header, graph))
+        if grid_msg is not None:
+            markers.markers.append(self._grid_footprint_marker(header, grid_msg))
 
-        marker_id = 10
-        for node in graph.nodes.values():
+        marker_id = 20
+        for node in current_nodes:
             markers.markers.append(
                 self._radius_marker(
                     header,
@@ -57,7 +88,7 @@ class GraphVisualizer:
                     namespace="free_radius",
                     node=node,
                     radius=node.free_radius,
-                    color=ColorRGBA(r=1.0, g=0.0, b=0.0, a=0.16),
+                    color=ColorRGBA(r=1.0, g=0.0, b=0.0, a=0.05),
                 )
             )
             marker_id += 1
@@ -68,13 +99,13 @@ class GraphVisualizer:
                     namespace="explored_radius",
                     node=node,
                     radius=node.explored_radius,
-                    color=ColorRGBA(r=0.0, g=1.0, b=1.0, a=0.10),
+                    color=ColorRGBA(r=0.0, g=1.0, b=1.0, a=0.04),
                 )
             )
             marker_id += 1
 
         if graph.current_node_id in graph.nodes:
-            markers.markers.append(self._current_node_marker(header, graph.nodes[graph.current_node_id], marker_id))
+            markers.markers.append(self._current_node_marker(header, graph.nodes[graph.current_node_id]))
 
         return markers
 
@@ -111,15 +142,15 @@ class GraphVisualizer:
         return marker
 
     def _edge_marker(self, header: Header, graph: GraphState) -> Marker:
-        """将无向边显示为红色 LINE_LIST"""
+        """将无向边显示为半透明 LINE_LIST, 避免 RViz 中遮挡地面"""
         marker = Marker()
         marker.header = header
         marker.ns = "edges"
-        marker.id = 3
+        marker.id = 4
         marker.action = Marker.ADD
         marker.type = Marker.LINE_LIST
-        marker.scale.x = 0.04
-        marker.color = ColorRGBA(r=1.0, g=0.0, b=0.0, a=0.75)
+        marker.scale.x = 0.02
+        marker.color = ColorRGBA(r=1.0, g=0.0, b=0.0, a=0.35)
         for edge in graph.edges.values():
             node_a = graph.nodes.get(edge.from_id)
             node_b = graph.nodes.get(edge.to_id)
@@ -134,7 +165,7 @@ class GraphVisualizer:
         marker = Marker()
         marker.header = header
         marker.ns = "frontier_points"
-        marker.id = 4
+        marker.id = 5
         marker.action = Marker.ADD
         marker.type = Marker.CUBE_LIST
         marker.scale.x = 0.18
@@ -169,12 +200,27 @@ class GraphVisualizer:
         marker.color = color
         return marker
 
-    def _current_node_marker(self, header: Header, node: InternalNode, marker_id: int) -> Marker:
+    def _trajectory_marker(self, header: Header, graph: GraphState) -> Marker:
+        """单独显示机器人走过的位置, 避免和 current node 混淆"""
+        marker = Marker()
+        marker.header = header
+        marker.ns = "trajectory"
+        marker.id = 6
+        marker.action = Marker.ADD
+        marker.type = Marker.SPHERE_LIST
+        marker.scale.x = 0.18
+        marker.scale.y = 0.18
+        marker.scale.z = 0.18
+        marker.color = ColorRGBA(r=1.0, g=0.9, b=0.0, a=0.65)
+        marker.points = [self._point(point) for point in graph.trajectory_points]
+        return marker
+
+    def _current_node_marker(self, header: Header, node: InternalNode) -> Marker:
         """突出显示当前机器人所在或最近的 graph node"""
         marker = Marker()
         marker.header = header
         marker.ns = "current_node"
-        marker.id = marker_id
+        marker.id = 7
         marker.action = Marker.ADD
         marker.type = Marker.SPHERE
         marker.pose.position = self._point(node.position)
@@ -182,7 +228,30 @@ class GraphVisualizer:
         marker.scale.x = 0.6
         marker.scale.y = 0.6
         marker.scale.z = 0.6
-        marker.color = ColorRGBA(r=1.0, g=1.0, b=0.0, a=1.0)
+        marker.color = ColorRGBA(r=1.0, g=0.55, b=0.0, a=1.0)
+        return marker
+
+    def _grid_footprint_marker(self, header: Header, grid_msg: OccupancyGrid) -> Marker:
+        """显示当前局部 grid footprint, 便于区分历史 graph memory"""
+        marker = Marker()
+        marker.header = header
+        marker.ns = "grid_footprint"
+        marker.id = 8
+        marker.action = Marker.ADD
+        marker.type = Marker.LINE_STRIP
+        marker.scale.x = 0.05
+        marker.color = ColorRGBA(r=0.0, g=1.0, b=1.0, a=0.8)
+        origin = grid_msg.info.origin.position
+        width = grid_msg.info.width * grid_msg.info.resolution
+        height = grid_msg.info.height * grid_msg.info.resolution
+        corners = (
+            (origin.x, origin.y, 0.05),
+            (origin.x + width, origin.y, 0.05),
+            (origin.x + width, origin.y + height, 0.05),
+            (origin.x, origin.y + height, 0.05),
+            (origin.x, origin.y, 0.05),
+        )
+        marker.points = [self._point(corner) for corner in corners]
         return marker
 
     def _point(self, position: Tuple[float, float, float]) -> Point:
@@ -192,3 +261,12 @@ class GraphVisualizer:
         point.y = float(position[1])
         point.z = float(position[2])
         return point
+
+    def _is_current_node(self, node: InternalNode, stamp_seconds: float) -> bool:
+        """判断节点是否来自当前局部 grid 更新"""
+        return abs(node.last_seen_time - stamp_seconds) < 1e-6
+
+
+def _stamp_to_seconds(header: Header) -> float:
+    """将 marker header 时间转为秒"""
+    return float(header.stamp.sec) + float(header.stamp.nanosec) * 1e-9

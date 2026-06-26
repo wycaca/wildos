@@ -36,10 +36,15 @@ class GraphBuilderConfig:
     max_free_radius: float = 4.0
     min_obstacle_clearance: float = 0.5
     edge_radius: float = 8.0
+    max_edge_neighbors: int = 4
+    current_node_max_edge_neighbors: int = 12
     frontier_assign_radius: float = 5.0
-    frontier_min_points: int = 2
+    frontier_min_points: int = 4
+    frontier_min_span: float = 0.6
+    frontier_border_margin: float = 0.8
     deadend_observation_count: int = 3
     removed_frontier_suppression_radius: float = 1.0
+    trajectory_min_separation: float = 0.25
 
 
 class GraphBuilder:
@@ -56,9 +61,15 @@ class GraphBuilder:
         self.frontier_detector = FrontierDetector(
             frontier_assign_radius=config.frontier_assign_radius,
             frontier_min_points=config.frontier_min_points,
+            frontier_min_span=config.frontier_min_span,
+            frontier_border_margin=config.frontier_border_margin,
             removed_frontier_suppression_radius=config.removed_frontier_suppression_radius,
         )
-        self.edge_builder = EdgeBuilder(edge_radius=config.edge_radius)
+        self.edge_builder = EdgeBuilder(
+            edge_radius=config.edge_radius,
+            max_neighbors_per_node=config.max_edge_neighbors,
+            current_node_max_neighbors=config.current_node_max_edge_neighbors,
+        )
         self.deadend_recovery = DeadendRecovery(
             observation_count=config.deadend_observation_count,
             suppression_radius=config.removed_frontier_suppression_radius,
@@ -89,9 +100,10 @@ class GraphBuilder:
         self.frontier_detector.assign_frontiers(self.graph, grid, frontier_cells)
         self.deadend_recovery.update(self.graph)
 
-        # 边需要在 frontier 更新后重建, 因为节点删除或新增会改变连通性
-        self.graph.set_edges(self.edge_builder.build_edges(self.graph, grid))
         self._update_current_node(grid, odom_msg)
+
+        # 边需要在 current node 更新后重建, 机器人附近允许保留更多局部连接
+        self.graph.set_edges(self.edge_builder.build_edges(self.graph, grid))
 
         header = Header()
         header.stamp = grid_msg.header.stamp
@@ -174,6 +186,7 @@ class GraphBuilder:
         if best_node is None:
             best_node = self.graph.nearest_node(robot_position)
         self.graph.current_node_id = best_node.node_id if best_node is not None else None
+        self.graph.append_trajectory_point(robot_position, self.config.trajectory_min_separation)
 
     def _nearest_collision_free_node(self, grid: ClassifiedGrid, position: Tuple[float, float, float]):
         """优先选择和机器人之间直线无碰撞的最近节点"""

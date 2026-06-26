@@ -38,6 +38,7 @@ setup(
             'img_frontier_nav = visual_navigation.imgfrontier_nav.nav:main',
             'geo_frontier_nav = visual_navigation.geofrontier_nav.nav:main',
             'wildos = visual_navigation.wildos.nav:main',
+            'odom_frame_adapter = visual_navigation.utils.odom_frame_adapter:main',
             'obj_mask_triangulation = visual_navigation.explorfm_triangulation.obj_mask_triangulation:main',
             'viz_net = visual_navigation.imgfrontier_nav.viz_net:main',
             'explorfm_triangulate = visual_navigation.explorfm_triangulation.explorfm_triangulator:main',

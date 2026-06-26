@@ -27,7 +27,7 @@ class VisualizeGoalAgnosticGeoFrontierScoring(VisualizeGeoFrontierScoring):
         self.marker_id = 0
         self.uuid_to_marker_id = {}
 
-    def visualize_navgraph(self, navgraph_msg, frame_id, stamp):
+    def visualize_navgraph(self, navgraph_msg, frame_id, stamp, show_ids=False, show_radius=False):
         """
         Visualize the navigation graph.
         """
@@ -80,12 +80,12 @@ class VisualizeGoalAgnosticGeoFrontierScoring(VisualizeGeoFrontierScoring):
         frontier_point_to_node_marker.id = 0
         frontier_point_to_node_marker.type = Marker.LINE_LIST
         frontier_point_to_node_marker.action = Marker.ADD
-        frontier_point_to_node_marker.scale.x = 0.06
+        frontier_point_to_node_marker.scale.x = 0.02
         frontier_point_to_node_marker.color = ColorRGBA()
-        frontier_point_to_node_marker.color.a = 1.0
+        frontier_point_to_node_marker.color.a = 0.35
         frontier_point_to_node_marker.color.b = 1.0
 
-        # Free radius counters and explored radius
+        # Free and explored radius are hidden by default to keep the main map readable
         free_radius_counters = {}
         explored_radius_counter = 0
 
@@ -97,6 +97,14 @@ class VisualizeGoalAgnosticGeoFrontierScoring(VisualizeGeoFrontierScoring):
         explored_radius_reset.id = explored_radius_counter
         explored_radius_reset.action = Marker.DELETEALL
         marker_array.markers.append(explored_radius_reset)
+        for trav_class in navgraph_msg.trav_classes:
+            free_radius_reset = Marker()
+            free_radius_reset.header.frame_id = str(frame_id)
+            free_radius_reset.header.stamp = stamp
+            free_radius_reset.ns = f"free_radius_{trav_class}"
+            free_radius_reset.id = 0
+            free_radius_reset.action = Marker.DELETEALL
+            marker_array.markers.append(free_radius_reset)
 
         # Edge and relative position markers
         edge_marker = Marker()
@@ -107,9 +115,9 @@ class VisualizeGoalAgnosticGeoFrontierScoring(VisualizeGeoFrontierScoring):
         edge_marker.id = 1
         edge_marker.type = Marker.LINE_LIST
         edge_marker.action = Marker.ADD
-        edge_marker.scale.x = 0.01
+        edge_marker.scale.x = 0.006
         edge_marker.color = ColorRGBA()
-        edge_marker.color.a = 1.0
+        edge_marker.color.a = 0.18
         edge_marker.color.r = 1.0
         edge_marker.color.g = 0.0
         edge_marker.color.b = 0.0
@@ -150,57 +158,47 @@ class VisualizeGoalAgnosticGeoFrontierScoring(VisualizeGeoFrontierScoring):
                 if not trav_prop.is_frontier:
                     node_marker.points.append(node_position)
 
-                # Add explored radius sphere (use value from trav_prop if available)
-                explored_radius = Marker()
-                explored_radius.header.frame_id = str(frame_id)
-                explored_radius.header.stamp = stamp
-                explored_radius.ns = "explored_radius"
-                explored_radius.id = explored_radius_counter + 1
-                explored_radius_counter += 1
-                explored_radius.action = Marker.ADD
-                explored_radius.type = Marker.SPHERE
-                explored_radius.scale.x = getattr(trav_prop, 'explored_radius', 0.0) * 2.0
-                explored_radius.scale.y = getattr(trav_prop, 'explored_radius', 0.0) * 2.0
-                explored_radius.scale.z = 0.01
-                explored_radius.color = ColorRGBA()
-                explored_radius.color.a = 0.2
-                explored_radius.color.r = 0.0
-                explored_radius.color.g = 0.0
-                explored_radius.color.b = 1.0
-                # position
-                explored_radius.pose.position = node_position
-                marker_array.markers.append(explored_radius)
+                if show_radius:
+                    explored_radius = Marker()
+                    explored_radius.header.frame_id = str(frame_id)
+                    explored_radius.header.stamp = stamp
+                    explored_radius.ns = "explored_radius"
+                    explored_radius.id = explored_radius_counter + 1
+                    explored_radius_counter += 1
+                    explored_radius.action = Marker.ADD
+                    explored_radius.type = Marker.SPHERE
+                    explored_radius.scale.x = getattr(trav_prop, 'explored_radius', 0.0) * 2.0
+                    explored_radius.scale.y = getattr(trav_prop, 'explored_radius', 0.0) * 2.0
+                    explored_radius.scale.z = 0.01
+                    explored_radius.color = ColorRGBA()
+                    explored_radius.color.a = 0.04
+                    explored_radius.color.r = 0.0
+                    explored_radius.color.g = 0.0
+                    explored_radius.color.b = 1.0
+                    explored_radius.pose.position = node_position
+                    marker_array.markers.append(explored_radius)
 
-                # Free radius per traversability class
-                if trav_class not in free_radius_counters:
-                    # add DELETEALL for this free radius namespace
-                    free_radius_reset = Marker()
-                    free_radius_reset.header.frame_id = str(frame_id)
-                    free_radius_reset.header.stamp = stamp
-                    free_radius_reset.ns = f"free_radius_{trav_class}"
-                    free_radius_reset.id = 0
-                    free_radius_reset.action = Marker.DELETEALL
-                    marker_array.markers.append(free_radius_reset)
-                    free_radius_counters[trav_class] = 1
+                    if trav_class not in free_radius_counters:
+                        free_radius_counters[trav_class] = 1
 
-                free_radius = Marker()
-                free_radius.header.frame_id = str(frame_id)
-                free_radius.header.stamp = stamp
-                free_radius.ns = f"free_radius_{trav_class}"
-                free_radius.id = free_radius_counters[trav_class]
-                free_radius_counters[trav_class] += 1
-                free_radius.action = Marker.ADD
-                free_radius.type = Marker.SPHERE
-                free_radius.scale.x = getattr(trav_prop, 'free_radius', 0.0) * 2.0
-                free_radius.scale.y = getattr(trav_prop, 'free_radius', 0.0) * 2.0
-                free_radius.scale.z = 0.01
-                free_radius.color = ColorRGBA()
-                free_radius.color.a = 0.2
-                free_radius.color.r = 1.0
-                free_radius.color.g = 0.0
-                free_radius.color.b = 0.0
-                free_radius.pose.position = node_position
-                marker_array.markers.append(free_radius)
+                    free_radius = Marker()
+                    free_radius.header.frame_id = str(frame_id)
+                    free_radius.header.stamp = stamp
+                    free_radius.ns = f"free_radius_{trav_class}"
+                    free_radius.id = free_radius_counters[trav_class]
+                    free_radius_counters[trav_class] += 1
+                    free_radius.action = Marker.ADD
+                    free_radius.type = Marker.SPHERE
+                    free_radius.scale.x = getattr(trav_prop, 'free_radius', 0.0) * 2.0
+                    free_radius.scale.y = getattr(trav_prop, 'free_radius', 0.0) * 2.0
+                    free_radius.scale.z = 0.01
+                    free_radius.color = ColorRGBA()
+                    free_radius.color.a = 0.035
+                    free_radius.color.r = 1.0
+                    free_radius.color.g = 0.0
+                    free_radius.color.b = 0.0
+                    free_radius.pose.position = node_position
+                    marker_array.markers.append(free_radius)
 
                 # Frontier nodes grouped by class
                 if trav_prop.is_frontier:
@@ -259,17 +257,17 @@ class VisualizeGoalAgnosticGeoFrontierScoring(VisualizeGeoFrontierScoring):
             except Exception:
                 pass
 
-        # Optional text ids
-        if hasattr(navgraph_msg, 'nodes'):
-            text_delete_all = Marker()
-            text_delete_all.header.frame_id = frame_id
-            if stamp is not None:
-                text_delete_all.header.stamp = stamp
-            text_delete_all.frame_locked = True
-            text_delete_all.ns = "ids"
-            text_delete_all.id = 0
-            text_delete_all.action = Marker.DELETEALL
-            marker_array.markers.append(text_delete_all)
+        # Clear node UUID text unless explicitly requested
+        text_delete_all = Marker()
+        text_delete_all.header.frame_id = frame_id
+        if stamp is not None:
+            text_delete_all.header.stamp = stamp
+        text_delete_all.frame_locked = True
+        text_delete_all.ns = "ids"
+        text_delete_all.id = 0
+        text_delete_all.action = Marker.DELETEALL
+        marker_array.markers.append(text_delete_all)
+        if show_ids and hasattr(navgraph_msg, 'nodes'):
             id_counter = 1
             for node in navgraph_msg.nodes:
                 try:
@@ -357,6 +355,7 @@ class VisualizeGoalAgnosticGeoFrontierScoring(VisualizeGeoFrontierScoring):
                 marker_action = Marker.ADD
 
             for bin_idx, score in enumerate(scores):
+                score = float(np.clip(score, 0.0, 1.0))
                 color = plt.cm.jet(score)  # Use jet colormap for scores
                 angle_st = self.bin_starts[bin_idx]
                 angle_end = angle_st + self.discretization_angle
@@ -376,11 +375,11 @@ class VisualizeGoalAgnosticGeoFrontierScoring(VisualizeGeoFrontierScoring):
                 marker.points.append(Point(x=start_pt[0], y=start_pt[1], z=start_pt[2]))
                 marker.points.append(Point(x=end_pt[0], y=end_pt[1], z=end_pt[2]))
 
-                marker.scale.x = 0.5  # Line width
+                marker.scale.x = 0.12  # Line width
                 marker.color.r = color[0]
                 marker.color.g = color[1]
                 marker.color.b = color[2]
-                marker.color.a = 1.0
+                marker.color.a = 0.75
                 marker_array.markers.append(marker)
 
         return marker_array
@@ -521,17 +520,7 @@ class VisualizeGoalAgnosticGeoFrontierScoring(VisualizeGeoFrontierScoring):
             # Show projected geo_frontiers and paths to straight-line goal from camera
             path_overlay = rgb_img.copy()
             if "geo_frontiers" not in nav_data[i]:
-                dummy_img = path_overlay
-                cv2.putText(
-                    dummy_img,
-                    "No Valid Geometric Frontiers",
-                    (20, dummy_img.shape[0]//2),
-                    cv2.FONT_HERSHEY_DUPLEX,
-                    0.45,
-                    (0,0,0),
-                    0
-                )
-                img_grid[(3, plt_idx)] = (dummy_img, "Frontier Nodes")
+                img_grid[(3, plt_idx)] = (path_overlay, "Frontier Nodes: none")
                 continue
 
             geo_frontiers = nav_data[i]["geo_frontiers"] * self.fig_resize_factor
@@ -545,6 +534,7 @@ class VisualizeGoalAgnosticGeoFrontierScoring(VisualizeGeoFrontierScoring):
             scores = nav_data[i]["scores"]
             paths = nav_data[i]["paths"]
             score_map = nav_data[i]["score_map"][0][:,:,heading_bin].astype(np.float32)
+            score_map = np.clip(score_map, 0.0, 1.0)
             score_map = cv2.resize(score_map, (0,0), fx=self.fig_resize_factor, fy=self.fig_resize_factor)
             path_overlay_hm = overlay_heatmap(path_overlay, score_map, alpha=0.5)
             valid_map = (score_map > 0)
@@ -553,14 +543,16 @@ class VisualizeGoalAgnosticGeoFrontierScoring(VisualizeGeoFrontierScoring):
 
             for ((y,x), score, path) in zip(geo_frontiers, scores, paths):
                 path = np.array(path[heading_bin]) * self.fig_resize_factor
-                color = plt.cm.jet(score[heading_bin])
-                color = tuple(int(c * 255) for c in color[:3])
+                graph_color = (0, 255, 0)
 
-                # draw_point(path_overlay, (y,x), color, radius=6)
+                # Use green projected graph cues to match the paper video overlay
+                draw_path(path_overlay, path, graph_color)
+                draw_point(path_overlay, (y,x), graph_color, radius=7)
+                draw_path(rgb_img, path, graph_color)
+                draw_point(rgb_img, (y,x), graph_color, radius=7)
                 # draw_point(path_overlay, path[-1], (255,255,255), radius=2)  # goal point
                 # draw_text(path_overlay, (y,x), f"{score[heading_bin]:.2f}", color=(255,255,255))
-                draw_path(path_overlay, path, color)
-                draw_point(path_overlay, (y,x), (0,0,255), radius=8)
+            img_grid[(0, plt_idx)] = (rgb_img, f"Image {self.camera_mapping[i]} + graph")
             img_grid[(3, plt_idx)] = (path_overlay, "Frontier Nodes")
 
 

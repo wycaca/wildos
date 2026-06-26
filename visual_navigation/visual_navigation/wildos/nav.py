@@ -1,4 +1,5 @@
 import rclpy
+from rclpy.executors import ExternalShutdownException
 
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import CompressedImage, Image as ImageMsg, CameraInfo
@@ -448,10 +449,13 @@ class WildOS_Nav(TFLookupSubscriber):
         self.withinrange_geofront_pub.publish(
             self.viz.viz_valid_geofrontiers(geofrontiers, all_cam_data, odom_msg.header, self.geofrontier_viz_colors))
 
-        self.model_viz_pub.publish(
-            # self.br.cv2_to_imgmsg(self.viz.visualize_model_det_front(nav_data, all_cam_data), encoding="rgb8")
-            self.br.cv2_to_imgmsg(self.viz.visualize_model_det(nav_data, all_cam_data), encoding="rgb8")
+        # Attach source image timing so RViz can track the debug image stream
+        model_viz_msg = self.br.cv2_to_imgmsg(
+            self.viz.visualize_model_det(nav_data, all_cam_data),
+            encoding="rgb8"
         )
+        model_viz_msg.header = msgs[0].header
+        self.model_viz_pub.publish(model_viz_msg)
         self.navgraph_vis_pub.publish(
             self.viz.visualize_navgraph(
                 navgraph_msg,
@@ -546,6 +550,7 @@ class WildOS_Nav(TFLookupSubscriber):
                     )
 
                 # Update scores
+                scores = self.normalize_frontier_scores(scores)
                 updated_uuids.add(uuid)
                 self.frontier_uuid_to_scores[uuid] = (scores, frontier_node)
 
@@ -553,7 +558,8 @@ class WildOS_Nav(TFLookupSubscriber):
         for node in scored_navgraph.nodes:
             uuid = self.uuid_to_str(node.uuid)
             if uuid in self.frontier_uuid_to_scores:
-                scores = self.frontier_uuid_to_scores[uuid][0].astype(np.float32)
+                scores = self.normalize_frontier_scores(self.frontier_uuid_to_scores[uuid][0])
+                self.frontier_uuid_to_scores[uuid] = (scores, self.frontier_uuid_to_scores[uuid][1])
                 kv = KeyValue(
                     key = "frontier_scores",
                     value = list(scores)
@@ -584,6 +590,7 @@ class WildOS_Nav(TFLookupSubscriber):
                     if np.any(distances < self.min_frontier_separation):
                         scores *= 0.0
 
+                scores = self.normalize_frontier_scores(scores)
                 kv = KeyValue(
                     key = "frontier_scores",
                     value = list(scores)
@@ -599,6 +606,19 @@ class WildOS_Nav(TFLookupSubscriber):
                 self.frontier_uuid_to_scores[uuid] = (scores, node)
 
         return scored_navgraph, removed_uuids, updated_uuids
+
+    @staticmethod
+    def normalize_frontier_scores(scores):
+        """
+        Keep frontier scores finite and bounded for planner cost and RViz display
+        """
+        scores = np.asarray(scores, dtype=np.float32)
+        scores = np.nan_to_num(scores, nan=0.0, posinf=1.0, neginf=0.0)
+        scores = np.clip(scores, 0.0, None)
+        max_score = float(np.max(scores)) if scores.size > 0 else 0.0
+        if max_score > 1.0:
+            scores = scores / max_score
+        return np.clip(scores, 0.0, 1.0).astype(np.float32)
     
     @staticmethod
     def uuid_to_str(uuid):
@@ -629,10 +649,17 @@ def main(args=None):
     conf = package_share_directory / "configs" / conf_name
 
     ros2_node = WildOS_Nav(OmegaConf.load(conf), do_object_search=custom_args.do_object_search)
-    rclpy.spin(ros2_node)
-
-    ros2_node.destroy_node()
-    rclpy.shutdown()
+    try:
+        rclpy.spin(ros2_node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
+    finally:
+        try:
+            ros2_node.destroy_node()
+        except KeyboardInterrupt:
+            pass
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

@@ -1,7 +1,7 @@
 robot_namespace: spot1
 global_frame: map
 odom_topic: /unity/odom
-grid_topic: /spot1/traversability_grid
+grid_topic: /spot1/elevation_traversability_grid
 nav_graph_topic: /spot1/nav_graph
 viz_topic: /spot1/graph_construction_viz
 debug_grid_topic: /spot1/debug_traversability_grid
@@ -11,11 +11,11 @@ publish_rate_hz: 2.0
 
 free_threshold: 20
 obstacle_threshold: 65
-sample_stride: 8
+sample_stride: 6
 min_node_separation: 1.0
 max_free_radius: 4.0
-min_obstacle_clearance: 0.5
-edge_radius: 8.0
+min_obstacle_clearance: 0.3
+edge_radius: 6.0
 max_edge_neighbors: 4
 current_node_max_edge_neighbors: 12
 frontier_assign_radius: 5.0

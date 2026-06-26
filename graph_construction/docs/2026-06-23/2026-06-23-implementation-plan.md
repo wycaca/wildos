@@ -51,7 +51,13 @@ external/wildos/graph_construction
 启动方式:
 
 ```text
-ros2 launch graph_construction graph_construction.launch.py ns:=spot1
+scripts/start_graph_construction.sh
+```
+
+等价 launch:
+
+```text
+ros2 launch graph_construction graph_construction_sim.launch.py
 ```
 
 ## 模块目录
@@ -298,10 +304,11 @@ p_f not in removed_frontiers
 - collision-free 保证该 frontier 可以从图节点附近安全接近
 - removed frontier suppression 用来减少死路附近反复尝试
 
-如果一个节点挂载的 frontier points 足够多:
+如果一个节点挂载的 frontier points 足够多, 且这些点的空间跨度足够大:
 
 ```text
 |frontier_points(v_i)| >= N_min
+span(frontier_points(v_i)) >= S_min
 ```
 
 则:
@@ -315,6 +322,18 @@ is_frontier(v_i) = true
 ```text
 is_frontier(v_i) = false
 ```
+
+局部滑窗边界附近的 frontier cell 会被过滤:
+
+```text
+distance_to_grid_border(c_f) >= B_min
+```
+
+解释:
+
+- `N_min` 对应 `frontier_min_points`, 用于过滤孤立 unknown 毛刺
+- `S_min` 对应 `frontier_min_span`, 用于过滤过短边界
+- `B_min` 对应 `frontier_border_margin`, 用于避免把局部 grid 边界误当作探索边界
 
 ## 建边公式
 
@@ -335,6 +354,19 @@ collision_free(p_i, p_j) = true
 ```text
 (v_i, v_j) in E_t
 ```
+
+第一版实测后增加近邻数量上限:
+
+```text
+neighbors(v_i) = nearest K collision-free nodes within R_edge
+```
+
+解释:
+
+- 只用 `edge_radius` 会让半径内节点近似全连接, RViz 中边线过密, planner 图也不够稀疏
+- 论文和常见 sparse roadmap 都倾向保留局部近邻连接, 而不是在局部 free space 内全连接
+- 当前节点使用更大的 `K_current`, 让机器人附近保留更多路径选择
+- 其他节点使用较小的 `K`, 保持全局图稀疏和可读
 
 第一版边权:
 
@@ -461,6 +493,9 @@ function UpdateGraph(occupancy_grid, odom):
         v.is_frontier = false
 
     for each frontier cell c_f:
+        if NearGridBorder(c_f, frontier_border_margin):
+            continue
+
         p_f = CellCenter(c_f)
 
         if NearRemovedFrontier(p_f):
@@ -472,7 +507,8 @@ function UpdateGraph(occupancy_grid, odom):
             owner.frontier_points.append(p_f)
 
     for each node v:
-        if count(v.frontier_points) >= frontier_min_points:
+        if count(v.frontier_points) >= frontier_min_points
+           and span(v.frontier_points) >= frontier_min_span:
             v.is_frontier = true
 
     UpdateDeadendMemory()
@@ -493,10 +529,15 @@ min_node_separation: 1.0
 max_free_radius: 4.0
 min_obstacle_clearance: 0.5
 edge_radius: 8.0
+max_edge_neighbors: 4
+current_node_max_edge_neighbors: 12
 frontier_assign_radius: 5.0
-frontier_min_points: 2
+frontier_min_points: 4
+frontier_min_span: 0.6
+frontier_border_margin: 0.8
 deadend_observation_count: 3
-removed_frontier_suppression_radius: 1.0
+removed_frontier_suppression_radius: 0.0
+trajectory_min_separation: 0.25
 publish_rate_hz: 2.0
 ```
 
@@ -506,9 +547,22 @@ publish_rate_hz: 2.0
 
 - `sample_stride`, 控制节点密度
 - `min_node_separation`, 控制图稀疏程度
-- `edge_radius`, 控制图连通性
+- `edge_radius`, 控制候选近邻搜索半径
+- `max_edge_neighbors`, 控制普通节点最多保留多少条近邻边
+- `current_node_max_edge_neighbors`, 控制机器人当前节点附近最多保留多少条近邻边
 - `frontier_assign_radius`, 控制 frontier 能挂到多远的节点
+- `frontier_min_points`, 控制 frontier node 至少需要多少边界点
+- `frontier_min_span`, 控制 frontier_points 至少需要多大空间跨度
+- `frontier_border_margin`, 控制局部 grid 外边界附近的 frontier 抑制范围
+- `removed_frontier_suppression_radius`, 控制历史消失 frontier 的抑制半径, 当前仿真默认关闭
 - `min_obstacle_clearance`, 控制安全距离
+- `trajectory_min_separation`, 控制轨迹点显示间距
+
+当前仿真使用局部滑窗 OccupancyGrid, frontier 会因为点云稀疏, 局部地图滑动和视角变化短暂消失
+
+如果 `removed_frontier_suppression_radius` 保持较大值, 这些短暂消失的 frontier 会进入 removed memory, 后续再次出现时被整体抑制, 可能导致 `/spot1/nav_graph` 中 `frontier_nodes=0`
+
+因此当前仿真配置将该值设为 `0.0`, 保留 deadend 记录结构, 但不使用历史 removed frontier 抑制当前 frontier
 
 ## 可视化
 
@@ -517,11 +571,14 @@ publish_rate_hz: 2.0
 可视化内容:
 
 - free nodes
+- memory free nodes
 - frontier nodes
 - graph edges
 - frontier points
 - free radius 或 explored radius
 - current node
+- trajectory points
+- local grid footprint
 
 用途:
 
@@ -529,6 +586,8 @@ publish_rate_hz: 2.0
 - 检查 edge 是否穿过 obstacle
 - 检查 frontier points 是否贴近 unknown 边界
 - 检查 current node 是否跟随机器人位置
+- 检查历史 memory nodes 是否和当前局部 grid 节点区分清楚
+- 检查 trajectory points 是否独立于 graph nodes
 - 检查死路 frontier 是否会消失
 
 ## 与论文公式的对应关系
@@ -575,24 +634,236 @@ frontier_virtual_cost = d_frontier_goal * (1 - beta * log(score))
 
 构建:
 
-```text
-colcon build --packages-select graph_construction graphnav_msgs graphnav_planner visual_navigation
+```bash
+cd /home/ks-server3/han/wildos_ws
+source /opt/ros/humble/setup.bash
+colcon build --packages-select graph_construction --symlink-install
 ```
 
-启动:
+当前仿真环境变量:
 
-```text
-ros2 launch graph_construction graph_construction.launch.py ns:=spot1
+```bash
+source /opt/ros/humble/setup.bash
+source /home/ks-server3/han/wildos_ws/install/setup.bash
+export ROS_DOMAIN_ID=3
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 ```
 
-Topic 检查:
+当前仿真端到端链路:
 
 ```text
+/livox/lidar
+    -> livox_grid_builder
+    -> /spot1/traversability_grid
+    -> graph_construction
+    -> /spot1/nav_graph
+```
+
+当前图输出检查:
+
+```bash
 ros2 topic echo --once /spot1/nav_graph
 ros2 topic echo --once /spot1/graph_construction_viz
 ```
 
-应看到:
+### 输入检查
+
+确认 LiDAR 点云存在:
+
+```bash
+ros2 topic info /livox/lidar
+ros2 topic hz /livox/lidar
+ros2 topic echo /livox/lidar --once --field header
+```
+
+期望结果:
+
+```text
+Type: sensor_msgs/msg/PointCloud2
+Publisher count: 1
+frame_id: livox_frame
+```
+
+确认 odom 存在:
+
+```bash
+ros2 topic echo /unity/odom --once --field pose.pose
+```
+
+当前环境中 `/unity/odom` 的 `header.frame_id` 为空, 但 pose 与 TF 中的 `map -> odom_fram` 一致
+
+确认 TF 可将 LiDAR 转到 graph frame:
+
+```bash
+python3 - <<'PY'
+import time
+import rclpy
+import tf2_ros
+from rclpy.time import Time
+
+rclpy.init()
+node = rclpy.create_node("tf_check")
+buffer = tf2_ros.Buffer()
+listener = tf2_ros.TransformListener(buffer, node)
+end_time = time.time() + 5.0
+while time.time() < end_time:
+    rclpy.spin_once(node, timeout_sec=0.1)
+
+print(buffer.all_frames_as_yaml())
+transform = buffer.lookup_transform("map", "livox_frame", Time())
+t = transform.transform.translation
+print(f"map -> livox_frame: ({t.x:.3f}, {t.y:.3f}, {t.z:.3f})")
+node.destroy_node()
+rclpy.shutdown()
+PY
+```
+
+当前实测 TF 树:
+
+```text
+map
+  -> odom_fram
+      -> livox_frame
+      -> camera_frame
+      -> imu_link
+```
+
+### 启动测试
+
+推荐方式, 使用一个脚本启动 LiDAR grid builder 和 Graph Construction:
+
+```bash
+cd /home/ks-server3/han/wildos_ws/src/nebula2-wildos
+scripts/start_graph_construction.sh
+```
+
+等价命令:
+
+```bash
+source /opt/ros/humble/setup.bash
+source /home/ks-server3/han/wildos_ws/install/setup.bash
+export ROS_DOMAIN_ID=3
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+
+ros2 launch graph_construction graph_construction_sim.launch.py
+```
+
+`graph_construction_sim.launch.py` 会先启动 `livox_grid_builder`, 再延迟启动 `graph_construction`, 默认延迟为 `1.0s`
+
+手动排查时仍可拆成两个终端
+
+终端 1, 启动 LiDAR 到 OccupancyGrid 转换:
+
+```bash
+ros2 launch graph_construction livox_grid_builder.launch.py
+```
+
+期望日志:
+
+```text
+Livox grid builder started, lidar=/livox/lidar, grid=/spot1/traversability_grid
+Received first odom, frame=
+Received first cloud, frame=livox_frame
+Published first grid, frame=map, size=150x150
+```
+
+启动早期可能短暂出现一次:
+
+```text
+Missing TF from livox_frame to map
+```
+
+如果随后出现 `Published first grid`, 表示 TF buffer 已经填充完成, 可继续测试
+
+检查 grid:
+
+```bash
+ros2 topic info /spot1/traversability_grid
+ros2 topic echo /spot1/traversability_grid --once --field header
+```
+
+期望结果:
+
+```text
+Type: nav_msgs/msg/OccupancyGrid
+Publisher count: 1
+frame_id: map
+```
+
+终端 2, 启动 Graph Construction:
+
+```bash
+ros2 launch graph_construction graph_construction.launch.py
+```
+
+期望日志:
+
+```text
+Graph construction started, grid=/spot1/traversability_grid, odom=/unity/odom
+Received first grid, frame=map, size=150x150
+Received first odom, frame=
+Published first graph, nodes=<nonzero>, edges=<nonzero>
+```
+
+本次实测结果:
+
+```text
+Published first graph, nodes=146, edges=330-340
+```
+
+### 输出检查
+
+检查 `NavigationGraph`:
+
+```bash
+ros2 topic info /spot1/nav_graph
+ros2 topic echo /spot1/nav_graph --once --field header
+```
+
+期望结果:
+
+```text
+Type: graphnav_msgs/msg/NavigationGraph
+Publisher count: 1
+frame_id: map
+```
+
+统计节点, 边和 frontier:
+
+```bash
+python3 - <<'PY'
+import rclpy
+from graphnav_msgs.msg import NavigationGraph
+
+rclpy.init()
+node = rclpy.create_node("nav_graph_check")
+
+def callback(msg):
+    frontier_nodes = sum(
+        1
+        for graph_node in msg.nodes
+        if graph_node.trav_properties and graph_node.trav_properties[0].is_frontier
+    )
+    frontier_points = sum(
+        len(graph_node.trav_properties[0].frontier_points)
+        for graph_node in msg.nodes
+        if graph_node.trav_properties
+    )
+    print(f"frame={msg.header.frame_id}")
+    print(f"nodes={len(msg.nodes)}")
+    print(f"edges={len(msg.edges)}")
+    print(f"current_node_idx={msg.current_node_idx}")
+    print(f"frontier_nodes={frontier_nodes}")
+    print(f"frontier_points={frontier_points}")
+    node.destroy_node()
+    rclpy.shutdown()
+
+node.create_subscription(NavigationGraph, "/spot1/nav_graph", callback, 10)
+rclpy.spin(node)
+PY
+```
+
+基础验收应看到:
 
 - `nodes` 非空
 - `edges` 非空
@@ -600,6 +871,16 @@ ros2 topic echo --once /spot1/graph_construction_viz
 - `current_node_idx` 在 nodes 范围内
 - frontier nodes 有 `frontier_points`
 - RViz 中节点和边不明显穿过障碍
+
+当前实测已确认:
+
+- `/spot1/traversability_grid` 有 publisher
+- `/spot1/traversability_grid.header.frame_id = map`
+- `graph_construction` 日志出现 `Received first grid`
+- `/spot1/nav_graph` 有 publisher
+- `/spot1/nav_graph.header.frame_id = map`
+- `NavigationGraph.nodes` 和 `NavigationGraph.edges` 非空
+- 近邻上限启用后, 实测边数从 2500+ 降到约 330-340, RViz 边线密度明显降低
 
 ## 风险和后续工作
 
@@ -629,4 +910,3 @@ ros2 topic echo --once /spot1/graph_construction_viz
 它不直接做目标识别, 也不直接做语义评分, 而是负责把可通行区域组织成稳定的稀疏图, 并把未知边界表达成 frontier nodes
 
 只要 `/spot1/nav_graph` 满足 WildOS 的消息契约, 后续视觉 scoring 和 `graphnav_planner` 就可以在这个图上继续工作
-

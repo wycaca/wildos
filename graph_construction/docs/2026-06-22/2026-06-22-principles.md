@@ -313,13 +313,13 @@ function UpdateFrontierNodes(local_map, nodes):
 
         if v_star exists:
             add p_cf to v_star.frontier_points
-            v_star.isFrontier = true
 
     for each node v_i:
-        if v_i.frontier_points is empty:
-            v_i.isFrontier = false
-        else:
+        if count(v_i.frontier_points) >= N_min
+           and span(v_i.frontier_points) >= S_min:
             v_i.isFrontier = true
+        else:
+            v_i.isFrontier = false
 
     return nodes
 ```
@@ -330,6 +330,8 @@ function UpdateFrontierNodes(local_map, nodes):
 - 一个 frontier node 可以对应多个 frontier points
 - 如果某个 frontier cell 已经落在别的节点 explored_radius 内, 就说明它不再是有效探索边界
 - 找最近 collision-free node 是为了保证这个 frontier 可以从图上安全到达
+- `N_min` 和 `S_min` 用于过滤孤立或过短的噪声 frontier
+- 局部滑窗边界附近的 frontier cell 应被过滤, 避免把局部地图外边缘当作探索边界
 
 这一步的效果是, 把密集边界点压缩成少量 frontier nodes
 
@@ -355,8 +357,22 @@ function BuildEdges(nodes, local_map):
 
 - 先找空间距离足够近的节点
 - 再检查两点之间是否 collision-free
-- 如果中间没有障碍或不可通行区域, 就加边
+- 从 collision-free 候选中保留最近的少量近邻, 避免局部 free space 内近似全连接
+- 如果中间没有障碍或不可通行区域, 且节点仍在近邻上限内, 就加边
 - 边的 cost 可以来自距离, traversability, slope, roughness 等
+
+当前第一版实现采用:
+
+```text
+E_i = nearest K collision-free neighbors within edge_radius
+```
+
+解释:
+
+- `edge_radius` 控制候选搜索范围
+- `K` 控制普通节点的最大近邻边数量
+- 当前机器人所在节点使用更大的 `K_current`, 让机器人附近保留更多路径选择
+- 这样更符合 sparse navigation graph 的目标, 也能避免 RViz 中边线过密遮挡地图
 
 最小复现时可以先用:
 
@@ -597,6 +613,7 @@ Graph Construction 的难点不在单独检测 frontier, 而在下面这些工�
 
 - UUID 稳定性, 同一个物理 frontier 不应该每帧变成新节点
 - frontier 生命周期, 已探索或消失的 frontier 要及时移除
+- 在局部滑窗和稀疏点云输入下, removed frontier suppression 不能过强, 否则短暂消失的合法 frontier 会被长期抑制
 - 图连通性, 节点太稀会断图, 节点太密会拖慢规划
 - collision check, 边必须确实可走
 - 局部地图滑窗, 当前地图范围外的历史节点要保留还是冻结

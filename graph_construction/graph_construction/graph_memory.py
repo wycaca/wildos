@@ -62,6 +62,7 @@ class GraphState:
     edges: Dict[EdgeKey, InternalEdge] = field(default_factory=dict)
     current_node_id: Optional[int] = None
     removed_frontiers: List[Point3] = field(default_factory=list)
+    trajectory_points: List[Point3] = field(default_factory=list)
     next_node_id: int = 0
 
     def create_node(self, position: Point3, stamp_seconds: float) -> InternalNode:
@@ -142,6 +143,14 @@ class GraphState:
             for node_id, node in self.nodes.items()
             if node.distance_xy(position) <= radius
         }
+
+    def append_trajectory_point(self, position: Point3, min_separation: float) -> None:
+        """记录机器人走过的位置, 与 graph nodes 分开显示"""
+        if self.trajectory_points:
+            last = self.trajectory_points[-1]
+            if hypot(last[0] - position[0], last[1] - position[1]) < min_separation:
+                return
+        self.trajectory_points.append(position)
 
 
 def normalize_edge_key(from_id: int, to_id: int) -> EdgeKey:

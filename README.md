@@ -61,6 +61,44 @@ Each package has its own README with additional details. See the [Component Over
 
 <br>
 
+## 🧭 Development Documentation Rules
+
+When modifying this repository, keep implementation notes synchronized with the code:
+
+- Add a dated changelog under the relevant package docs for same-day changes
+- Put all changes from the same date into the same dated changelog when possible
+- Keep changelog entries concise, like release notes, without excessive implementation detail
+- When formulas, algorithms, message contracts, or core principles change, update the corresponding principles and implementation documents in the same change
+- For `graph_construction`, use `graph_construction/docs/YYYY-MM-DD/` for dated plans, implementation notes, tests, and changelogs
+
+<br>
+
+## 🧪 Current Simulation Notes
+
+The current Unity simulation separates geometric mapping from visual scoring:
+
+```text
+/livox/lidar
+  -> LiDAR geometric map backend
+  -> /spot1/traversability_grid
+  -> graph_construction
+
+/camera/front, /camera/left, /camera/right
+  -> visual_navigation / WildOS
+  -> /spot1/scored_nav_graph
+```
+
+Use the LiDAR baseline as the default graph construction backend:
+
+```bash
+./scripts/start_graph_construction_livox.sh
+./scripts/start_visual_navigation.sh
+```
+
+`./scripts/start_graph_construction_elevation.sh` is an experimental elevation mapping backend. It publishes the projected 2D grid on `/spot1/elevation_traversability_grid`, not `/spot1/traversability_grid`, so it does not overwrite the LiDAR baseline map.
+
+<br>
+
 ## ⚙️ Installation
 
 ### Prerequisites

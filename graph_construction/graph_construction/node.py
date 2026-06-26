@@ -9,6 +9,7 @@ from ament_index_python.packages import get_package_share_directory
 from graphnav_msgs.msg import NavigationGraph
 from nav_msgs.msg import OccupancyGrid, Odometry
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from visualization_msgs.msg import MarkerArray
 
@@ -17,8 +18,8 @@ from graph_construction.viz import GraphVisualizer
 
 
 DEFAULT_CONFIG: Dict[str, Any] = {
-    "global_frame": "spot1/odom",
-    "odom_topic": "/spot1/odom",
+    "global_frame": "map",
+    "odom_topic": "/unity/odom",
     "grid_topic": "/spot1/traversability_grid",
     "nav_graph_topic": "/spot1/nav_graph",
     "viz_topic": "/spot1/graph_construction_viz",
@@ -31,10 +32,15 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "max_free_radius": 4.0,
     "min_obstacle_clearance": 0.5,
     "edge_radius": 8.0,
+    "max_edge_neighbors": 4,
+    "current_node_max_edge_neighbors": 12,
     "frontier_assign_radius": 5.0,
-    "frontier_min_points": 2,
+    "frontier_min_points": 4,
+    "frontier_min_span": 0.6,
+    "frontier_border_margin": 0.8,
     "deadend_observation_count": 3,
     "removed_frontier_suppression_radius": 1.0,
+    "trajectory_min_separation": 0.25,
 }
 
 
@@ -54,6 +60,9 @@ class GraphConstructionNode(Node):
 
         self.latest_grid = None
         self.latest_odom = None
+        self._logged_first_grid = False
+        self._logged_first_odom = False
+        self._logged_first_publish = False
 
         self.nav_graph_pub = self.create_publisher(
             NavigationGraph,
@@ -85,10 +94,18 @@ class GraphConstructionNode(Node):
     def _on_grid(self, msg: OccupancyGrid) -> None:
         """缓存最新 grid, 避免在 subscriber 回调里做重计算"""
         self.latest_grid = msg
+        if not self._logged_first_grid:
+            self.get_logger().info(
+                f"Received first grid, frame={msg.header.frame_id}, size={msg.info.width}x{msg.info.height}"
+            )
+            self._logged_first_grid = True
 
     def _on_odom(self, msg: Odometry) -> None:
         """缓存最新 odom, current_node_idx 计算依赖它"""
         self.latest_odom = msg
+        if not self._logged_first_odom:
+            self.get_logger().info(f"Received first odom, frame={msg.header.frame_id}")
+            self._logged_first_odom = True
 
     def _on_timer(self) -> None:
         """周期性构建并发布导航图
@@ -106,7 +123,12 @@ class GraphConstructionNode(Node):
             return
 
         self.nav_graph_pub.publish(nav_graph)
-        self.viz_pub.publish(self.visualizer.build_markers(self.builder.graph, header))
+        self.viz_pub.publish(self.visualizer.build_markers(self.builder.graph, header, self.latest_grid))
+        if not self._logged_first_publish:
+            self.get_logger().info(
+                f"Published first graph, nodes={len(nav_graph.nodes)}, edges={len(nav_graph.edges)}"
+            )
+            self._logged_first_publish = True
 
 
 def _builder_config(config: Dict[str, Any]) -> GraphBuilderConfig:
@@ -152,9 +174,15 @@ def main(args=None) -> None:
     node = GraphConstructionNode(_load_config(parsed.config))
     try:
         rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
     finally:
-        node.destroy_node()
-        rclpy.shutdown()
+        try:
+            node.destroy_node()
+        except KeyboardInterrupt:
+            pass
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

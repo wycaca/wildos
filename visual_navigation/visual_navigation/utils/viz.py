@@ -92,8 +92,13 @@ def add_title(
     """
     (text_w, text_h), _ = cv2.getTextSize(
         title, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
+    side_pad = 12
+    min_width = text_w + 2 * side_pad
+    if img.shape[1] < min_width:
+        diff = min_width - img.shape[1]
+        img = pad_image(img, left=diff // 2, right=diff - diff // 2, color=(255,255,255))
     out = pad_image(img, top=text_h + 10, color=(255,255,255))
-    x = (out.shape[1] - text_w) // 2
+    x = max(side_pad, (out.shape[1] - text_w) // 2)
     y = text_h + 5
     cv2.putText(
         out, title, (x,y),
