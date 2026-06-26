@@ -54,13 +54,15 @@ class GraphState:
     """跨局部地图更新保留的图记忆
 
     这个对象是死路回退和长期探索记忆的核心
-    即使局部 OccupancyGrid 滑窗移动, 已有节点也会尽量保留
+    即使局部几何地图滑窗移动, 已有节点也会尽量保留
     只有节点落入障碍或自由半径过小时才删除
     """
 
     nodes: Dict[int, InternalNode] = field(default_factory=dict)
     edges: Dict[EdgeKey, InternalEdge] = field(default_factory=dict)
     current_node_id: Optional[int] = None
+    latest_robot_odom_position: Optional[Point3] = None
+    latest_robot_position: Optional[Point3] = None
     removed_frontiers: List[Point3] = field(default_factory=list)
     trajectory_points: List[Point3] = field(default_factory=list)
     next_node_id: int = 0
@@ -143,6 +145,11 @@ class GraphState:
             for node_id, node in self.nodes.items()
             if node.distance_xy(position) <= radius
         }
+
+    def update_robot_position(self, odom_position: Point3, ground_position: Point3) -> None:
+        """记录机器人原始 odom 位置和投影到高程图的地面位置"""
+        self.latest_robot_odom_position = odom_position
+        self.latest_robot_position = ground_position
 
     def append_trajectory_point(self, position: Point3, min_separation: float) -> None:
         """记录机器人走过的位置, 与 graph nodes 分开显示"""

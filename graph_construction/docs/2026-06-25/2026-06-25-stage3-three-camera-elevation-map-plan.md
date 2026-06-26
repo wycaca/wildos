@@ -9,7 +9,8 @@
 - `/spot1/traversability_grid` 属于 LiDAR / 几何地图链路, 不属于 3 相机视觉链路
 - 3 相机只影响 `visual_navigation / WildOS` 的图像模型输入和 frontier scoring
 - 日常阶段三联调默认继续使用 `livox_grid_builder` 生成 `/spot1/traversability_grid`
-- `elevation_mapping_cupy -> grid_map_to_occupancy` 是可选实验后端, 需要单独标定, 不能和 3 相机效果混为一谈
+- elevation 实验后端改为 `elevation_mapping_cupy -> /elevation_mapping_node/elevation_map_raw -> graph_construction`
+- `grid_map_to_occupancy` 保留为 debug/兼容 adapter, 不作为 elevation graph 的默认输入
 
 ## 设计边界
 
@@ -52,7 +53,7 @@ Nav2 仍然是论文系统中的 local planning/control 依赖, 但本阶段先�
 
 - 当前系统刚验证到 graph planner path, 直接接 Nav2 会同时引入 lifecycle, costmap, controller, behavior tree 等配置问题
 - 3 相机直接影响 scoring 覆盖率, 应优先在稳定几何图上验证
-- elevation/traversability map 后端会改变 `/spot1/traversability_grid` 质量, 应独立评估, 不应和 3 相机改动耦合
+- elevation/traversability map 后端使用独立 GridMap 输入, 应独立评估, 不应和 3 相机改动耦合
 - 当前仿真环境已有 `/unity/odom`, `/tf`, `/livox/lidar`, 三相机 topic, 足够先做默认联调
 
 ## 与论文和原仓库的对应关系
@@ -336,8 +337,7 @@ tf_lookup_config:
 ```text
 /livox/lidar + /tf + /unity/odom
     -> /elevation_mapping_node/elevation_map_raw
-    -> grid_map_to_occupancy
-    -> /spot1/elevation_traversability_grid
+    -> graph_construction
 ```
 
 启动:
@@ -349,7 +349,8 @@ tf_lookup_config:
 这个后端用于验证:
 
 - elevation map 和 traversability layer 是否合理
-- GridMap 到 OccupancyGrid 的阈值和后处理
+- graph_construction 直接消费 GridMap 后, 节点和边是否贴合 2.5D 高程面
+- `grid_map_to_occupancy` 仅作为 debug/兼容 adapter
 - 后续是否能替换 LiDAR baseline
 
 该后端不作为 3 相机适配的必要条件
@@ -529,17 +530,21 @@ else:
 
 ### 与 graph_construction 的接口
 
-实验版保持 graph construction 输入不变:
+实验版 graph construction 直接消费 GridMap:
 
 ```yaml
-grid_topic: /spot1/elevation_traversability_grid
+grid_input_type: grid_map
+grid_map_topic: /elevation_mapping_node/elevation_map_raw
+grid_map_traversability_layer: traversability
+grid_map_elevation_layer: elevation
 ```
 
 也就是说:
 
-- graph construction 仍消费 `nav_msgs/OccupancyGrid`
-- elevation/traversability builder 负责把多层地形信息压缩成 free, occupied, unknown
-- 后续再扩展 edge cost, node properties, traversability properties
+- graph construction 可直接消费 `grid_map_msgs/GridMap`
+- `traversability` layer 负责 free, occupied, unknown 分类
+- `elevation` layer 负责 graph node, edge, frontier point 的 z 坐标
+- `/spot1/elevation_traversability_grid` 仅作为 debug/兼容投影输出
 
 第二版再扩展 graph message:
 
@@ -586,7 +591,8 @@ EdgeTraversability.properties:
 
 ```text
 /spot1/traversability_grid, nav_msgs/OccupancyGrid
-/spot1/elevation_map, grid_map_msgs/GridMap, optional
+/elevation_mapping_node/elevation_map_raw, grid_map_msgs/GridMap, elevation backend
+/spot1/elevation_traversability_grid, nav_msgs/OccupancyGrid, debug projection only
 /spot1/nav_graph, graphnav_msgs/NavigationGraph
 /spot1/scored_nav_graph, graphnav_msgs/NavigationGraph
 /spot1/model_visualization, sensor_msgs/Image
@@ -602,6 +608,7 @@ EdgeTraversability.properties:
 visual_navigation/configs/wildos_nav_sim_conf.yaml
 visual_navigation/launch/wildos_sim_launch.py
 scripts/start_graph_construction_livox.sh
+scripts/start_elevation_visual_navigation.sh
 scripts/start_visual_navigation.sh
 ```
 
@@ -634,7 +641,22 @@ publishers:
     layers: ["elevation", "traversability", "variance"]
 ```
 
-已实现的 GridMap 转 OccupancyGrid 参数:
+已实现的 GridMap 直连 graph_construction 参数:
+
+```yaml
+grid_input_type: grid_map
+grid_map_topic: /elevation_mapping_node/elevation_map_raw
+grid_map_traversability_layer: traversability
+grid_map_elevation_layer: elevation
+grid_map_free_threshold: 0.2
+grid_map_obstacle_threshold: 0.05
+grid_map_normalize_traversability: true
+grid_map_normalize_low_quantile: 0.05
+grid_map_normalize_high_quantile: 0.95
+grid_map_z_offset: 0.08
+```
+
+保留的 GridMap 转 OccupancyGrid debug adapter 参数:
 
 ```yaml
 input_topic: /elevation_mapping_node/elevation_map_raw
@@ -662,14 +684,14 @@ majority_fill_min_neighbors: 6
 - `elevation_mapping_cupy` 的 `traversability` 语义是越大越安全, upstream 默认 `safe_thresh=0.7`
 - 当前 Unity + Livox 仿真中, 原始 `traversability` 分布明显压缩, 实测首帧 `raw_median=0.004`, `raw_max=0.528`
 - 如果直接按 upstream 默认 `0.7/0.4` 二值化, 会得到极少 free cell, graph construction 长期 `nodes=0`
-- 当前 adapter 先对有效 cell 做 5%-95% 分位数归一化, 再用 `0.2/0.05` 作为仿真标定阈值
+- 当前 GridMap 直连和 debug adapter 都先对有效 cell 做 5%-95% 分位数归一化, 再用 `0.2/0.05` 作为仿真标定阈值
 - 这是阶段三仿真适配参数, 不是论文或 upstream 的固定阈值, 后续需要随 elevation mapping 质量继续标定
 
-### GridMap 后处理
+### GridMap debug projection 后处理
 
 当前 `/elevation_mapping_node/elevation_map_raw` 直接二值化后会出现小孔洞, 一格裂缝和 free 孤岛
 
-`grid_map_to_occupancy` 在输出 `/spot1/elevation_traversability_grid` 前执行保守后处理:
+`grid_map_to_occupancy` debug adapter 在输出 `/spot1/elevation_traversability_grid` 前执行保守后处理:
 
 ```text
 1. majority fill
@@ -727,6 +749,37 @@ ros2 launch graphnav_planner graphnav_planner.launch.yml ns:=spot1 remap_tf_to_n
 ./scripts/start_graph_construction_elevation.sh
 ```
 
+高程地图, graph 点边, visual scoring 一起联调:
+
+```bash
+./scripts/start_elevation_visual_navigation.sh
+```
+
+该脚本按顺序启动:
+
+```text
+elevation_mapping_cupy
+    -> /elevation_mapping_node/elevation_map_raw
+graph_construction
+    -> /spot1/nav_graph
+    -> /spot1/graph_construction_viz
+odom_frame_adapter
+    -> /spot1/odom_for_scoring
+wildos visual_navigation
+    -> /spot1/scored_nav_graph
+    -> /spot1/nav_graph_viz
+    -> /spot1/model_visualization
+    -> /spot1/score_rings
+```
+
+RViz 建议显示:
+
+- `grid_map_rviz_plugin/GridMap`: `/elevation_mapping_node/elevation_map_raw`
+- `MarkerArray`: `/spot1/graph_construction_viz`, 基础 graph 点, 边, frontier
+- `MarkerArray`: `/spot1/nav_graph_viz`, visual scoring 后的 graph
+- `MarkerArray`: `/spot1/score_rings`, 当前 frontier heading 分数
+- `Odometry`: `/spot1/odom_for_scoring`
+
 ## 测试步骤
 
 ### 1. 检查三相机 topic
@@ -776,17 +829,29 @@ ros2 topic hz /spot1/traversability_grid
 ### 3b. 可选检查 elevation/traversability map 实验后端
 
 ```bash
-ros2 topic echo /spot1/traversability_grid --once --field info
-ros2 topic hz /spot1/traversability_grid
 ros2 topic echo /elevation_mapping_node/elevation_map_raw --once --field layers
+ros2 topic hz /elevation_mapping_node/elevation_map_raw
+ros2 topic echo /spot1/nav_graph --once --field header
 ```
 
 注意:
 
-- `ros2 topic echo /spot1/traversability_grid --once` 会从 `data` 开头输出, 开头连续 `-1` 不代表全图未知
-- 必须统计整张 grid 中 `-1`, `0`, `100` 的数量
+- elevation 实验后端默认不发布 `/spot1/traversability_grid`
+- graph_construction 直接消费 `/elevation_mapping_node/elevation_map_raw`
+- `/spot1/elevation_traversability_grid` 只在单独启动 `grid_map_to_occupancy` debug adapter 时存在
 
-整图计数命令:
+debug projection 整图计数命令, 终端 1 启动 adapter:
+
+```bash
+source /opt/ros/humble/setup.bash
+source /home/ks-server3/han/wildos_ws/install/setup.bash
+export ROS_DOMAIN_ID=3
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+
+ros2 run graph_construction grid_map_to_occupancy --config grid_map_to_occupancy.yaml
+```
+
+终端 2 统计 debug projection:
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -801,13 +866,13 @@ import rclpy
 from nav_msgs.msg import OccupancyGrid
 
 rclpy.init()
-node = rclpy.create_node("traversability_grid_counter")
+node = rclpy.create_node("elevation_traversability_grid_counter")
 result = {}
 
 def callback(msg):
     result["msg"] = msg
 
-node.create_subscription(OccupancyGrid, "/spot1/traversability_grid", callback, 10)
+node.create_subscription(OccupancyGrid, "/spot1/elevation_traversability_grid", callback, 10)
 deadline = node.get_clock().now().nanoseconds + 3_000_000_000
 while rclpy.ok() and "msg" not in result and node.get_clock().now().nanoseconds < deadline:
     rclpy.spin_once(node, timeout_sec=0.1)
@@ -827,10 +892,12 @@ PY
 
 验收:
 
-- `/spot1/traversability_grid` frame 为 `map`
-- grid 中 free, occupied, unknown 都合理存在
 - `/elevation_mapping_node/elevation_map_raw` layers 至少包含 `elevation`, `traversability`, `variance`
-- free cell 应形成连续区域, 不能只出现零散孤点
+- `/spot1/nav_graph` 能在 GridMap 直连模式下持续发布
+- RViz 中 graph nodes, edges, frontier points 应贴近 GridMap 高程表面, 但 path / score ring / glyph 允许作为 overlay 略高于地表
+- 白色 `robot_position` marker 表示机器人 XY 投影到 GridMap elevation surface 的地面点, 应贴近高程面
+- 灰色 `robot_odom_position` marker 表示 raw odom / base 位置, 可高于地面, 不作为地面贴合判断依据
+- 如果启动 debug adapter, `/spot1/elevation_traversability_grid` 中 free cell 应形成连续区域, 不能只出现零散孤点
 
 ### 4. 检查 graph construction
 
@@ -844,13 +911,15 @@ ros2 topic hz /spot1/nav_graph
 - graph 节点和边持续发布
 - frontier nodes 数量稳定, 不应长期为 0
 - RViz 中节点不应大量出现在明显障碍或不可通行区域
+- RViz 中不应出现大量由地面连到竖直墙面或高处板面的红色边
+- current node 应在 XY 上靠近白色 robot ground marker
 
-如果 `/spot1/traversability_grid` 中有 free cell 但 `/spot1/nav_graph` 仍为 `nodes=0`, 优先检查:
+如果 `/elevation_mapping_node/elevation_map_raw` 有数据但 `/spot1/nav_graph` 仍为 `nodes=0`, 优先检查:
 
-- 是否有多组 `grid_map_to_occupancy` 或 `graph_construction` 同时运行
-- `free` cell 是否过于碎片化, 被 `min_obstacle_clearance` 过滤
+- 是否有多组 `graph_construction` 同时运行
+- `traversability` layer 分类后的 free cell 是否过于碎片化, 被 `min_obstacle_clearance` 过滤
 - `graph_config` 是否为 `graph_construction_elevation.yaml`
-- `/spot1/traversability_grid` 的 `0` 是否只是零散孤点, 而不是连续可通行区域
+- `grid_input_type` 是否为 `grid_map`
 
 ### 5. 检查三相机 visual scoring
 
@@ -900,8 +969,9 @@ ros2 topic echo /spot1/graphnav_planner/path --once
 ### Elevation backend 实验验收
 
 - `/elevation_mapping_node/elevation_map_raw` 至少包含 `elevation`, `traversability`, `variance`
-- 从 GridMap 压缩出的 `/spot1/elevation_traversability_grid` 质量不低于 LiDAR baseline 后, 才考虑替换默认后端
-- grid 中 free, occupied, unknown 与 RViz 中点云和地面形态一致
+- graph_construction 直接消费 `/elevation_mapping_node/elevation_map_raw`
+- graph nodes, edges, frontier points 的 z 坐标跟随 `elevation` layer
+- GridMap 中 free, occupied, unknown 分类与 RViz 中点云和地面形态一致
 - graph nodes 只采样在可通行区域
 - frontier points 位于 free 和 unknown 边界
 

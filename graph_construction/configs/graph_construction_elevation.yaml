@@ -1,16 +1,32 @@
 robot_namespace: spot1
 global_frame: map
 odom_topic: /unity/odom
-grid_topic: /spot1/elevation_traversability_grid
+grid_input_type: grid_map
+grid_map_topic: /elevation_mapping_node/elevation_map_raw
 nav_graph_topic: /spot1/nav_graph
 viz_topic: /spot1/graph_construction_viz
-debug_grid_topic: /spot1/debug_traversability_grid
 
 trav_class: default
 publish_rate_hz: 2.0
 
-free_threshold: 20
-obstacle_threshold: 65
+grid_map_traversability_layer: traversability
+grid_map_elevation_layer: elevation
+grid_map_free_threshold: 0.2
+grid_map_obstacle_threshold: 0.05
+grid_map_normalize_traversability: true
+grid_map_normalize_low_quantile: 0.05
+grid_map_normalize_high_quantile: 0.95
+grid_map_z_offset: 0.08
+grid_map_enable_postprocess: true
+grid_map_min_free_component_cells: 25
+grid_map_fill_hole_max_cells: 90
+grid_map_fill_hole_min_free_neighbor_ratio: 0.65
+grid_map_majority_fill_iterations: 1
+grid_map_majority_fill_min_neighbors: 6
+grid_map_max_node_odom_z_delta: 1.5
+grid_map_transpose: false
+grid_map_flip_x: false
+grid_map_flip_y: false
 sample_stride: 6
 min_node_separation: 1.0
 max_free_radius: 4.0

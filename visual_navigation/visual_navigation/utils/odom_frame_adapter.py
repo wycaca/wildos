@@ -52,7 +52,11 @@ class OdomFrameAdapter(Node):
 
         if not self._logged_first_message:
             self.get_logger().info(
-                f"Published first adapted odom message with frame_id={adapted_msg.header.frame_id}"
+                "Published first adapted odom message, "
+                f"input_frame={msg.header.frame_id}, input_child={msg.child_frame_id}, "
+                f"output_frame={adapted_msg.header.frame_id}, output_child={adapted_msg.child_frame_id}, "
+                f"position=({adapted_msg.pose.pose.position.x:.3f}, "
+                f"{adapted_msg.pose.pose.position.y:.3f}, {adapted_msg.pose.pose.position.z:.3f})"
             )
             self._logged_first_message = True
 

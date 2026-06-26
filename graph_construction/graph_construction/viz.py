@@ -3,11 +3,11 @@ from __future__ import annotations
 from typing import Iterable, Optional, Tuple
 
 from geometry_msgs.msg import Point
-from nav_msgs.msg import OccupancyGrid
 from std_msgs.msg import ColorRGBA, Header
 from visualization_msgs.msg import Marker, MarkerArray
 
 from graph_construction.graph_memory import GraphState, InternalNode
+from graph_construction.grid_adapter import ClassifiedGrid
 
 
 class GraphVisualizer:
@@ -22,7 +22,7 @@ class GraphVisualizer:
         self,
         graph: GraphState,
         header: Header,
-        grid_msg: Optional[OccupancyGrid] = None,
+        grid: Optional[ClassifiedGrid] = None,
     ) -> MarkerArray:
         """构建一帧完整 marker array"""
         markers = MarkerArray()
@@ -76,8 +76,12 @@ class GraphVisualizer:
         markers.markers.append(self._edge_marker(header, graph))
         markers.markers.append(self._frontier_point_marker(header, frontier_nodes))
         markers.markers.append(self._trajectory_marker(header, graph))
-        if grid_msg is not None:
-            markers.markers.append(self._grid_footprint_marker(header, grid_msg))
+        if graph.latest_robot_position is not None:
+            markers.markers.append(self._robot_position_marker(header, graph.latest_robot_position))
+        if graph.latest_robot_odom_position is not None:
+            markers.markers.append(self._robot_odom_position_marker(header, graph.latest_robot_odom_position))
+        if grid is not None:
+            markers.markers.append(self._grid_footprint_marker(header, grid))
 
         marker_id = 20
         for node in current_nodes:
@@ -231,7 +235,39 @@ class GraphVisualizer:
         marker.color = ColorRGBA(r=1.0, g=0.55, b=0.0, a=1.0)
         return marker
 
-    def _grid_footprint_marker(self, header: Header, grid_msg: OccupancyGrid) -> Marker:
+    def _robot_position_marker(self, header: Header, position: Tuple[float, float, float]) -> Marker:
+        """显示投影到 GridMap elevation 表面的机器人地面位置"""
+        marker = Marker()
+        marker.header = header
+        marker.ns = "robot_position"
+        marker.id = 9
+        marker.action = Marker.ADD
+        marker.type = Marker.SPHERE
+        marker.pose.position = self._point(position)
+        marker.pose.orientation.w = 1.0
+        marker.scale.x = 0.5
+        marker.scale.y = 0.5
+        marker.scale.z = 0.5
+        marker.color = ColorRGBA(r=1.0, g=1.0, b=1.0, a=1.0)
+        return marker
+
+    def _robot_odom_position_marker(self, header: Header, position: Tuple[float, float, float]) -> Marker:
+        """显示原始 odom / base 位置, 便于和地面投影点对比"""
+        marker = Marker()
+        marker.header = header
+        marker.ns = "robot_odom_position"
+        marker.id = 10
+        marker.action = Marker.ADD
+        marker.type = Marker.SPHERE
+        marker.pose.position = self._point(position)
+        marker.pose.orientation.w = 1.0
+        marker.scale.x = 0.35
+        marker.scale.y = 0.35
+        marker.scale.z = 0.35
+        marker.color = ColorRGBA(r=0.6, g=0.6, b=0.6, a=0.8)
+        return marker
+
+    def _grid_footprint_marker(self, header: Header, grid: ClassifiedGrid) -> Marker:
         """显示当前局部 grid footprint, 便于区分历史 graph memory"""
         marker = Marker()
         marker.header = header
@@ -241,16 +277,27 @@ class GraphVisualizer:
         marker.type = Marker.LINE_STRIP
         marker.scale.x = 0.05
         marker.color = ColorRGBA(r=0.0, g=1.0, b=1.0, a=0.8)
-        origin = grid_msg.info.origin.position
-        width = grid_msg.info.width * grid_msg.info.resolution
-        height = grid_msg.info.height * grid_msg.info.resolution
-        corners = (
-            (origin.x, origin.y, 0.05),
-            (origin.x + width, origin.y, 0.05),
-            (origin.x + width, origin.y + height, 0.05),
-            (origin.x, origin.y + height, 0.05),
-            (origin.x, origin.y, 0.05),
-        )
+        z = grid.z_offset + 0.03
+        if grid.grid_map_convention:
+            length_x = grid.grid_map_length_x or grid.height * grid.resolution
+            length_y = grid.grid_map_length_y or grid.width * grid.resolution
+            corners = (
+                (grid.origin_x, grid.origin_y, z),
+                (grid.origin_x - length_x, grid.origin_y, z),
+                (grid.origin_x - length_x, grid.origin_y - length_y, z),
+                (grid.origin_x, grid.origin_y - length_y, z),
+                (grid.origin_x, grid.origin_y, z),
+            )
+        else:
+            width = grid.width * grid.resolution
+            height = grid.height * grid.resolution
+            corners = (
+                (grid.origin_x, grid.origin_y, z),
+                (grid.origin_x + width, grid.origin_y, z),
+                (grid.origin_x + width, grid.origin_y + height, z),
+                (grid.origin_x, grid.origin_y + height, z),
+                (grid.origin_x, grid.origin_y, z),
+            )
         marker.points = [self._point(corner) for corner in corners]
         return marker
 

@@ -14,12 +14,21 @@
 
 ## 正确链路
 
-`/spot1/traversability_grid` 是几何地图输入, 当前应由 LiDAR 或 elevation backend 生成:
+`/spot1/traversability_grid` 是默认 LiDAR baseline 的几何地图输入:
 
 ```text
 /livox/lidar
     -> geometric map backend
     -> /spot1/traversability_grid
+    -> graph_construction
+```
+
+elevation 实验后端使用独立 GridMap 输入:
+
+```text
+/livox/lidar
+    -> elevation_mapping_cupy
+    -> /elevation_mapping_node/elevation_map_raw
     -> graph_construction
 ```
 
@@ -61,12 +70,14 @@
 该后端用于验证:
 
 - `/elevation_mapping_node/elevation_map_raw`
-- `grid_map_to_occupancy`
-- `/spot1/elevation_traversability_grid`
-- elevation / traversability layer 到 OccupancyGrid 的压缩质量
+- graph_construction 直接消费 `grid_map_msgs/GridMap`
+- elevation layer 作为节点和边的 z 高度来源
+- traversability layer 作为 free, obstacle, unknown 分类来源
 - 是否能在后续替代 `livox_grid_builder`
 
-实验后端默认不发布 `/spot1/traversability_grid`, 避免和 LiDAR baseline 同名发布造成 RViz Map 闪烁
+实验后端默认不发布 `/spot1/traversability_grid`, 也不默认启动 2D projection adapter, 避免 RViz Map 闪烁和误把 2D 投影视为论文主地图
+
+`/spot1/elevation_traversability_grid` 仍可由 `grid_map_to_occupancy` 单独发布, 仅用于 debug 或兼容旧 OccupancyGrid 工具
 
 该后端不作为 3 相机视觉适配的前置条件
 
@@ -75,6 +86,29 @@
 `/spot1/traversability_grid` 和 `/spot1/elevation_traversability_grid` 都是 `nav_msgs/OccupancyGrid`, 使用 RViz `Map` 显示
 
 `/elevation_mapping_node/elevation_map_raw` 是 `grid_map_msgs/GridMap`, 不能用 RViz `Map` 显示, 需要使用 `grid_map_rviz_plugin/GridMap`
+
+论文演示中的底图更接近该 GridMap 2.5D 高程面, 不是 2D `OccupancyGrid` 投影
+
+论文界面目标不是把所有元素压到一个 z 平面, 而是在同一 `map` frame 和同一 GridMap elevation convention 下分层显示:
+
+```text
+GridMap terrain surface
+    + graph node / edge overlay
+    + frontier / score marker overlay
+    + selected path overlay
+    + camera and top-down inset views
+```
+
+因此:
+
+- 白色 `robot_position` marker 应表示机器人 XY 投影到 GridMap elevation 的地面点
+- 灰色 `robot_odom_position` marker 才表示 raw odom / base 位置
+- graph nodes 和 frontier points 应贴近 GridMap 表面
+- path, score ring, node glyph 可以有小的可视化 z offset
+- raw odom / base marker 不要求贴地
+- 如果 graph nodes 大量出现在竖直墙面或高处板面, 优先修 elevation backend 和 graph 采样过滤
+
+详细目标见 `2026-06-26-paper-ui-target-correction.md`
 
 推荐 GridMap display 配置:
 
@@ -121,8 +155,11 @@ elevation backend 单独验收:
 
 ```text
 /elevation_mapping_node/elevation_map_raw layers 正常
-/spot1/elevation_traversability_grid 质量不低于 LiDAR baseline
+graph_construction 可直接消费 /elevation_mapping_node/elevation_map_raw
+graph nodes 和 edges 的 z 坐标跟随 elevation layer
 graph nodes, edges, frontiers 稳定
+robot ground marker 贴近 GridMap elevation surface
+raw odom marker 仅作为 base / odom debug
 ```
 
 只有当 elevation backend 的 grid 质量稳定后, 才考虑把它设为默认 graph construction 后端
