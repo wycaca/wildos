@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from math import isfinite
 from typing import Iterable, Optional, Tuple
 
 from geometry_msgs.msg import Point
@@ -7,7 +8,7 @@ from std_msgs.msg import ColorRGBA, Header
 from visualization_msgs.msg import Marker, MarkerArray
 
 from graph_construction.graph_memory import GraphState, InternalNode
-from graph_construction.grid_adapter import ClassifiedGrid
+from graph_construction.grid_types import ClassifiedGrid
 
 
 class GraphVisualizer:
@@ -17,6 +18,8 @@ class GraphVisualizer:
     WildOS scoring 还会另外发布 nav_graph_viz, score_rings, model_visualization
     第一版可视化重点是检查节点, 边, frontier_points, radius 是否合理
     """
+
+    MAX_RADIUS_MARKER = 20.0
 
     def build_markers(
         self,
@@ -79,33 +82,43 @@ class GraphVisualizer:
         if graph.latest_robot_position is not None:
             markers.markers.append(self._robot_position_marker(header, graph.latest_robot_position))
         if graph.latest_robot_odom_position is not None:
-            markers.markers.append(self._robot_odom_position_marker(header, graph.latest_robot_odom_position))
+            markers.markers.append(
+                self._robot_odom_position_marker(
+                    header,
+                    graph.latest_robot_odom_position,
+                    graph.latest_robot_ground_projected,
+                )
+            )
         if grid is not None:
             markers.markers.append(self._grid_footprint_marker(header, grid))
 
         marker_id = 20
         for node in current_nodes:
-            markers.markers.append(
-                self._radius_marker(
-                    header,
-                    marker_id=marker_id,
-                    namespace="free_radius",
-                    node=node,
-                    radius=node.free_radius,
-                    color=ColorRGBA(r=1.0, g=0.0, b=0.0, a=0.05),
+            free_radius = self._safe_radius_for_marker(node.free_radius)
+            if free_radius is not None:
+                markers.markers.append(
+                    self._radius_marker(
+                        header,
+                        marker_id=marker_id,
+                        namespace="free_radius",
+                        node=node,
+                        radius=free_radius,
+                        color=ColorRGBA(r=1.0, g=0.0, b=0.0, a=0.05),
+                    )
                 )
-            )
             marker_id += 1
-            markers.markers.append(
-                self._radius_marker(
-                    header,
-                    marker_id=marker_id,
-                    namespace="explored_radius",
-                    node=node,
-                    radius=node.explored_radius,
-                    color=ColorRGBA(r=0.0, g=1.0, b=1.0, a=0.04),
+            explored_radius = self._safe_radius_for_marker(node.explored_radius)
+            if explored_radius is not None:
+                markers.markers.append(
+                    self._radius_marker(
+                        header,
+                        marker_id=marker_id,
+                        namespace="explored_radius",
+                        node=node,
+                        radius=explored_radius,
+                        color=ColorRGBA(r=0.0, g=1.0, b=1.0, a=0.04),
+                    )
                 )
-            )
             marker_id += 1
 
         if graph.current_node_id in graph.nodes:
@@ -204,6 +217,12 @@ class GraphVisualizer:
         marker.color = color
         return marker
 
+    def _safe_radius_for_marker(self, radius: float) -> Optional[float]:
+        """过滤 RViz 无法合理显示的半径值, 避免异常包围盒影响视角"""
+        if not isfinite(radius) or radius <= 0.0:
+            return None
+        return min(radius, self.MAX_RADIUS_MARKER)
+
     def _trajectory_marker(self, header: Header, graph: GraphState) -> Marker:
         """单独显示机器人走过的位置, 避免和 current node 混淆"""
         marker = Marker()
@@ -251,7 +270,12 @@ class GraphVisualizer:
         marker.color = ColorRGBA(r=1.0, g=1.0, b=1.0, a=1.0)
         return marker
 
-    def _robot_odom_position_marker(self, header: Header, position: Tuple[float, float, float]) -> Marker:
+    def _robot_odom_position_marker(
+        self,
+        header: Header,
+        position: Tuple[float, float, float],
+        ground_projected: bool,
+    ) -> Marker:
         """显示原始 odom / base 位置, 便于和地面投影点对比"""
         marker = Marker()
         marker.header = header
@@ -264,7 +288,10 @@ class GraphVisualizer:
         marker.scale.x = 0.35
         marker.scale.y = 0.35
         marker.scale.z = 0.35
-        marker.color = ColorRGBA(r=0.6, g=0.6, b=0.6, a=0.8)
+        if ground_projected:
+            marker.color = ColorRGBA(r=0.6, g=0.6, b=0.6, a=0.8)
+        else:
+            marker.color = ColorRGBA(r=1.0, g=0.0, b=0.0, a=1.0)
         return marker
 
     def _grid_footprint_marker(self, header: Header, grid: ClassifiedGrid) -> Marker:

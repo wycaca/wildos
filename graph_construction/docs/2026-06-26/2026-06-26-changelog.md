@@ -37,6 +37,7 @@
 - 新增 `2026-06-26-paper-ui-target-correction.md`, 基于论文界面截图修正开发目标
 - 明确论文 UI 目标是 2.5D terrain surface 加 graph / frontier / path overlay 分层显示, 不是所有 marker 共用一个 z 平面
 - 更新阶段三验收标准, 白色 robot marker 表示 GridMap ground projection, 灰色 marker 表示 raw odom / base debug
+- 修正 robot ground projection 失败时的可视化语义, 投影失败不再追加黄色 trajectory, raw odom marker 改为红色并在日志中标记 `robot_projection=missing`
 
 ## 实测结果
 
@@ -54,6 +55,7 @@
 - 当前截图显示高程图本身仍有竖直面或高架面, graph 高处点属于采样过滤不足, 已增加 odom 高度门限后需要仿真复测
 - 当前截图显示白色 robot marker 未贴合高程面, 已改为使用 GridMap elevation 投影后的 ground position 作为白点位置
 - 论文 UI 分析完成, 后续优先级调整为 frame / GridMap surface 对齐, robot ground projection, graph node / frontier z 统一, elevation surface 质量过滤
+- 当前截图中黄色点远离高程图, 判断为 robot XY 不在当前 GridMap footprint 或当前位置无有效 elevation, 需要先检查 odom 与 GridMap frame / center 是否一致
 
 ## 旧版 projection 调参结论
 

@@ -23,7 +23,6 @@ from visual_navigation.wildos.viz import VisualizeGoalAgnosticGeoFrontierScoring
 from explorfm import ExploRFMInference
 from visual_navigation.utils.object_search_utils import localize_query, get_objectmask_msg
 
-# HOME_DIR = Path.home()
 HOME_DIR = Path("/home/ks-server3/han/wildos_ws/src/nebula2-wildos/")
 CAMERA_MAPPING = {
     0: "front",
@@ -33,7 +32,7 @@ CAMERA_MAPPING = {
 
 class WildOS_Nav(TFLookupSubscriber):
     default_config = {
-        # Model Params
+        # 模型参数
         "frontier_ckpt": "frontier_head.ckpt",
         "traversability_ckpt": "trav_head.ckpt",
         "model_version": "c-radio_v3-b",
@@ -44,22 +43,22 @@ class WildOS_Nav(TFLookupSubscriber):
         "static_scale_factor": 0.75,
         "model_precision": "FP16",
 
-        # Nav Params
+        # 导航参数
         "num_cameras": 3,
         "cams_inverted": True,
         "num_angular_bins": 16,
         "reach_in_2D": True,
 
-        # Nav graph params
+        # 导航图参数
         "frontiers_range": 12.0,
         "traversability_class": "default",
-        "heading_sim_thresh": 0.866,  # cosine similarity threshold between camera and frontier heading
+        "heading_sim_thresh": 0.866,  # 相机朝向和 frontier 朝向的余弦相似度阈值
         "default_max_score": 0.5,
-        "std_for_default_scores": 30.0,  # degrees
-        "std_for_frontier_heading": 30.0,  # degrees
-        "min_frontier_separation": 0.5,  # meters
+        "std_for_default_scores": 30.0,  # 角度
+        "std_for_frontier_heading": 30.0,  # 角度
+        "min_frontier_separation": 0.5,  # 米
 
-        # Pixel Scoring Params
+        # 像素评分参数
         "frontier_threshold": 0.6,
         "frontier_opening_kernel_size": 0,
         "traversability_threshold": 0.8,
@@ -70,7 +69,7 @@ class WildOS_Nav(TFLookupSubscriber):
         "reach_scale": 0.25,
         "compute_paths": True,
 
-        # ROS2 frames and topics
+        # ROS2 frame 和 topic
         "parent_frame": "spot1/odom",
         "cam_frame": "spot1/realsense/{}_color_optical_frame",
         "camera_img_topic": "/spot1/realsense/{}/color/image_raw/compressed",
@@ -78,19 +77,19 @@ class WildOS_Nav(TFLookupSubscriber):
         "odometry_topic": "/spot1/odom",
         "navigation_graph_topic": "/spot1/nav_graph",
 
-        # ROS2 Publisher topics
+        # ROS2 发布 topic
         "scored_navgraph_topic": "/spot1/scored_nav_graph",
         "model_viz_topic": "model_visualization",
         "valid_geofrontiers_topic": "within_range_geofrontiers",
         "score_ring_topic": "/spot1/score_rings",
         "graph_viz_topic": "/spot1/navgraph_viz",
 
-        # ROS2 subscriber params
+        # ROS2 订阅参数
         "qos_history_depth": 1,
         "syncsub_queue_size": 1,
         "syncsub_slop": 0.2,
 
-        # Object Search Params
+        # 目标搜索参数
         "object_search_config": {
             # "text_queries": ["NASA logo"],
             "text_queries": ["orange flag"],
@@ -102,50 +101,52 @@ class WildOS_Nav(TFLookupSubscriber):
             "obj_trav_score": 0.9
         },
 
-        # TFLookup Config
+        # TF 查询配置
         "tf_lookup_config": {
-            "buffer_size": 1,       # number of messages
-            "cache_time": 10,       # seconds
-            "timer_duration": 0.5,  # seconds
-            "lookup_timeout": 0,     # seconds
-            "qos_history_depth": 1,  # depth for QoS profile
-            "wait_for_oldest": True,  # whether to wait when buffer is full
-            "clear_buffer_on_process": True,  # whether to clear buffer after processing
-            "spin_thread": False,     # whether to spin tf listener in a separate thread
+            "buffer_size": 1,       # 消息数量
+            "cache_time": 10,       # 秒
+            "timer_duration": 0.5,  # 秒
+            "lookup_timeout": 0,     # 秒
+            "qos_history_depth": 1,  # QoS 队列深度
+            "wait_for_oldest": True,  # buffer 满时是否等待
+            "clear_buffer_on_process": True,  # 处理后是否清空 buffer
+            "spin_thread": False,     # 是否单独线程 spin TF listener
         }
     }
 
     def __init__(self, config: OmegaConf=OmegaConf.create(), do_object_search=False):
         config = OmegaConf.merge(OmegaConf.create(self.default_config), config)
 
-        # init model before to prevent tf listener from spinning too early
+        # 先初始化模型, 避免 TF listener 过早 spin
+        print(f"WildOS 模型初始化开始, object_search={do_object_search}", flush=True)
         np.random.seed(42)
         self.init_model(config, do_object_search)
+        print("WildOS 模型初始化完成", flush=True)
 
         super().__init__(
             node_name='wildos',
             config=config.tf_lookup_config
         )
-        self.get_logger().info('Finished initializing models!')
+        self.get_logger().info("WildOS 模型初始化完成")
         if self.object_search_mode:
-            self.get_logger().info(f'Computed Text Feats for {self.text_queries}!')
+            self.get_logger().info(f"目标搜索已启用, text_queries={list(self.text_queries)}")
 
-        # Used to convert between ROS and OpenCV images
+        # 用于转换 ROS 和 OpenCV 图像
         self.br = CvBridge()
 
-        # Nav parameters and initializations
+        # 导航参数和初始化
         self.num_cameras = config.num_cameras
         self.cam_inverted = config.cams_inverted
         assert self.num_cameras in [1, 3], "Only 1 or 3 cameras are supported."
         self.num_angular_bins = config.num_angular_bins
         self.reach_in_2D = config.reach_in_2D
         
-        # Store current frontier nodes and their scores
+        # 保存当前 frontier node 及其评分
         self.frontier_uuid_to_scores = {}
         self.frontier_uuid_to_scoring_distance = {}
         self.removed_frontier_positions = np.zeros((0, 3), dtype=np.float32)
 
-        # Navgraph frontiers to img
+        # 将导航图 frontier 投影到图像
         self.geofrontier_to_image = GeoFrontierToImage(
             camera_mapping=CAMERA_MAPPING,
             frontiers_range=config.frontiers_range,
@@ -160,7 +161,7 @@ class WildOS_Nav(TFLookupSubscriber):
         self.std_for_frontier_heading = config.std_for_frontier_heading
         self.min_frontier_separation = config.min_frontier_separation
 
-        # Initialize pixel scoring params
+        # 初始化像素评分参数
         frontier_threshold = config.frontier_threshold
         traversability_threshold = config.traversability_threshold
         pixel_scoring_params = {
@@ -182,7 +183,7 @@ class WildOS_Nav(TFLookupSubscriber):
         )
         self.compute_paths = config.compute_paths
 
-        # Visualization
+        # 可视化
         self.geofrontier_viz_colors = np.array([
             [0.528, 0.471, 0.701],
             [0.772, 0.432, 0.102],
@@ -196,12 +197,12 @@ class WildOS_Nav(TFLookupSubscriber):
 
         self.clbk_cntr = 0
 
-        # Frames and Topic Names
+        # frame 和 topic 名称
         self.global_frame = config.parent_frame
         self.cam_tf_frame = config.cam_frame
         self.using_compressed_imgs = "compressed" in config.camera_img_topic
 
-        # TFLookup
+        # TF 查询
         self.required_transforms = {
             f"world_from_cam{idx}": TFEdge(
                 source_frame=self.cam_tf_frame.format(CAMERA_MAPPING[idx]),
@@ -210,19 +211,23 @@ class WildOS_Nav(TFLookupSubscriber):
             for idx in range(self.num_cameras)
         }
 
-        # Subscribers and Publishers
+        # 订阅和发布
         self.init_publishers(config)
         self.init_subscribers(config)
         self.start_timer()
 
     def init_model(self, config, do_object_search):
-        # vlm initializations
+        # VLM 初始化
         self.device = "cuda"
 
         if do_object_search and config.adaptor_version is None:
             config.adaptor_version = "siglip2"
+        print(
+            f"WildOS 加载视觉模型, model={config.model_version}, adaptor={config.adaptor_version}",
+            flush=True,
+        )
 
-        # radio model
+        # RADIO 模型
         self.model = ExploRFMInference(
             frontier_ckpt=HOME_DIR / "ckpts" / config.frontier_ckpt,
             traversability_ckpt=HOME_DIR / "ckpts" / config.traversability_ckpt,
@@ -239,7 +244,7 @@ class WildOS_Nav(TFLookupSubscriber):
             transforms.ToTensor(),
         ])
         self.object_search_mode = False
-
+        print("WildOS 模型加载完成", flush=True)
         if do_object_search:
             self.object_search_mode = True
             self.text_queries = config.object_search_config.text_queries
@@ -250,7 +255,9 @@ class WildOS_Nav(TFLookupSubscriber):
 
             assert len(self.text_queries) == 1, "Only single object search is supported in this version."
 
+            print(f"WildOS 计算目标搜索文本特征, text_queries={list(self.text_queries)}", flush=True)
             self.text_feats = self.model.forward_on_text(self.text_queries)
+            print("WildOS 目标搜索文本特征计算完成", flush=True)
 
 
     def init_publishers(self, config: OmegaConf):
@@ -333,12 +340,12 @@ class WildOS_Nav(TFLookupSubscriber):
         
         print(f"Started Heavy")
 
-        # Extract messages
+        # 提取消息
         odom_msg = msg["odom"]
         navgraph_msg = msg["navgraph"]
         msgs = msg["cam_msgs"]
 
-        # Extract camera images and info
+        # 提取相机图像和内参
         rgb_imgs, cam_info_msgs = [], []
         for i in range(self.num_cameras):
             if self.using_compressed_imgs:
@@ -356,7 +363,7 @@ class WildOS_Nav(TFLookupSubscriber):
                 )
             cam_info_msgs.append(msgs[i * 2 + 1])
 
-        # Get geofrontiers from navgraph_msg
+        # 从 navgraph_msg 提取 geofrontier
         all_cam_data = []
         for i, cam_info_msg in enumerate(cam_info_msgs):
             cam_data = self.fetch_cam_intrinsics_extrinsics(cam_info_msg, tf_data[f"world_from_cam{i}"])
@@ -373,7 +380,7 @@ class WildOS_Nav(TFLookupSubscriber):
             return
 
         
-        # Model Forward pass
+        # 模型前向推理
         rgb_tensors = [self.transforms(img.copy()) for img in rgb_imgs]
         batch_tensor = torch.stack(rgb_tensors)
         batch_img_traversability, batch_img_frontiers, spatial_feats = self.model.forward(batch_tensor)
@@ -403,12 +410,12 @@ class WildOS_Nav(TFLookupSubscriber):
             else:
                 self.get_logger().warn("No object detected in the scene, skipping object mask publish.")
 
-        # Scoring Geometric Frontiers
+        # 给几何 frontier 评分
         nav_data = []
         for i in range(self.num_cameras):
             cam_data = all_cam_data[i]
             if not geofrontiers[i]:
-                # no geometric frontiers for this camera
+                # 当前相机没有几何 frontier
                 nav_data.append({
                     "image": rgb_imgs[i],
                     "traversability": batch_img_traversability[i][0],
@@ -435,7 +442,7 @@ class WildOS_Nav(TFLookupSubscriber):
                 "paths": paths,
             })
 
-        # Publish scored navgraph
+        # 发布评分后的 navgraph
         robot_pos = np.array([
             odom_msg.pose.pose.position.x,
             odom_msg.pose.pose.position.y,
@@ -449,7 +456,7 @@ class WildOS_Nav(TFLookupSubscriber):
         self.withinrange_geofront_pub.publish(
             self.viz.viz_valid_geofrontiers(geofrontiers, all_cam_data, odom_msg.header, self.geofrontier_viz_colors))
 
-        # Attach source image timing so RViz can track the debug image stream
+        # 附加源图像时间, 方便 RViz 跟踪 debug 图像流
         model_viz_msg = self.br.cv2_to_imgmsg(
             self.viz.visualize_model_det(nav_data, all_cam_data),
             encoding="rgb8"
@@ -476,7 +483,7 @@ class WildOS_Nav(TFLookupSubscriber):
         print(f"Finished Heavy")
 
     def remove_old_frontiers(self, navgraph_msg):
-        # Remove frontiers that are no longer in the navgraph
+        # 移除不再存在于 navgraph 的 frontier
         trav_class_idx = navgraph_msg.trav_classes.index(self.traversability_class)
         current_uuids = set()
         for node in navgraph_msg.nodes:
@@ -487,7 +494,7 @@ class WildOS_Nav(TFLookupSubscriber):
         removed_uuids = []
         for old_uuid in old_uuids:
             if old_uuid not in current_uuids:
-                # Store removed frontier position
+                # 保存已移除 frontier 的位置
                 del_node = self.frontier_uuid_to_scores[old_uuid][1]
                 pos = np.array([
                     del_node.pose.position.x,
@@ -523,14 +530,14 @@ class WildOS_Nav(TFLookupSubscriber):
                     frontier_node.pose.position.z
                 ], dtype=np.float32).reshape(1, 3)
 
-                # Check if this frontier is too close to any removed frontier
-                # set scores to zero if too close to removed frontier
+                # 检查 frontier 是否过近于已移除 frontier
+                # 如果过近则把评分置零
                 if len(self.removed_frontier_positions) > 0:
                     distances = np.linalg.norm(self.removed_frontier_positions - frontier_pos, axis=1)
                     if np.any(distances < self.min_frontier_separation):
                         scores *= 0.0
 
-                # only update scores if the robot is closer to the frontier than before
+                # 只有机器人比之前更接近 frontier 时才更新评分
                 node_dist = np.linalg.norm(robot_pos - frontier_pos)
                 if uuid in self.frontier_uuid_to_scoring_distance:
                     prev_dist = self.frontier_uuid_to_scoring_distance[uuid]
@@ -541,7 +548,7 @@ class WildOS_Nav(TFLookupSubscriber):
                 else:
                     self.frontier_uuid_to_scoring_distance[uuid] = node_dist
 
-                # Modulate scores based on heading alignment
+                # 根据朝向对齐程度调制评分
                 if self.std_for_frontier_heading is not None:
                     scores *= self.scorer.get_gauss_scores(
                         np.rad2deg(np.arctan2(heading[1], heading[0])),
@@ -549,7 +556,7 @@ class WildOS_Nav(TFLookupSubscriber):
                         max_score=1.0
                     )
 
-                # Update scores
+                # 更新评分
                 scores = self.normalize_frontier_scores(scores)
                 updated_uuids.add(uuid)
                 self.frontier_uuid_to_scores[uuid] = (scores, frontier_node)
@@ -572,7 +579,7 @@ class WildOS_Nav(TFLookupSubscriber):
                 node.properties.append(kv)
 
             elif node.trav_properties[trav_class_idx].is_frontier:
-                # if frontier is not scored, set default scores
+                # 未评分 frontier 使用默认评分
                 scores = self.scorer.get_default_scores(
                     node, trav_class_idx, std=self.std_for_default_scores, def_max_score=self.default_max_score
                 ).astype(np.float32)
@@ -583,8 +590,8 @@ class WildOS_Nav(TFLookupSubscriber):
                     node.pose.position.z
                 ], dtype=np.float32).reshape(1, 3)
 
-                # Check if this frontier is too close to any removed frontier
-                # set scores to zero if too close to removed frontier
+                # 检查 frontier 是否过近于已移除 frontier
+                # 如果过近则把评分置零
                 if len(self.removed_frontier_positions) > 0:
                     distances = np.linalg.norm(self.removed_frontier_positions - node_pos, axis=1)
                     if np.any(distances < self.min_frontier_separation):
@@ -630,25 +637,32 @@ def main(args=None):
     from ament_index_python.packages import get_package_share_directory
     import argparse
 
-    # Separate ROS args from your custom args
+    # 分离 ROS 参数和节点自定义参数
     custom_args = rclpy.utilities.remove_ros_args(args)
     
-    # Now parse the remaining (non-ROS) args with argparse
+    # 解析剩余的非 ROS 参数
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True, help="Configuration file name (YAML) for the node.")
     def str2bool(v):
         return v.lower() in ('true')
     parser.add_argument("--do_object_search", type=str2bool, default=False, help="Enable object search.")
+    parser.add_argument("--config-override", action="append", default=[], help="Override config key with key=value.")
     custom_args = parser.parse_args(custom_args[1:])
 
     conf_name = f"{custom_args.config}"
     if conf_name.endswith(".yaml") is False:
         conf_name += ".yaml"
 
-    package_share_directory = Path(get_package_share_directory('visual_navigation'))
-    conf = package_share_directory / "configs" / conf_name
+    conf = Path(conf_name).expanduser()
+    if not conf.is_absolute():
+        package_share_directory = Path(get_package_share_directory('visual_navigation'))
+        conf = package_share_directory / "configs" / conf_name
 
-    ros2_node = WildOS_Nav(OmegaConf.load(conf), do_object_search=custom_args.do_object_search)
+    config = OmegaConf.load(conf)
+    if custom_args.config_override:
+        config = OmegaConf.merge(config, OmegaConf.from_dotlist(custom_args.config_override))
+
+    ros2_node = WildOS_Nav(config, do_object_search=custom_args.do_object_search)
     try:
         rclpy.spin(ros2_node)
     except (KeyboardInterrupt, ExternalShutdownException):

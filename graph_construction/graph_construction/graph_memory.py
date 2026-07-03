@@ -63,6 +63,7 @@ class GraphState:
     current_node_id: Optional[int] = None
     latest_robot_odom_position: Optional[Point3] = None
     latest_robot_position: Optional[Point3] = None
+    latest_robot_ground_projected: bool = False
     removed_frontiers: List[Point3] = field(default_factory=list)
     trajectory_points: List[Point3] = field(default_factory=list)
     next_node_id: int = 0
@@ -146,10 +147,11 @@ class GraphState:
             if node.distance_xy(position) <= radius
         }
 
-    def update_robot_position(self, odom_position: Point3, ground_position: Point3) -> None:
+    def update_robot_position(self, odom_position: Point3, ground_position: Optional[Point3]) -> None:
         """记录机器人原始 odom 位置和投影到高程图的地面位置"""
         self.latest_robot_odom_position = odom_position
         self.latest_robot_position = ground_position
+        self.latest_robot_ground_projected = ground_position is not None
 
     def append_trajectory_point(self, position: Point3, min_separation: float) -> None:
         """记录机器人走过的位置, 与 graph nodes 分开显示"""

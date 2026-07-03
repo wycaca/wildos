@@ -5,6 +5,10 @@ from setuptools import find_packages, setup
 
 
 package_name = "graph_construction"
+launch_files = [
+    "launch/wildos_2d_sim.launch.py",
+    "launch/elevation_visual_navigation_sim.launch.py",
+]
 
 setup(
     name=package_name,
@@ -16,7 +20,7 @@ setup(
         (os.path.join("share", package_name, "configs"), glob("configs/*.yaml")),
         (
             os.path.join("share", package_name, "launch"),
-            glob(os.path.join("launch", "*launch.[pxy][yma]*")),
+            launch_files,
         ),
     ],
     install_requires=["setuptools"],
@@ -31,6 +35,7 @@ setup(
             "graph_construction = graph_construction.node:main",
             "livox_grid_builder = graph_construction.livox_grid_builder:main",
             "grid_map_to_occupancy = graph_construction.grid_map_to_occupancy:main",
+            "pointcloud_axis_adapter = graph_construction.pointcloud_axis_adapter:main",
         ],
     },
 )

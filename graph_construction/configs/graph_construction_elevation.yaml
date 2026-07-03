@@ -1,6 +1,6 @@
 robot_namespace: spot1
-global_frame: map
-odom_topic: /unity/odom
+global_frame: odom
+odom_topic: /spot1/odom_for_scoring
 grid_input_type: grid_map
 grid_map_topic: /elevation_mapping_node/elevation_map_raw
 nav_graph_topic: /spot1/nav_graph
@@ -8,6 +8,8 @@ viz_topic: /spot1/graph_construction_viz
 
 trav_class: default
 publish_rate_hz: 2.0
+diagnostics_log_period_sec: 5.0
+slow_update_warning_ms: 200.0
 
 grid_map_traversability_layer: traversability
 grid_map_elevation_layer: elevation
@@ -23,7 +25,8 @@ grid_map_fill_hole_max_cells: 90
 grid_map_fill_hole_min_free_neighbor_ratio: 0.65
 grid_map_majority_fill_iterations: 1
 grid_map_majority_fill_min_neighbors: 6
-grid_map_max_node_odom_z_delta: 1.5
+grid_map_max_node_odom_z_delta: 0.6
+grid_map_max_surface_step: 0.35
 grid_map_transpose: false
 grid_map_flip_x: false
 grid_map_flip_y: false
@@ -38,6 +41,7 @@ frontier_assign_radius: 5.0
 frontier_min_points: 4
 frontier_min_span: 0.6
 frontier_border_margin: 0.8
+frontier_candidate_spacing: 0.5
 deadend_observation_count: 3
 removed_frontier_suppression_radius: 0.0
 trajectory_min_separation: 0.25

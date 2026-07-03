@@ -20,7 +20,7 @@ launch:
 
   - arg:
       name: "odom_topic"
-      default: "odom"
+      default: "/odom"
       description: "Odometry topic relative to namespace or absolute"
 
   - node:
@@ -55,7 +55,7 @@ launch:
         - from: "~/odom"
           to: $(var odom_topic)
         - from: "~/goal_pose"
-          to: "imgnav_waypoint"
+          to: "/goal_pose"
         # - from: "~/path"
         #   to: "graph_nav_path"
         # namespaced default ros topics
@@ -77,11 +77,11 @@ launch:
       namespace: $(var ns)
       remap:
         - from: "~/path"
-          to: "graphnav_planner/path"
+          to: "/path2"
         - from: "~/odom"
           to: $(var odom_topic)
         - from: "~/goal_pose"
-          to: "goal_pose"
+          to: "/goal_pose"
         # namespaced default ros topics
         - from: "/tf"
           to: $(eval "'/$(var ns)/tf' if '$(var remap_tf_to_ns)'.lower() == 'true' else '/tf'")

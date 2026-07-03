@@ -1,3 +1,4 @@
+# 仅用于 debug / 兼容旧 OccupancyGrid 工具, 默认 graph 输入不经过此 adapter
 input_topic: /elevation_mapping_node/elevation_map_raw
 output_topic: /spot1/elevation_traversability_grid
 

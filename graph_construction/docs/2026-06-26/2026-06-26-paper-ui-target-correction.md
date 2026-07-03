@@ -69,6 +69,17 @@ graph node, edge endpoint, frontier point, robot ground point 的 z 值应来自
 - `grid_to_world` / `world_to_grid` 是否和 `grid_map_core` 一致
 - elevation layer 是否包含竖直面或 NaN 空洞
 
+如果黄色 trajectory 点远离当前 GridMap footprint, 说明它们不是当前高程图上的贴地点
+
+当前约定:
+
+- 只有 robot XY 成功投影到 GridMap elevation 时才记录黄色 trajectory
+- 投影失败时不记录新的黄色 trajectory 点
+- 投影失败时 raw odom marker 显示为红色
+- 首帧日志会显示 `robot_projection=missing`
+
+这通常意味着 robot odom 的 XY 不在当前 GridMap 范围内, 或该位置附近没有有效 elevation
+
 ### 目标三, 可视化 overlay 分层
 
 不是所有 marker 都必须完全贴在同一个 z 值上
@@ -131,6 +142,7 @@ graph construction 不应通过阈值把这些面当作地面, 但也不能完�
 
 - 白色 `robot_position` 表示 GridMap ground projection
 - 灰色 `robot_odom_position` 表示 raw odom / base 位置
+- 红色 `robot_odom_position` 表示 robot XY 无法投影到当前 GridMap elevation
 - 用两者 z 差判断 base 高度和地面高度是否一致
 
 ## 新验收标准
@@ -143,6 +155,7 @@ graph construction 不应通过阈值把这些面当作地面, 但也不能完�
 - graph edges 不再出现大量跨越高处竖直面的长线
 - current node 与 robot ground marker 在 XY 上接近
 - 高程图, graph marker, path marker 的 frame 均为 `map`
+- 黄色 trajectory 点只来自成功投影到 elevation surface 的 robot ground point
 
 ### 可以接受
 
@@ -166,4 +179,3 @@ graph construction 不应通过阈值把这些面当作地面, 但也不能完�
 3. 再确认 graph node / frontier z 值都来自同一 GridMap elevation
 4. 再加入 elevation surface 质量过滤, 包括高度突变, slope, 局部法向或 variance
 5. 最后恢复视觉评分和 planner 联调, 不在几何未稳定前调 3 相机
-

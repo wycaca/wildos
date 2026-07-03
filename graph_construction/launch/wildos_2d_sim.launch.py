@@ -3,10 +3,9 @@ from pathlib import Path
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction, SetEnvironmentVariable, TimerAction
-from launch.conditions import IfCondition, LaunchConfigurationNotEquals
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, TextSubstitution
 from launch_ros.actions import Node
-from ament_index_python.packages import get_package_share_directory
 
 from graph_construction.topic_profiles import load_topic_profile
 
@@ -22,13 +21,13 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument("ns", default_value="", description="Robot namespace, empty uses topic profile"),
             DeclareLaunchArgument(
-                "elevation_config",
-                default_value="elevation_mapping_sim.yaml",
-                description="Base config file for the elevation mapping backend",
+                "grid_config",
+                default_value="livox_grid_builder.yaml",
+                description="Base config file for the LiDAR geometric traversability grid backend",
             ),
             DeclareLaunchArgument(
                 "graph_config",
-                default_value="graph_construction_elevation.yaml",
+                default_value="graph_construction.yaml",
                 description="Base config file for graph_construction",
             ),
             DeclareLaunchArgument(
@@ -37,20 +36,21 @@ def generate_launch_description():
                 description="Base config file installed by visual_navigation",
             ),
             DeclareLaunchArgument("do_object_search", default_value="false", description="Enable object search"),
+            DeclareLaunchArgument("grid_use_sim_time", default_value="false", description="Use simulation clock for grid"),
             DeclareLaunchArgument("use_sim_time", default_value="true", description="Use simulation clock"),
             DeclareLaunchArgument(
                 "graph_start_delay",
-                default_value="3.0",
-                description="Delay graph_construction startup so the elevation GridMap is advertised first",
+                default_value="1.0",
+                description="Delay graph_construction startup so the grid topic is advertised first",
             ),
             DeclareLaunchArgument(
                 "visual_start_delay",
-                default_value="6.0",
+                default_value="4.0",
                 description="Delay visual navigation startup so the base graph is available first",
             ),
             DeclareLaunchArgument(
                 "planner_start_delay",
-                default_value="7.0",
+                default_value="5.0",
                 description="Delay planner startup until graph and visual scoring are active",
             ),
             DeclareLaunchArgument("log_level", default_value="INFO", description="Logging level"),
@@ -62,46 +62,32 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "launch_odom_adapter",
                 default_value="true",
-                description="Publish odom with frame ids expected by WildOS",
+                description="Publish TF-aligned odometry for graph, visual, and planner nodes",
             ),
-            DeclareLaunchArgument(
-                "launch_pointcloud_axis_adapter",
-                default_value="true",
-                description="Publish an aligned point cloud for elevation mapping",
-            ),
-            DeclareLaunchArgument(
-                "pointcloud_axis_mode",
-                default_value="",
-                description="Point cloud axis conversion mode, empty uses topic profile",
-            ),
-            _profile_arg("global_frame", "global_frame_3d"),
-            _profile_arg("pointcloud_input_topic", "lidar_topic"),
-            _profile_arg("pointcloud_output_topic", "aligned_lidar_topic"),
-            _profile_arg("pointcloud_output_frame", "pointcloud_output_frame_3d"),
-            _profile_arg("elevation_grid_map_topic", "elevation_grid_map_topic"),
+            _profile_arg("grid_frame", "grid_frame"),
+            _profile_arg("global_frame", "global_frame_2d"),
+            _profile_arg("lidar_topic", "lidar_topic"),
             _profile_arg("odom_input_topic", "odom_input_topic"),
             _profile_arg("odom_output_topic", "odom_output_topic"),
             _profile_arg("odom_parent_frame", "odom_parent_frame"),
             _profile_arg("odom_child_frame", "odom_child_frame"),
             DeclareLaunchArgument("odom_stamp_mode", default_value="now", description="Adapted odometry stamp mode"),
-            DeclareLaunchArgument("odom_pose_source", default_value="tf", description="Adapted odometry pose source"),
+            DeclareLaunchArgument(
+                "odom_pose_source",
+                default_value="",
+                description="Adapted odometry pose source, empty uses topic profile",
+            ),
             DeclareLaunchArgument(
                 "odom_fallback_to_message",
-                default_value="false",
-                description="Fallback to source odom pose if TF pose is unavailable",
+                default_value="",
+                description="Fallback to source odom pose if TF pose is unavailable, empty uses topic profile",
             ),
-            DeclareLaunchArgument(
-                "publish_lidar_static_tf",
-                default_value="false",
-                description="Publish a fallback static transform for point cloud frame",
-            ),
-            _profile_arg("lidar_parent_frame", "lidar_parent_frame"),
-            _profile_arg("lidar_frame", "lidar_frame"),
             _profile_arg("camera_parent_frame", "camera_parent_frame"),
             _profile_arg("parent_frame", "parent_frame"),
             _profile_arg("cam_frame", "cam_frame"),
             _profile_arg("camera_img_topic", "camera_img_topic"),
             _profile_arg("camera_info_topic", "camera_info_topic"),
+            _profile_arg("traversability_grid_topic", "traversability_grid_topic"),
             _profile_arg("nav_graph_topic", "nav_graph_topic"),
             _profile_arg("graph_construction_viz_topic", "graph_construction_viz_topic"),
             _profile_arg("scored_nav_graph_topic", "scored_nav_graph_topic"),
@@ -117,13 +103,15 @@ def generate_launch_description():
                 default_value="true",
                 description="Publish fallback static transforms for camera frames",
             ),
-            _profile_arg("ros_domain_id", "ros_domain_id"),
-            _profile_arg("rmw_implementation", "rmw_implementation_3d"),
             DeclareLaunchArgument(
-                "fastdds_profile",
-                default_value="",
-                description="Optional FastDDS profile shared with Isaac Sim",
+                "publish_lidar_static_tf",
+                default_value="true",
+                description="Publish fallback static transform for the Isaac lidar frame",
             ),
+            _profile_arg("lidar_parent_frame", "lidar_parent_frame"),
+            _profile_arg("lidar_frame", "lidar_frame"),
+            _profile_arg("ros_domain_id", "ros_domain_id"),
+            _profile_arg("rmw_implementation", "rmw_implementation_2d"),
             OpaqueFunction(function=_launch_setup),
         ]
     )
@@ -135,22 +123,27 @@ def _launch_setup(context):
     profile = load_topic_profile(profile_name, profile_file)
 
     ns = _value(context, profile, "ns", "namespace")
-    elevation_config = _arg(context, "elevation_config")
+    grid_config = _arg(context, "grid_config")
     graph_config = _arg(context, "graph_config")
     visual_config = _arg(context, "visual_config")
-    global_frame = _value(context, profile, "global_frame", "global_frame_3d")
+    grid_topic = _value(context, profile, "traversability_grid_topic", "traversability_grid_topic")
     odom_output_topic = _value(context, profile, "odom_output_topic", "odom_output_topic")
     nav_graph_topic = _value(context, profile, "nav_graph_topic", "nav_graph_topic")
-    aligned_lidar_topic = _value(context, profile, "pointcloud_output_topic", "aligned_lidar_topic")
-    pointcloud_axis_mode = _value(context, profile, "pointcloud_axis_mode", "pointcloud_axis_mode_3d")
-    pointcloud_output_frame = _value(context, profile, "pointcloud_output_frame", "pointcloud_output_frame_3d")
 
+    grid_overrides = _config_override_args(
+        {
+            "grid_frame": _value(context, profile, "grid_frame", "grid_frame"),
+            "lidar_topic": _value(context, profile, "lidar_topic", "lidar_topic"),
+            "odom_topic": _value(context, profile, "odom_input_topic", "odom_input_topic"),
+            "grid_topic": grid_topic,
+        }
+    )
     graph_overrides = _config_override_args(
         {
             "robot_namespace": ns,
-            "global_frame": global_frame,
+            "global_frame": _value(context, profile, "global_frame", "global_frame_2d"),
             "odom_topic": odom_output_topic,
-            "grid_map_topic": _value(context, profile, "elevation_grid_map_topic", "elevation_grid_map_topic"),
+            "grid_topic": grid_topic,
             "nav_graph_topic": nav_graph_topic,
             "viz_topic": _value(context, profile, "graph_construction_viz_topic", "graph_construction_viz_topic"),
         }
@@ -173,11 +166,6 @@ def _launch_setup(context):
 
     use_sim_time = LaunchConfiguration("use_sim_time")
     log_level = LaunchConfiguration("log_level")
-    camera_parent_frame = _value(context, profile, "camera_parent_frame", "camera_parent_frame")
-    planner_odom_topic = _value(context, profile, "planner_odom_topic", "planner_odom_topic")
-    goal_pose_topic = _value(context, profile, "goal_pose_topic", "goal_pose_topic")
-    scored_nav_graph_topic = _value(context, profile, "scored_nav_graph_topic", "scored_nav_graph_topic")
-    publish_camera_static_tf = TextSubstitution(text=_arg(context, "publish_camera_static_tf"))
     wildos_python_executable = _arg(context, "wildos_python_executable")
     wildos_extra_args = {}
     if wildos_python_executable:
@@ -186,30 +174,25 @@ def _launch_setup(context):
     wildos_extra_args["additional_env"] = {
         "PYTHONPATH": _prepend_pythonpath(repo_root),
     }
+    camera_parent_frame = _value(context, profile, "camera_parent_frame", "camera_parent_frame")
+    planner_odom_topic = _value(context, profile, "planner_odom_topic", "planner_odom_topic")
+    goal_pose_topic = _value(context, profile, "goal_pose_topic", "goal_pose_topic")
+    scored_nav_graph_topic = _value(context, profile, "scored_nav_graph_topic", "scored_nav_graph_topic")
+    publish_camera_static_tf = TextSubstitution(text=_arg(context, "publish_camera_static_tf"))
+    odom_pose_source = _value(context, profile, "odom_pose_source", "odom_pose_source_2d")
+    odom_fallback_to_message = _bool_value(
+        context,
+        profile,
+        "odom_fallback_to_message",
+        "odom_fallback_to_message_2d",
+    )
 
-    elevation_share = get_package_share_directory("elevation_mapping_cupy")
-    core_param = PathJoinSubstitution([TextSubstitution(text=elevation_share), "config", "core", "core_param.yaml"])
-    base_frame = _value(context, profile, "odom_child_frame", "odom_child_frame")
-
-    elevation_mapping = Node(
-        package="elevation_mapping_cupy",
-        executable="elevation_mapping_node.py",
-        name="elevation_mapping_node",
+    livox_grid_builder = Node(
+        package="graph_construction",
+        executable="livox_grid_builder",
         output="screen",
-        parameters=[
-            core_param,
-            _package_config_path("graph_construction", elevation_config),
-            {"use_sim_time": use_sim_time},
-            {"map_frame": global_frame},
-            {"corrected_map_frame": global_frame},
-            {"base_frame": base_frame},
-            {"initialize_frame_id": [base_frame]},
-            {"subscribers.livox.topic_name": aligned_lidar_topic},
-        ],
-        arguments=["--ros-args", "--log-level", log_level],
-        remappings=[
-            ("/unitree_go2/lidar/points_aligned", aligned_lidar_topic),
-        ],
+        arguments=["--config", grid_config, *grid_overrides, "--ros-args", "--log-level", log_level],
+        parameters=[{"use_sim_time": LaunchConfiguration("grid_use_sim_time")}],
     )
 
     graph_construction = Node(
@@ -239,24 +222,10 @@ def _launch_setup(context):
             {"parent_frame": _value(context, profile, "odom_parent_frame", "odom_parent_frame")},
             {"child_frame": _value(context, profile, "odom_child_frame", "odom_child_frame")},
             {"stamp_mode": LaunchConfiguration("odom_stamp_mode")},
-            {"pose_source": LaunchConfiguration("odom_pose_source")},
-            {"fallback_to_message": LaunchConfiguration("odom_fallback_to_message")},
+            {"pose_source": odom_pose_source},
+            {"fallback_to_message": odom_fallback_to_message},
         ],
         condition=IfCondition(LaunchConfiguration("launch_odom_adapter")),
-    )
-
-    pointcloud_axis_adapter = Node(
-        package="graph_construction",
-        executable="pointcloud_axis_adapter",
-        output="screen",
-        parameters=[
-            {"use_sim_time": use_sim_time},
-            {"input_topic": _value(context, profile, "pointcloud_input_topic", "lidar_topic")},
-            {"output_topic": aligned_lidar_topic},
-            {"output_frame": pointcloud_output_frame},
-            {"axis_mode": pointcloud_axis_mode},
-        ],
-        condition=IfCondition(LaunchConfiguration("launch_pointcloud_axis_adapter")),
     )
 
     wildos = Node(
@@ -288,24 +257,13 @@ def _launch_setup(context):
 
     return [
         SetEnvironmentVariable("ROS_DOMAIN_ID", _value(context, profile, "ros_domain_id", "ros_domain_id")),
-        SetEnvironmentVariable("RMW_IMPLEMENTATION", _value(context, profile, "rmw_implementation", "rmw_implementation_3d")),
-        SetEnvironmentVariable(
-            "FASTDDS_DEFAULT_PROFILES_FILE",
-            LaunchConfiguration("fastdds_profile"),
-            condition=LaunchConfigurationNotEquals("fastdds_profile", ""),
-        ),
-        SetEnvironmentVariable(
-            "FASTRTPS_DEFAULT_PROFILES_FILE",
-            LaunchConfiguration("fastdds_profile"),
-            condition=LaunchConfigurationNotEquals("fastdds_profile", ""),
-        ),
+        SetEnvironmentVariable("RMW_IMPLEMENTATION", _value(context, profile, "rmw_implementation", "rmw_implementation_2d")),
+        livox_grid_builder,
         odom_adapter,
         _lidar_static_tf(context, profile),
-        pointcloud_axis_adapter,
         _camera_static_tf("front", camera_parent_frame, ["0.30", "0.00", "0.20", "0.5", "-0.5", "0.5", "-0.5"], publish_camera_static_tf),
         _camera_static_tf("left", camera_parent_frame, ["0.00", "0.18", "0.20", "0.7071067812", "0.0", "0.0", "-0.7071067812"], publish_camera_static_tf),
         _camera_static_tf("right", camera_parent_frame, ["0.00", "-0.18", "0.20", "0.0", "0.7071067812", "-0.7071067812", "0.0"], publish_camera_static_tf),
-        elevation_mapping,
         TimerAction(period=LaunchConfiguration("graph_start_delay"), actions=[graph_construction]),
         TimerAction(period=LaunchConfiguration("visual_start_delay"), actions=[wildos]),
         TimerAction(period=LaunchConfiguration("planner_start_delay"), actions=[planner, path_follower]),
@@ -364,26 +322,37 @@ def _lidar_static_tf(context, profile):
         name="unitree_lidar_static_tf",
         output="screen",
         arguments=[
-            "0",
-            "0",
-            "0",
-            "0",
-            "0",
-            "0",
-            _value(context, profile, "lidar_parent_frame", "lidar_parent_frame"),
-            _value(context, profile, "lidar_frame", "lidar_frame"),
+            "--x", "0",
+            "--y", "0",
+            "--z", "0",
+            "--roll", "0",
+            "--pitch", "0",
+            "--yaw", "0",
+            "--frame-id", _value(context, profile, "lidar_parent_frame", "lidar_parent_frame"),
+            "--child-frame-id", _value(context, profile, "lidar_frame", "lidar_frame"),
         ],
         condition=IfCondition(LaunchConfiguration("publish_lidar_static_tf")),
     )
 
 
 def _camera_static_tf(name, parent_frame, transform_args, condition):
+    x, y, z, qx, qy, qz, qw = transform_args
     return Node(
         package="tf2_ros",
         executable="static_transform_publisher",
         name=f"unitree_{name}_camera_static_tf",
         output="screen",
-        arguments=[*transform_args, parent_frame, f"{name}_camera"],
+        arguments=[
+            "--x", x,
+            "--y", y,
+            "--z", z,
+            "--qx", qx,
+            "--qy", qy,
+            "--qz", qz,
+            "--qw", qw,
+            "--frame-id", parent_frame,
+            "--child-frame-id", f"{name}_camera",
+        ],
         condition=IfCondition(condition),
     )
 
@@ -420,13 +389,6 @@ def _prepend_pythonpath(path):
     return path
 
 
-def _package_config_path(package_name, config_name):
-    config_path = Path(config_name).expanduser()
-    if config_path.is_absolute():
-        return str(config_path)
-    return str(Path(get_package_share_directory(package_name)) / "configs" / config_name)
-
-
 def _arg(context, name):
     return LaunchConfiguration(name).perform(context)
 
@@ -436,3 +398,16 @@ def _value(context, profile, arg_name, profile_key):
     if override:
         return override
     return str(profile[profile_key])
+
+
+def _bool_value(context, profile, arg_name, profile_key):
+    override = _arg(context, arg_name)
+    raw_value = override if override else profile[profile_key]
+    if isinstance(raw_value, bool):
+        return raw_value
+    normalized = str(raw_value).strip().lower()
+    if normalized in {"true", "1", "yes", "on"}:
+        return True
+    if normalized in {"false", "0", "no", "off"}:
+        return False
+    raise ValueError(f"Invalid boolean value for {arg_name}: {raw_value}")

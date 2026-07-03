@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import argparse
+from collections import deque
 from dataclasses import dataclass, fields
 from math import ceil, floor, hypot, isfinite
 from pathlib import Path
-from typing import Any, Dict, Iterator, Optional, Tuple
+from typing import Any, Deque, Dict, Iterator, List, Optional, Tuple
 
 from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import TransformStamped
@@ -19,7 +20,7 @@ from sensor_msgs.msg import PointCloud2
 from sensor_msgs_py import point_cloud2
 import tf2_ros
 
-from graph_construction.grid_adapter import bresenham_line
+from graph_construction.grid_types import bresenham_line
 
 
 Point3D = Tuple[float, float, float]
@@ -28,8 +29,8 @@ GridIndex = Tuple[int, int]
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "grid_frame": "map",
-    "lidar_topic": "/livox/lidar",
-    "odom_topic": "/unity/odom",
+    "lidar_topic": "/unitree_go2/lidar/points",
+    "odom_topic": "/odom",
     "grid_topic": "/spot1/traversability_grid",
     "publish_rate_hz": 5.0,
     "resolution": 0.2,
@@ -45,6 +46,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "obstacle_value": 100,
     "assume_input_in_grid_frame": False,
     "tf_timeout_sec": 0.1,
+    "scan_accumulation_time_sec": 4.0,
+    "max_accumulated_scans": 40,
 }
 
 
@@ -53,8 +56,8 @@ class LivoxGridBuilderConfig:
     """Livox 点云转局部 OccupancyGrid 的运行参数"""
 
     grid_frame: str = "map"
-    lidar_topic: str = "/livox/lidar"
-    odom_topic: str = "/unity/odom"
+    lidar_topic: str = "/unitree_go2/lidar/points"
+    odom_topic: str = "/odom"
     grid_topic: str = "/spot1/traversability_grid"
     publish_rate_hz: float = 5.0
     resolution: float = 0.2
@@ -70,6 +73,18 @@ class LivoxGridBuilderConfig:
     obstacle_value: int = 100
     assume_input_in_grid_frame: bool = False
     tf_timeout_sec: float = 0.1
+    scan_accumulation_time_sec: float = 4.0
+    max_accumulated_scans: int = 40
+
+
+@dataclass
+class CloudObservation:
+    """一帧已经转换到 grid frame 的点云观测"""
+
+    stamp_seconds: float
+    sensor_origin: Point3D
+    robot_position: Point3D
+    points: List[Point3D]
 
 
 class LivoxGridBuilder(Node):
@@ -84,6 +99,9 @@ class LivoxGridBuilder(Node):
         self._logged_first_odom = False
         self._logged_first_grid = False
         self._logged_missing_tf = False
+        self._logged_first_accumulated_scan = False
+        self._cloud_observations: Deque[CloudObservation] = deque()
+        self._last_processed_cloud_key: Optional[Tuple[int, int, str, int]] = None
 
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
@@ -96,39 +114,102 @@ class LivoxGridBuilder(Node):
         self.create_timer(1.0 / publish_rate, self._on_timer)
 
         self.get_logger().info(
-            f"Livox grid builder started, lidar={self.config.lidar_topic}, grid={self.config.grid_topic}"
+            f"Livox 栅格构建已启动, lidar={self.config.lidar_topic}, grid={self.config.grid_topic}"
         )
 
     def _on_cloud(self, msg: PointCloud2) -> None:
         """缓存最新点云, 计算放在 timer 中执行"""
         self.latest_cloud = msg
         if not self._logged_first_cloud:
-            self.get_logger().info(f"Received first cloud, frame={msg.header.frame_id}")
+            self.get_logger().info(f"收到第一帧点云, frame={msg.header.frame_id}")
             self._logged_first_cloud = True
 
     def _on_odom(self, msg: Odometry) -> None:
         """缓存最新 odom, 用于确定局部 grid 中心"""
         self.latest_odom = msg
         if not self._logged_first_odom:
-            self.get_logger().info(f"Received first odom, frame={msg.header.frame_id}")
+            self.get_logger().info(f"收到第一帧 odom, frame={msg.header.frame_id}")
             self._logged_first_odom = True
 
     def _on_timer(self) -> None:
-        """周期性把最新点云投影成局部 OccupancyGrid"""
+        """周期性把近期点云累计投影成局部 OccupancyGrid"""
         if self.latest_cloud is None or self.latest_odom is None:
+            return
+
+        self._store_latest_cloud_observation()
+        if not self._cloud_observations:
+            return
+
+        grid_msg = self._build_grid(self.latest_odom)
+        self.grid_pub.publish(grid_msg)
+        if not self._logged_first_grid:
+            self.get_logger().info(
+                f"已发布第一帧栅格, frame={grid_msg.header.frame_id}, "
+                f"size={grid_msg.info.width}x{grid_msg.info.height}, "
+                f"累计扫描帧数={len(self._cloud_observations)}"
+            )
+            self._logged_first_grid = True
+
+    def _store_latest_cloud_observation(self) -> None:
+        """把最新点云转换到 grid frame 并加入短时累计窗口"""
+        cloud_key = (
+            int(self.latest_cloud.header.stamp.sec),
+            int(self.latest_cloud.header.stamp.nanosec),
+            str(self.latest_cloud.header.frame_id),
+            id(self.latest_cloud),
+        )
+        if cloud_key == self._last_processed_cloud_key:
             return
 
         transform = self._lookup_cloud_transform(self.latest_cloud)
         if transform is None and not self.config.assume_input_in_grid_frame:
             return
 
-        grid_msg = self._build_grid(self.latest_cloud, self.latest_odom, transform)
-        self.grid_pub.publish(grid_msg)
-        if not self._logged_first_grid:
+        robot = _odom_position(self.latest_odom)
+        sensor_origin = self._sensor_origin(robot, transform)
+        points: List[Point3D] = []
+        for raw_point in _iter_cloud_xyz(self.latest_cloud):
+            point = _transform_point(raw_point, transform) if transform is not None else raw_point
+            if not _is_valid_point(point):
+                continue
+
+            distance = hypot(point[0] - sensor_origin[0], point[1] - sensor_origin[1])
+            if distance < self.config.min_range or distance > self.config.max_range:
+                continue
+            points.append(point)
+
+        self._last_processed_cloud_key = cloud_key
+        if not points:
+            return
+
+        observation = CloudObservation(
+            stamp_seconds=_stamp_to_seconds(self.latest_cloud),
+            sensor_origin=sensor_origin,
+            robot_position=robot,
+            points=points,
+        )
+        self._cloud_observations.append(observation)
+        self._trim_cloud_observations(observation.stamp_seconds)
+        if not self._logged_first_accumulated_scan:
             self.get_logger().info(
-                f"Published first grid, frame={grid_msg.header.frame_id}, size={grid_msg.info.width}x{grid_msg.info.height}"
+                f"已累计第一帧点云扫描, points={len(points)}, "
+                f"accumulation_time={self.config.scan_accumulation_time_sec:.1f}s"
             )
-            self._logged_first_grid = True
+            self._logged_first_accumulated_scan = True
+
+    def _trim_cloud_observations(self, latest_stamp_seconds: float) -> None:
+        """限制点云累计窗口, 避免局部地图长期残留旧障碍"""
+        max_age = max(0.0, float(self.config.scan_accumulation_time_sec))
+        if max_age > 0.0:
+            while (
+                self._cloud_observations
+                and latest_stamp_seconds - self._cloud_observations[0].stamp_seconds > max_age
+            ):
+                self._cloud_observations.popleft()
+
+        max_scans = max(1, int(self.config.max_accumulated_scans))
+        while len(self._cloud_observations) > max_scans:
+            self._cloud_observations.popleft()
 
     def _lookup_cloud_transform(self, cloud: PointCloud2) -> Optional[TransformStamped]:
         """查询点云 frame 到 grid frame 的 TF, 简化模式下跳过查询"""
@@ -145,18 +226,16 @@ class LivoxGridBuilder(Node):
         except Exception as exc:
             if not self._logged_missing_tf:
                 self.get_logger().warn(
-                    f"Missing TF from {cloud.header.frame_id} to {self.config.grid_frame}, error={exc}"
+                    f"缺少从 {cloud.header.frame_id} 到 {self.config.grid_frame} 的 TF, error={exc}"
                 )
                 self._logged_missing_tf = True
             return None
 
     def _build_grid(
         self,
-        cloud: PointCloud2,
         odom: Odometry,
-        transform: Optional[TransformStamped],
     ) -> OccupancyGrid:
-        """把点云投影到机器人附近局部 grid
+        """把累计点云投影到机器人附近局部 grid
 
         射线经过的 cell 标为 free, 命中点附近按膨胀半径标为 obstacle
         未被射线观测到的区域保持 unknown, 用于后续 frontier 检测
@@ -166,27 +245,24 @@ class LivoxGridBuilder(Node):
         robot = _odom_position(odom)
         origin_x = robot[0] - width * self.config.resolution * 0.5
         origin_y = robot[1] - height * self.config.resolution * 0.5
-        sensor_origin = self._sensor_origin(robot, transform)
         grid = np.full((height, width), int(self.config.unknown_value), dtype=np.int16)
-        origin_index = _world_to_grid(sensor_origin[0], sensor_origin[1], origin_x, origin_y, self.config.resolution)
 
-        for raw_point in _iter_cloud_xyz(cloud):
-            point = _transform_point(raw_point, transform) if transform is not None else raw_point
-            if not _is_valid_point(point):
-                continue
+        for observation in self._cloud_observations:
+            origin_index = _world_to_grid(
+                observation.sensor_origin[0],
+                observation.sensor_origin[1],
+                origin_x,
+                origin_y,
+                self.config.resolution,
+            )
+            for point in observation.points:
+                endpoint = _world_to_grid(point[0], point[1], origin_x, origin_y, self.config.resolution)
+                self._mark_ray_free(grid, origin_index, endpoint)
+                relative_z = point[2] - observation.robot_position[2]
+                if self.config.min_obstacle_height <= relative_z <= self.config.max_obstacle_height:
+                    self._mark_obstacle(grid, endpoint)
 
-            distance = hypot(point[0] - sensor_origin[0], point[1] - sensor_origin[1])
-            if distance < self.config.min_range or distance > self.config.max_range:
-                continue
-
-            endpoint = _world_to_grid(point[0], point[1], origin_x, origin_y, self.config.resolution)
-
-            self._mark_ray_free(grid, origin_index, endpoint)
-            relative_z = point[2] - robot[2]
-            if self.config.min_obstacle_height <= relative_z <= self.config.max_obstacle_height:
-                self._mark_obstacle(grid, endpoint)
-
-        return self._grid_message(cloud, grid, origin_x, origin_y, width, height)
+        return self._grid_message(grid, origin_x, origin_y, width, height)
 
     def _sensor_origin(self, robot: Point3D, transform: Optional[TransformStamped]) -> Point3D:
         """返回 grid frame 下的传感器原点"""
@@ -216,7 +292,6 @@ class LivoxGridBuilder(Node):
 
     def _grid_message(
         self,
-        cloud: PointCloud2,
         grid: np.ndarray,
         origin_x: float,
         origin_y: float,
@@ -225,7 +300,7 @@ class LivoxGridBuilder(Node):
     ) -> OccupancyGrid:
         """组装 nav_msgs/OccupancyGrid 消息"""
         msg = OccupancyGrid()
-        msg.header.stamp = cloud.header.stamp
+        msg.header.stamp = self.latest_cloud.header.stamp
         msg.header.frame_id = self.config.grid_frame
         msg.info.resolution = float(self.config.resolution)
         msg.info.width = int(width)
@@ -291,6 +366,11 @@ def _odom_position(odom: Odometry) -> Point3D:
     return float(position.x), float(position.y), float(position.z)
 
 
+def _stamp_to_seconds(cloud: PointCloud2) -> float:
+    """把 ROS stamp 转为秒, 用于点云累计窗口裁剪"""
+    return float(cloud.header.stamp.sec) + float(cloud.header.stamp.nanosec) * 1e-9
+
+
 def _builder_config(config: Dict[str, Any]) -> LivoxGridBuilderConfig:
     """从完整配置中提取 LivoxGridBuilderConfig 字段"""
     allowed = {field.name for field in fields(LivoxGridBuilderConfig)}
@@ -302,7 +382,7 @@ def _builder_config(config: Dict[str, Any]) -> LivoxGridBuilderConfig:
     return LivoxGridBuilderConfig(**values)
 
 
-def _load_config(config_name: str) -> Dict[str, Any]:
+def _load_config(config_name: str, overrides: list[str] | None = None) -> Dict[str, Any]:
     """加载安装目录或绝对路径中的 yaml 配置"""
     config_path = Path(config_name)
     if not config_path.is_absolute():
@@ -319,19 +399,35 @@ def _load_config(config_name: str) -> Dict[str, Any]:
 
     with config_path.open("r", encoding="utf-8") as config_file:
         loaded = yaml.safe_load(config_file) or {}
-    return loaded
+    return _apply_config_overrides(loaded, overrides or [])
+
+
+def _apply_config_overrides(config: Dict[str, Any], overrides: list[str]) -> Dict[str, Any]:
+    """应用 launch 传入的 key=value 覆盖项"""
+    try:
+        import yaml
+    except ImportError:
+        yaml = None
+
+    for item in overrides:
+        if "=" not in item:
+            raise ValueError(f"Invalid config override '{item}', expected key=value")
+        key, raw_value = item.split("=", 1)
+        config[key] = yaml.safe_load(raw_value) if yaml is not None else raw_value
+    return config
 
 
 def main(args=None) -> None:
-    """ROS2 console script 入口"""
+    """ROS2 控制台脚本入口"""
     rclpy.init(args=args)
     custom_args = rclpy.utilities.remove_ros_args(args)
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="livox_grid_builder.yaml")
+    parser.add_argument("--config-override", action="append", default=[])
     parsed = parser.parse_args(custom_args[1:] if custom_args else [])
 
-    node = LivoxGridBuilder(_load_config(parsed.config))
+    node = LivoxGridBuilder(_load_config(parsed.config, parsed.config_override))
     try:
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):

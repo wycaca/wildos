@@ -36,10 +36,10 @@ reach_scale: 0.25
 compute_paths: true
 
 # ROS2 frames and topics
-parent_frame: map
-cam_frame: camera_frame
-camera_img_topic: /camera/{}/color/image/compressed
-camera_info_topic: /camera/{}/color/camera_info
+parent_frame: odom
+cam_frame: "{}_camera"
+camera_img_topic: /unitree_go2/{}_cam/color_image
+camera_info_topic: /unitree_go2/{}_cam/info
 odometry_topic: /spot1/odom_for_scoring
 navigation_graph_topic: /spot1/nav_graph
 
@@ -58,7 +58,7 @@ syncsub_slop: 5.0
 # Object Search Config
 object_search_config:
     text_queries:
-        - "NASA logo"
+        - "blue bucket"
     pixel_level_seg: false
     mask_threshold: 0.09
     obj_frontier_score: 0.9

@@ -1,6 +1,6 @@
 grid_frame: map
-lidar_topic: /livox/lidar
-odom_topic: /unity/odom
+lidar_topic: /unitree_go2/lidar/points
+odom_topic: /odom
 grid_topic: /spot1/traversability_grid
 
 publish_rate_hz: 5.0
@@ -20,3 +20,5 @@ obstacle_value: 100
 
 assume_input_in_grid_frame: false
 tf_timeout_sec: 0.1
+scan_accumulation_time_sec: 4.0
+max_accumulated_scans: 40

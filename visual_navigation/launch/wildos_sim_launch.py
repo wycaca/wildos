@@ -16,8 +16,69 @@ def generate_launch_description():
     odom_parent_frame = LaunchConfiguration("odom_parent_frame")
     odom_child_frame = LaunchConfiguration("odom_child_frame")
     odom_stamp_mode = LaunchConfiguration("odom_stamp_mode")
+    odom_pose_source = LaunchConfiguration("odom_pose_source")
+    odom_fallback_to_message = LaunchConfiguration("odom_fallback_to_message")
+    publish_camera_static_tf = LaunchConfiguration("publish_camera_static_tf")
+    camera_parent_frame = LaunchConfiguration("camera_parent_frame")
     ros_domain_id = LaunchConfiguration("ros_domain_id")
     rmw_implementation = LaunchConfiguration("rmw_implementation")
+
+    front_camera_static_tf = Node(
+        package="tf2_ros",
+        executable="static_transform_publisher",
+        name="unitree_front_camera_static_tf",
+        output="screen",
+        arguments=[
+            "0.30",
+            "0.00",
+            "0.20",
+            "0.5",
+            "-0.5",
+            "0.5",
+            "-0.5",
+            camera_parent_frame,
+            "front_camera",
+        ],
+        condition=IfCondition(publish_camera_static_tf),
+    )
+
+    left_camera_static_tf = Node(
+        package="tf2_ros",
+        executable="static_transform_publisher",
+        name="unitree_left_camera_static_tf",
+        output="screen",
+        arguments=[
+            "0.00",
+            "0.18",
+            "0.20",
+            "0.7071067812",
+            "0.0",
+            "0.0",
+            "-0.7071067812",
+            camera_parent_frame,
+            "left_camera",
+        ],
+        condition=IfCondition(publish_camera_static_tf),
+    )
+
+    right_camera_static_tf = Node(
+        package="tf2_ros",
+        executable="static_transform_publisher",
+        name="unitree_right_camera_static_tf",
+        output="screen",
+        arguments=[
+            "0.00",
+            "-0.18",
+            "0.20",
+            "0.0",
+            "0.7071067812",
+            "-0.7071067812",
+            "0.0",
+            camera_parent_frame,
+            "right_camera",
+        ],
+        condition=IfCondition(publish_camera_static_tf),
+    )
 
     return LaunchDescription(
         [
@@ -48,7 +109,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "odom_input_topic",
-                default_value="/unity/odom",
+                default_value="/odom",
                 description="Source odometry topic",
             ),
             DeclareLaunchArgument(
@@ -58,12 +119,12 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "odom_parent_frame",
-                default_value="map",
+                default_value="odom",
                 description="Adapted odometry header frame",
             ),
             DeclareLaunchArgument(
                 "odom_child_frame",
-                default_value="odom_fram",
+                default_value="base_link",
                 description="Adapted odometry child frame",
             ),
             DeclareLaunchArgument(
@@ -72,9 +133,29 @@ def generate_launch_description():
                 description="Use now or preserve for adapted odometry stamp",
             ),
             DeclareLaunchArgument(
+                "odom_pose_source",
+                default_value="tf",
+                description="Use message or tf pose for adapted odometry",
+            ),
+            DeclareLaunchArgument(
+                "odom_fallback_to_message",
+                default_value="false",
+                description="Fallback to input odom pose if TF pose is unavailable",
+            ),
+            DeclareLaunchArgument(
                 "ros_domain_id",
                 default_value="3",
                 description="ROS domain used by the simulator",
+            ),
+            DeclareLaunchArgument(
+                "publish_camera_static_tf",
+                default_value="true",
+                description="Publish fallback static transforms for Isaac camera frames",
+            ),
+            DeclareLaunchArgument(
+                "camera_parent_frame",
+                default_value="base_link",
+                description="Parent frame for fallback Isaac camera transforms",
             ),
             DeclareLaunchArgument(
                 "rmw_implementation",
@@ -94,9 +175,14 @@ def generate_launch_description():
                     {"parent_frame": odom_parent_frame},
                     {"child_frame": odom_child_frame},
                     {"stamp_mode": odom_stamp_mode},
+                    {"pose_source": odom_pose_source},
+                    {"fallback_to_message": odom_fallback_to_message},
                 ],
                 condition=IfCondition(launch_odom_adapter),
             ),
+            front_camera_static_tf,
+            left_camera_static_tf,
+            right_camera_static_tf,
             Node(
                 package="visual_navigation",
                 executable="wildos",

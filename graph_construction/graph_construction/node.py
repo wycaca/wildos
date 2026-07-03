@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import fields
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Dict
 
 from ament_index_python.packages import get_package_share_directory
@@ -12,15 +13,18 @@ from nav_msgs.msg import OccupancyGrid, Odometry
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from std_msgs.msg import Header
 from visualization_msgs.msg import MarkerArray
 
 from graph_construction.graph_builder import GraphBuilder, GraphBuilderConfig
+from graph_construction.grid_adapter import classify_grid_map, classify_occupancy_grid
+from graph_construction.msg_utils import graph_to_msg
 from graph_construction.viz import GraphVisualizer
 
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "global_frame": "map",
-    "odom_topic": "/unity/odom",
+    "odom_topic": "/odom",
     "grid_input_type": "occupancy_grid",
     "grid_topic": "/spot1/traversability_grid",
     "grid_map_topic": "/elevation_mapping_node/elevation_map_raw",
@@ -28,6 +32,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "viz_topic": "/spot1/graph_construction_viz",
     "trav_class": "default",
     "publish_rate_hz": 2.0,
+    "diagnostics_log_period_sec": 5.0,
+    "slow_update_warning_ms": 200.0,
     "free_threshold": 20,
     "obstacle_threshold": 65,
     "grid_map_traversability_layer": "traversability",
@@ -59,6 +65,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "frontier_min_points": 4,
     "frontier_min_span": 0.6,
     "frontier_border_margin": 0.8,
+    "frontier_candidate_spacing": 0.0,
     "deadend_observation_count": 3,
     "removed_frontier_suppression_radius": 1.0,
     "trajectory_min_separation": 0.25,
@@ -85,6 +92,7 @@ class GraphConstructionNode(Node):
         self._logged_first_grid = False
         self._logged_first_odom = False
         self._logged_first_publish = False
+        self._last_diagnostics_log_time = perf_counter()
 
         self.nav_graph_pub = self.create_publisher(
             NavigationGraph,
@@ -121,7 +129,7 @@ class GraphConstructionNode(Node):
         self.create_timer(1.0 / publish_rate, self._on_timer)
 
         self.get_logger().info(
-            f"Graph construction started, input_type={self.grid_input_type}, grid={input_topic}, "
+            f"Graph construction 已启动, input_type={self.grid_input_type}, grid={input_topic}, "
             f"odom={self.config['odom_topic']}"
         )
 
@@ -130,7 +138,7 @@ class GraphConstructionNode(Node):
         self.latest_grid = msg
         if not self._logged_first_grid:
             self.get_logger().info(
-                f"Received first grid, frame={msg.header.frame_id}, size={msg.info.width}x{msg.info.height}"
+                f"收到第一帧 grid, frame={msg.header.frame_id}, size={msg.info.width}x{msg.info.height}"
             )
             self._logged_first_grid = True
 
@@ -139,7 +147,7 @@ class GraphConstructionNode(Node):
         self.latest_grid = msg
         if not self._logged_first_grid:
             self.get_logger().info(
-                f"Received first GridMap, frame={msg.header.frame_id}, layers={list(msg.layers)}"
+                f"收到第一帧 GridMap, frame={msg.header.frame_id}, layers={list(msg.layers)}"
             )
             self._logged_first_grid = True
 
@@ -149,7 +157,7 @@ class GraphConstructionNode(Node):
         if not self._logged_first_odom:
             position = msg.pose.pose.position
             self.get_logger().info(
-                f"Received first odom, frame={msg.header.frame_id}, "
+                f"收到第一帧 odom, frame={msg.header.frame_id}, "
                 f"position=({position.x:.3f}, {position.y:.3f}, {position.z:.3f})"
             )
             self._logged_first_odom = True
@@ -163,36 +171,120 @@ class GraphConstructionNode(Node):
         if self.latest_grid is None or self.latest_odom is None:
             return
 
+        update_start = perf_counter()
+        node_stage_timings_ms: Dict[str, float] = {}
         try:
-            if self.grid_input_type == "grid_map":
-                nav_graph, header, classified_grid = self.builder.update_grid_map(self.latest_grid, self.latest_odom)
-            else:
-                nav_graph, header, classified_grid = self.builder.update_occupancy_grid(
-                    self.latest_grid,
-                    self.latest_odom,
-                )
+            stage_start = perf_counter()
+            classified_grid = self._classify_latest_grid()
+            node_stage_timings_ms["classify_grid"] = _elapsed_ms(stage_start)
+
+            stage_start = perf_counter()
+            update_result = self.builder.update(
+                classified_grid,
+                _robot_position(self.latest_odom),
+                _stamp_to_seconds(self.latest_grid.header),
+            )
+            node_stage_timings_ms["builder_update"] = _elapsed_ms(stage_start)
         except Exception as exc:
-            self.get_logger().error(f"Failed to update navigation graph: {exc}")
+            self.get_logger().error(f"更新导航图失败: {exc}")
             return
 
+        stage_start = perf_counter()
+        header = self._graph_header(self.latest_grid.header, classified_grid.frame_id)
+        nav_graph = graph_to_msg(update_result.graph, header, self.config["trav_class"])
+        node_stage_timings_ms["convert_graph_msg"] = _elapsed_ms(stage_start)
+
+        stage_start = perf_counter()
         self.nav_graph_pub.publish(nav_graph)
-        self.viz_pub.publish(self.visualizer.build_markers(self.builder.graph, header, classified_grid))
+        node_stage_timings_ms["publish_graph"] = _elapsed_ms(stage_start)
+
+        stage_start = perf_counter()
+        self.viz_pub.publish(
+            self.visualizer.build_markers(
+                update_result.graph,
+                header,
+                update_result.classified_grid,
+            )
+        )
+        node_stage_timings_ms["publish_viz"] = _elapsed_ms(stage_start)
+        node_stage_timings_ms["total"] = _elapsed_ms(update_start)
+
         if not self._logged_first_publish:
             frontier_count = sum(
                 1
                 for node in nav_graph.nodes
                 if node.trav_properties and node.trav_properties[0].is_frontier
             )
-            grid_stats = _format_grid_stats(classified_grid.stats)
+            grid_stats = _format_grid_stats(update_result.classified_grid.stats)
             robot_stats = _format_robot_stats(
                 self.builder.graph.latest_robot_odom_position,
                 self.builder.graph.latest_robot_position,
+                self.builder.graph.latest_robot_ground_projected,
             )
             self.get_logger().info(
-                f"Published first graph, nodes={len(nav_graph.nodes)}, edges={len(nav_graph.edges)}, "
+                f"已发布第一帧导航图, nodes={len(nav_graph.nodes)}, edges={len(nav_graph.edges)}, "
                 f"frontier={frontier_count}{grid_stats}{robot_stats}"
             )
             self._logged_first_publish = True
+        # self._maybe_log_diagnostics(update_result, node_stage_timings_ms)
+
+    def _classify_latest_grid(self):
+        """把缓存的 ROS 地图消息解码为通用 grid"""
+        if self.grid_input_type == "grid_map":
+            return classify_grid_map(
+                self.latest_grid,
+                traversability_layer=self.config["grid_map_traversability_layer"],
+                elevation_layer=self.config["grid_map_elevation_layer"],
+                free_threshold=self.config["grid_map_free_threshold"],
+                obstacle_threshold=self.config["grid_map_obstacle_threshold"],
+                normalize_traversability=self.config["grid_map_normalize_traversability"],
+                normalize_low_quantile=self.config["grid_map_normalize_low_quantile"],
+                normalize_high_quantile=self.config["grid_map_normalize_high_quantile"],
+                z_offset=self.config["grid_map_z_offset"],
+                enable_postprocess=self.config["grid_map_enable_postprocess"],
+                min_free_component_cells=self.config["grid_map_min_free_component_cells"],
+                fill_hole_max_cells=self.config["grid_map_fill_hole_max_cells"],
+                fill_hole_min_free_neighbor_ratio=self.config["grid_map_fill_hole_min_free_neighbor_ratio"],
+                majority_fill_iterations=self.config["grid_map_majority_fill_iterations"],
+                majority_fill_min_neighbors=self.config["grid_map_majority_fill_min_neighbors"],
+                transpose=self.config["grid_map_transpose"],
+                flip_x=self.config["grid_map_flip_x"],
+                flip_y=self.config["grid_map_flip_y"],
+            )
+
+        return classify_occupancy_grid(
+            self.latest_grid,
+            free_threshold=self.config["free_threshold"],
+            obstacle_threshold=self.config["obstacle_threshold"],
+        )
+
+    def _graph_header(self, input_header, fallback_frame: str):
+        """构造 ROS 适配层负责的输出 graph header"""
+        header = Header()
+        header.stamp = input_header.stamp
+        header.frame_id = self.config["global_frame"] or fallback_frame
+        return header
+
+    def _maybe_log_diagnostics(self, update_result, node_stage_timings_ms: Dict[str, float]) -> None:
+        """按周期打印诊断日志, 慢帧单独升为 warning"""
+        now = perf_counter()
+        log_period = float(self.config["diagnostics_log_period_sec"])
+        slow_update_warning_ms = float(self.config["slow_update_warning_ms"])
+        total_ms = node_stage_timings_ms.get("total", 0.0)
+        should_warn = slow_update_warning_ms > 0.0 and total_ms >= slow_update_warning_ms
+        should_log = log_period > 0.0 and now - self._last_diagnostics_log_time >= log_period
+
+        if not should_warn and not should_log:
+            return
+
+        if should_log:
+            self._last_diagnostics_log_time = now
+
+        message = _format_update_diagnostics(update_result, node_stage_timings_ms)
+        if should_warn:
+            self.get_logger().warn(f"导航图更新较慢, {message}")
+        else:
+            self.get_logger().info(f"导航图更新诊断, {message}")
 
 
 def _builder_config(config: Dict[str, Any]) -> GraphBuilderConfig:
@@ -207,27 +299,124 @@ def _builder_config(config: Dict[str, Any]) -> GraphBuilderConfig:
 
 
 def _format_grid_stats(stats: Any) -> str:
-    """Format optional grid classification stats for first-publish diagnostics"""
+    """格式化首帧发布诊断用的 grid 分类统计"""
     if not stats:
         return ""
     return (
-        f", valid={stats.get('valid', 0)}, raw_free={stats.get('raw_free', 0)}, "
-        f"raw_obstacle={stats.get('raw_obstacle', 0)}, raw_unknown={stats.get('raw_unknown', 0)}, "
+        f", 有效={stats.get('valid', 0)}, 原始free={stats.get('raw_free', 0)}, "
+        f"原始obstacle={stats.get('raw_obstacle', 0)}, 原始unknown={stats.get('raw_unknown', 0)}, "
         f"free={stats.get('free', 0)}, obstacle={stats.get('obstacle', 0)}, unknown={stats.get('unknown', 0)}"
     )
 
 
-def _format_robot_stats(odom_position: Any, ground_position: Any) -> str:
-    """Format robot odom and GridMap-projected positions for diagnostics"""
-    if odom_position is None or ground_position is None:
+def _format_robot_stats(odom_position: Any, ground_position: Any, ground_projected: bool) -> str:
+    """格式化机器人 odom 和 GridMap 投影位置诊断信息"""
+    if odom_position is None:
         return ""
+    if ground_position is None:
+        return (
+            f", 机器人odom=({odom_position[0]:.3f}, {odom_position[1]:.3f}, {odom_position[2]:.3f}), "
+            "机器人地面投影=缺失"
+        )
     return (
-        f", robot_odom=({odom_position[0]:.3f}, {odom_position[1]:.3f}, {odom_position[2]:.3f}), "
-        f"robot_ground=({ground_position[0]:.3f}, {ground_position[1]:.3f}, {ground_position[2]:.3f})"
+        f", 机器人odom=({odom_position[0]:.3f}, {odom_position[1]:.3f}, {odom_position[2]:.3f}), "
+        f"机器人地面=({ground_position[0]:.3f}, {ground_position[1]:.3f}, {ground_position[2]:.3f}), "
+        f"机器人地面投影={'正常' if ground_projected else '缺失'}"
     )
 
 
-def _load_config(config_name: str) -> Dict[str, Any]:
+def _format_update_diagnostics(update_result: Any, node_stage_timings_ms: Dict[str, float]) -> str:
+    """格式化周期性 graph update 诊断日志"""
+    diagnostics = update_result.diagnostics
+    current_node_status = _format_current_node_status(diagnostics.current_node_status)
+    return (
+        f"节点数={diagnostics.node_count}, 边数={diagnostics.edge_count}, "
+        f"frontier节点={diagnostics.frontier_node_count}, frontier栅格={diagnostics.frontier_cell_count}, "
+        f"frontier候选={diagnostics.frontier_candidate_count}, "
+        f"连通分量={diagnostics.connected_components}, 当前分量大小={diagnostics.current_component_size}, "
+        f"当前节点={diagnostics.current_node_id}, 当前节点状态={current_node_status}, "
+        f"节点度数=min/{diagnostics.degree_min},avg/{diagnostics.degree_avg:.2f},max/{diagnostics.degree_max}"
+        f"{_format_grid_stats(update_result.classified_grid.stats)}, "
+        f"阶段耗时={_format_stage_timings(update_result.diagnostics.stage_timings_ms, node_stage_timings_ms)}"
+    )
+
+
+def _format_current_node_status(status: str) -> str:
+    """把内部 current node 状态映射为中文日志"""
+    labels = {
+        "reachable": "安全可达",
+        "geometry_fallback": "几何回退",
+        "missing": "缺失",
+    }
+    return labels.get(status, status)
+
+
+def _format_stage_timings(
+    builder_stage_timings_ms: Dict[str, float],
+    node_stage_timings_ms: Dict[str, float],
+) -> str:
+    """按固定顺序输出 builder 和 ROS node 两层耗时"""
+    entries: list[tuple[str, float]] = []
+    node_order = [
+        "classify_grid",
+        "builder_update",
+        "convert_graph_msg",
+        "publish_graph",
+        "publish_viz",
+        "total",
+    ]
+    builder_order = [
+        "prepare_grid",
+        "distance_fields",
+        "update_nodes",
+        "sample_nodes",
+        "update_frontiers",
+        "current_node",
+        "build_edges",
+        "total",
+    ]
+
+    for name in node_order:
+        if name in node_stage_timings_ms:
+            entries.append((f"node.{name}", node_stage_timings_ms[name]))
+    for name in builder_order:
+        if name in builder_stage_timings_ms:
+            entries.append((f"builder.{name}", builder_stage_timings_ms[name]))
+
+    seen_names = {name for name, _ in entries}
+    for name, value in node_stage_timings_ms.items():
+        entry_name = f"node.{name}"
+        if entry_name not in seen_names:
+            entries.append((entry_name, value))
+            seen_names.add(entry_name)
+    for name, value in builder_stage_timings_ms.items():
+        entry_name = f"builder.{name}"
+        if entry_name not in seen_names:
+            entries.append((entry_name, value))
+
+    return ", ".join(f"{name}={value:.1f}ms" for name, value in entries)
+
+
+def _elapsed_ms(start_time: float) -> float:
+    """计算阶段耗时, 单位毫秒"""
+    return (perf_counter() - start_time) * 1000.0
+
+
+def _stamp_to_seconds(header: Any) -> float:
+    """将 ROS header stamp 转成纯算法层使用的秒"""
+    return float(header.stamp.sec) + float(header.stamp.nanosec) * 1e-9
+
+
+def _robot_position(odom_msg: Odometry):
+    """从 Odometry 提取纯算法层使用的机器人 XYZ"""
+    return (
+        odom_msg.pose.pose.position.x,
+        odom_msg.pose.pose.position.y,
+        odom_msg.pose.pose.position.z,
+    )
+
+
+def _load_config(config_name: str, overrides: list[str] | None = None) -> Dict[str, Any]:
     """加载安装目录或绝对路径中的 yaml 配置"""
     config_path = Path(config_name)
     if not config_path.is_absolute():
@@ -244,19 +433,35 @@ def _load_config(config_name: str) -> Dict[str, Any]:
 
     with config_path.open("r", encoding="utf-8") as config_file:
         loaded = yaml.safe_load(config_file) or {}
-    return loaded
+    return _apply_config_overrides(loaded, overrides or [])
+
+
+def _apply_config_overrides(config: Dict[str, Any], overrides: list[str]) -> Dict[str, Any]:
+    """应用 launch 传入的 key=value 覆盖项"""
+    try:
+        import yaml
+    except ImportError:
+        yaml = None
+
+    for item in overrides:
+        if "=" not in item:
+            raise ValueError(f"Invalid config override '{item}', expected key=value")
+        key, raw_value = item.split("=", 1)
+        config[key] = yaml.safe_load(raw_value) if yaml is not None else raw_value
+    return config
 
 
 def main(args=None) -> None:
-    """ROS2 console script 入口"""
+    """ROS2 控制台脚本入口"""
     rclpy.init(args=args)
     custom_args = rclpy.utilities.remove_ros_args(args)
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="graph_construction.yaml")
+    parser.add_argument("--config-override", action="append", default=[])
     parsed = parser.parse_args(custom_args[1:] if custom_args else [])
 
-    node = GraphConstructionNode(_load_config(parsed.config))
+    node = GraphConstructionNode(_load_config(parsed.config, parsed.config_override))
     try:
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):

@@ -1,6 +1,6 @@
 robot_namespace: spot1
 global_frame: map
-odom_topic: /unity/odom
+odom_topic: /odom
 grid_topic: /spot1/traversability_grid
 nav_graph_topic: /spot1/nav_graph
 viz_topic: /spot1/graph_construction_viz
@@ -8,6 +8,8 @@ debug_grid_topic: /spot1/debug_traversability_grid
 
 trav_class: default
 publish_rate_hz: 2.0
+diagnostics_log_period_sec: 5.0
+slow_update_warning_ms: 200.0
 
 free_threshold: 20
 obstacle_threshold: 65
@@ -22,6 +24,7 @@ frontier_assign_radius: 5.0
 frontier_min_points: 4
 frontier_min_span: 0.6
 frontier_border_margin: 0.8
+frontier_candidate_spacing: 0.6
 deadend_observation_count: 3
 removed_frontier_suppression_radius: 0.0
 trajectory_min_separation: 0.25

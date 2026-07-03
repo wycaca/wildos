@@ -1,24 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from math import hypot
-from typing import Tuple
-
-from grid_map_msgs.msg import GridMap
-from nav_msgs.msg import OccupancyGrid, Odometry
-from std_msgs.msg import Header
+import math
+from time import perf_counter
+from typing import Dict, Tuple
 
 from graph_construction.deadend_recovery import DeadendRecovery
 from graph_construction.edge_builder import EdgeBuilder
 from graph_construction.frontier_detector import FrontierDetector
 from graph_construction.graph_memory import GraphState
-from graph_construction.grid_adapter import (
-    ClassifiedGrid,
-    classify_grid_map,
-    classify_occupancy_grid,
-    distance_to_mask,
-)
-from graph_construction.msg_utils import graph_to_msg
+from graph_construction.grid_types import ClassifiedGrid, distance_to_mask
 
 
 @dataclass
@@ -26,31 +18,13 @@ class GraphBuilderConfig:
     """图构建运行参数
 
     这些参数对应论文中的局部地图半径, 节点采样间距, free radius, edge radius 等概念
-    第一版参数以可调试和保守为主, 不追求完全复现论文未开源实现
     """
 
-    global_frame: str = "spot1/odom"
-    trav_class: str = "default"
-    free_threshold: int = 20
-    obstacle_threshold: int = 65
-    grid_map_traversability_layer: str = "traversability"
-    grid_map_elevation_layer: str = "elevation"
-    grid_map_free_threshold: float = 0.2
-    grid_map_obstacle_threshold: float = 0.05
-    grid_map_normalize_traversability: bool = True
-    grid_map_normalize_low_quantile: float = 0.05
-    grid_map_normalize_high_quantile: float = 0.95
-    grid_map_z_offset: float = 0.08
-    grid_map_enable_postprocess: bool = True
-    grid_map_min_free_component_cells: int = 25
-    grid_map_fill_hole_max_cells: int = 90
-    grid_map_fill_hole_min_free_neighbor_ratio: float = 0.65
-    grid_map_majority_fill_iterations: int = 1
-    grid_map_majority_fill_min_neighbors: int = 6
-    grid_map_max_node_odom_z_delta: float = 1.5
-    grid_map_transpose: bool = False
-    grid_map_flip_x: bool = False
-    grid_map_flip_y: bool = False
+    # 限制相对于局部地面的最大高度差
+    grid_map_max_node_odom_z_delta: float = 0.4
+    # 过滤局部高程尖峰和帘状面噪声
+    grid_map_max_surface_step: float = 0.35
+
     sample_stride: int = 8
     min_node_separation: float = 1.0
     max_free_radius: float = 4.0
@@ -62,12 +36,42 @@ class GraphBuilderConfig:
     frontier_min_points: int = 4
     frontier_min_span: float = 0.6
     frontier_border_margin: float = 0.8
+    frontier_candidate_spacing: float = 0.0
     deadend_observation_count: int = 3
     removed_frontier_suppression_radius: float = 1.0
     trajectory_min_separation: float = 0.25
 
 
-class GraphBuilder:
+@dataclass
+class GraphUpdateDiagnostics:
+    """单次图更新的纯算法诊断数据"""
+
+    stage_timings_ms: Dict[str, float] = field(default_factory=dict)
+    node_count: int = 0
+    edge_count: int = 0
+    frontier_node_count: int = 0
+    frontier_cell_count: int = 0
+    frontier_candidate_count: int = 0
+    connected_components: int = 0
+    current_component_size: int = 0
+    degree_min: int = 0
+    degree_max: int = 0
+    degree_avg: float = 0.0
+    current_node_id: int | None = None
+    current_node_status: str = "missing"
+
+
+@dataclass
+class GraphUpdateResult:
+    """返回给 ROS 适配层的纯图更新结果"""
+
+    graph: GraphState
+    classified_grid: ClassifiedGrid
+    frontier_cell_count: int
+    diagnostics: GraphUpdateDiagnostics = field(default_factory=GraphUpdateDiagnostics)
+
+
+class SparseGraphBuilder:
     """从局部栅格增量构建稀疏 NavigationGraph
 
     主流程保持和论文 Algorithm 1 一致
@@ -84,6 +88,7 @@ class GraphBuilder:
             frontier_min_span=config.frontier_min_span,
             frontier_border_margin=config.frontier_border_margin,
             removed_frontier_suppression_radius=config.removed_frontier_suppression_radius,
+            frontier_candidate_spacing=config.frontier_candidate_spacing,
         )
         self.edge_builder = EdgeBuilder(
             edge_radius=config.edge_radius,
@@ -95,74 +100,122 @@ class GraphBuilder:
             suppression_radius=config.removed_frontier_suppression_radius,
         )
 
-    def update(self, grid_msg: OccupancyGrid, odom_msg: Odometry):
-        """兼容旧调用, 使用 OccupancyGrid 更新 NavigationGraph"""
-        return self.update_occupancy_grid(grid_msg, odom_msg)
+    def update(
+        self,
+        grid: ClassifiedGrid,
+        robot_position: Tuple[float, float, float],
+        stamp_seconds: float,
+    ) -> GraphUpdateResult:
+        """根据已解码 grid 和机器人位置更新稀疏图"""
+        return self._update_classified_grid(grid, robot_position, stamp_seconds)
 
-    def update_occupancy_grid(self, grid_msg: OccupancyGrid, odom_msg: Odometry):
-        """处理一帧 OccupancyGrid 和 odom, 返回 NavigationGraph 消息, header 和分类 grid"""
-        grid = classify_occupancy_grid(
-            grid_msg,
-            free_threshold=self.config.free_threshold,
-            obstacle_threshold=self.config.obstacle_threshold,
-        )
-        return self._update_classified_grid(grid, grid_msg.header, odom_msg)
+    def _sanitize_grid_surface(self, grid: ClassifiedGrid) -> None:
+        """清洗孤立高程尖峰, 避免 graph 采到帘状面噪声"""
+        if grid.elevation is None:
+            return
 
-    def update_grid_map(self, grid_msg: GridMap, odom_msg: Odometry):
-        """处理一帧 GridMap 和 odom, 返回 NavigationGraph 消息, header 和分类 grid"""
-        grid = classify_grid_map(
-            grid_msg,
-            traversability_layer=self.config.grid_map_traversability_layer,
-            elevation_layer=self.config.grid_map_elevation_layer,
-            free_threshold=self.config.grid_map_free_threshold,
-            obstacle_threshold=self.config.grid_map_obstacle_threshold,
-            normalize_traversability=self.config.grid_map_normalize_traversability,
-            normalize_low_quantile=self.config.grid_map_normalize_low_quantile,
-            normalize_high_quantile=self.config.grid_map_normalize_high_quantile,
-            z_offset=self.config.grid_map_z_offset,
-            enable_postprocess=self.config.grid_map_enable_postprocess,
-            min_free_component_cells=self.config.grid_map_min_free_component_cells,
-            fill_hole_max_cells=self.config.grid_map_fill_hole_max_cells,
-            fill_hole_min_free_neighbor_ratio=self.config.grid_map_fill_hole_min_free_neighbor_ratio,
-            majority_fill_iterations=self.config.grid_map_majority_fill_iterations,
-            majority_fill_min_neighbors=self.config.grid_map_majority_fill_min_neighbors,
-            transpose=self.config.grid_map_transpose,
-            flip_x=self.config.grid_map_flip_x,
-            flip_y=self.config.grid_map_flip_y,
-        )
-        return self._update_classified_grid(grid, grid_msg.header, odom_msg)
+        max_step = self.config.grid_map_max_surface_step
+        if max_step <= 0.0:
+            return
 
-    def _update_classified_grid(self, grid: ClassifiedGrid, grid_header: Header, odom_msg: Odometry):
-        """Run source-agnostic graph update on free, obstacle, unknown masks"""
-        robot_position = _robot_position(odom_msg)
-        robot_ground_position = grid.project_to_elevation(robot_position)
+        h, w = grid.height, grid.width
+        curtain_indices = []
 
-        # obstacle 距离场用于估计节点安全半径
-        # unknown 距离场用于估计已探索半径和 frontier 生命周期
+        for iy in range(h):
+            for ix in range(w):
+                val = float(grid.elevation[iy, ix])
+                if not math.isfinite(val):
+                    continue
+                neighbor_values = []
+                for dy in (-1, 0, 1):
+                    for dx in (-1, 0, 1):
+                        if dx == 0 and dy == 0:
+                            continue
+                        nx, ny = ix + dx, iy + dy
+                        if 0 <= nx < w and 0 <= ny < h:
+                            n_val = float(grid.elevation[ny, nx])
+                            if math.isfinite(n_val):
+                                neighbor_values.append(n_val)
+                if len(neighbor_values) < 3:
+                    continue
+                neighbor_values.sort()
+                median = neighbor_values[len(neighbor_values) // 2]
+                if abs(val - median) > max_step:
+                    curtain_indices.append((ix, iy))
+
+        for ix, iy in curtain_indices:
+            grid.elevation[iy, ix] = math.nan
+            grid.unknown[iy, ix] = True
+            grid.free[iy, ix] = False
+            grid.obstacle[iy, ix] = False
+
+    def _update_classified_grid(
+        self,
+        grid: ClassifiedGrid,
+        robot_position: Tuple[float, float, float],
+        stamp_seconds: float,
+    ) -> GraphUpdateResult:
+        stage_timings_ms: Dict[str, float] = {}
+        total_start = perf_counter()
+
+        stage_start = perf_counter()
+        self._sanitize_grid_surface(grid)
+
+        robot_ground_position, robot_ground_projected = grid.project_to_elevation_with_status(robot_position)
+        robot_height_reference = robot_ground_position if robot_ground_projected else None
+        stage_timings_ms["prepare_grid"] = _elapsed_ms(stage_start)
+
+        # 距离场用于节点 clearance 和 frontier 生命周期判断
+        stage_start = perf_counter()
         sdf_obstacle = distance_to_mask(grid.obstacle, grid.resolution)
         sdf_unknown = distance_to_mask(grid.unknown, grid.resolution)
-        stamp_seconds = _stamp_to_seconds(grid_header)
+        stage_timings_ms["distance_fields"] = _elapsed_ms(stage_start)
 
-        # 先处理旧节点, 保证已经变成 obstacle 的节点不会继续参与采样和建边
-        self._update_existing_nodes(grid, sdf_obstacle, sdf_unknown, stamp_seconds, robot_ground_position)
+        # 先刷新旧节点, 再采样和建边
+        stage_start = perf_counter()
+        self._update_existing_nodes(grid, sdf_obstacle, sdf_unknown, stamp_seconds, robot_height_reference)
+        stage_timings_ms["update_nodes"] = _elapsed_ms(stage_start)
 
-        # 再在 free 区域补充节点, 让稀疏图持续覆盖当前局部地图
-        self._sample_new_nodes(grid, sdf_obstacle, sdf_unknown, stamp_seconds, robot_ground_position)
+        # 在当前观测到的 free 区域补充稀疏节点
+        stage_start = perf_counter()
+        self._sample_new_nodes(grid, sdf_obstacle, sdf_unknown, stamp_seconds, robot_height_reference)
+        stage_timings_ms["sample_nodes"] = _elapsed_ms(stage_start)
 
-        # frontier cell 是 free 和 unknown 的边界, 后续会被聚合到附近 graph node 上
+        # frontier cell 需要绑定到附近可用图节点
+        stage_start = perf_counter()
         frontier_cells = self.frontier_detector.detect_frontier_cells(grid)
-        self.frontier_detector.assign_frontiers(self.graph, grid, frontier_cells)
+        frontier_assignment = self.frontier_detector.assign_frontiers(self.graph, grid, frontier_cells)
         self.deadend_recovery.update(self.graph)
+        stage_timings_ms["update_frontiers"] = _elapsed_ms(stage_start)
 
-        self._update_current_node(grid, robot_position, robot_ground_position)
+        stage_start = perf_counter()
+        current_node_status = self._update_current_node(
+            grid,
+            robot_position,
+            robot_ground_position,
+            robot_ground_projected,
+        )
+        stage_timings_ms["current_node"] = _elapsed_ms(stage_start)
 
-        # 边需要在 current node 更新后重建, 机器人附近允许保留更多局部连接
+        # current node 确定后重建边, 便于优先保留机器人附近连接
+        stage_start = perf_counter()
         self.graph.set_edges(self.edge_builder.build_edges(self.graph, grid))
+        stage_timings_ms["build_edges"] = _elapsed_ms(stage_start)
+        stage_timings_ms["total"] = _elapsed_ms(total_start)
+        diagnostics = _build_graph_update_diagnostics(
+            self.graph,
+            stage_timings_ms,
+            frontier_cell_count=len(frontier_cells),
+            frontier_candidate_count=frontier_assignment.candidate_cell_count,
+            current_node_status=current_node_status,
+        )
 
-        header = Header()
-        header.stamp = grid_header.stamp
-        header.frame_id = self.config.global_frame or grid.frame_id
-        return graph_to_msg(self.graph, header, self.config.trav_class), header, grid
+        return GraphUpdateResult(
+            graph=self.graph,
+            classified_grid=grid,
+            frontier_cell_count=len(frontier_cells),
+            diagnostics=diagnostics,
+        )
 
     def _update_existing_nodes(
         self,
@@ -170,7 +223,7 @@ class GraphBuilder:
         sdf_obstacle,
         sdf_unknown,
         stamp_seconds: float,
-        robot_ground_position: Tuple[float, float, float],
+        robot_height_reference: Tuple[float, float, float] | None,
     ) -> None:
         """根据最新局部地图刷新已有节点的半径和有效性"""
         for node_id, node in list(self.graph.nodes.items()):
@@ -182,7 +235,8 @@ class GraphBuilder:
             if not grid.is_free_index(ix, iy):
                 self.graph.remove_node(node_id)
                 continue
-            if not self._node_height_is_near_robot(grid, node.position, robot_ground_position):
+
+            if not self._node_height_is_near_robot(grid, node.position, robot_height_reference):
                 self.graph.remove_node(node_id)
                 continue
 
@@ -207,7 +261,7 @@ class GraphBuilder:
         sdf_obstacle,
         sdf_unknown,
         stamp_seconds: float,
-        robot_ground_position: Tuple[float, float, float],
+        robot_height_reference: Tuple[float, float, float] | None,
     ) -> None:
         """在 free 区域按固定 stride 采样新节点
 
@@ -223,7 +277,8 @@ class GraphBuilder:
                     continue
 
                 position = grid.grid_to_world(ix, iy)
-                if not self._node_height_is_near_robot(grid, position, robot_ground_position):
+
+                if not self._node_height_is_near_robot(grid, position, robot_height_reference):
                     continue
                 if self.graph.nearest_node(position, max_distance=self.config.min_node_separation) is not None:
                     continue
@@ -241,14 +296,23 @@ class GraphBuilder:
         grid: ClassifiedGrid,
         robot_position: Tuple[float, float, float],
         robot_ground_position: Tuple[float, float, float],
-    ) -> None:
+        robot_ground_projected: bool,
+    ) -> str:
         """把机器人当前位置映射到 NavigationGraph.current_node_idx"""
         best_node = self._nearest_collision_free_node(grid, robot_ground_position)
+        current_node_status = "reachable" if best_node is not None else "missing"
         if best_node is None:
             best_node = self.graph.nearest_node(robot_ground_position)
+            if best_node is not None:
+                current_node_status = "geometry_fallback"
         self.graph.current_node_id = best_node.node_id if best_node is not None else None
-        self.graph.update_robot_position(robot_position, robot_ground_position)
-        self.graph.append_trajectory_point(robot_ground_position, self.config.trajectory_min_separation)
+        self.graph.update_robot_position(
+            robot_position,
+            robot_ground_position if robot_ground_projected else None,
+        )
+        if robot_ground_projected:
+            self.graph.append_trajectory_point(robot_ground_position, self.config.trajectory_min_separation)
+        return current_node_status
 
     def _node_height_is_near_robot(
         self,
@@ -259,9 +323,11 @@ class GraphBuilder:
         """过滤明显不在机器人局部地面高度附近的 GridMap cell"""
         if grid.elevation is None or self.config.grid_map_max_node_odom_z_delta <= 0.0:
             return True
+
         reference = robot_position if robot_position is not None else self.graph.latest_robot_position
-        if reference is None:
+        if reference is None or not math.isfinite(float(reference[2])):
             return True
+
         return abs(float(node_position[2]) - float(reference[2])) <= self.config.grid_map_max_node_odom_z_delta
 
     def _nearest_collision_free_node(self, grid: ClassifiedGrid, position: Tuple[float, float, float]):
@@ -279,15 +345,81 @@ class GraphBuilder:
         return None
 
 
-def _stamp_to_seconds(header: Header) -> float:
-    """将 ROS 时间戳转换为秒, 便于内部状态记录"""
-    return float(header.stamp.sec) + float(header.stamp.nanosec) * 1e-9
+GraphBuilder = SparseGraphBuilder
 
 
-def _robot_position(odom_msg: Odometry) -> Tuple[float, float, float]:
-    """从 odom 中提取机器人当前位置"""
-    return (
-        odom_msg.pose.pose.position.x,
-        odom_msg.pose.pose.position.y,
-        odom_msg.pose.pose.position.z,
+def _elapsed_ms(start_time: float) -> float:
+    """计算阶段耗时, 单位毫秒"""
+    return (perf_counter() - start_time) * 1000.0
+
+
+def _build_graph_update_diagnostics(
+    graph: GraphState,
+    stage_timings_ms: Dict[str, float],
+    frontier_cell_count: int,
+    frontier_candidate_count: int,
+    current_node_status: str,
+) -> GraphUpdateDiagnostics:
+    """汇总图规模, 连通性和度数统计, 供 ROS 层打印日志"""
+    node_ids = set(graph.nodes.keys())
+    degrees = {node_id: 0 for node_id in node_ids}
+    adjacency = {node_id: set() for node_id in node_ids}
+
+    for edge in graph.edges.values():
+        if edge.from_id not in node_ids or edge.to_id not in node_ids:
+            continue
+        degrees[edge.from_id] += 1
+        degrees[edge.to_id] += 1
+        adjacency[edge.from_id].add(edge.to_id)
+        adjacency[edge.to_id].add(edge.from_id)
+
+    component_sizes, current_component_size = _component_sizes(adjacency, graph.current_node_id)
+    degree_values = list(degrees.values())
+    degree_min = min(degree_values) if degree_values else 0
+    degree_max = max(degree_values) if degree_values else 0
+    degree_avg = sum(degree_values) / len(degree_values) if degree_values else 0.0
+
+    return GraphUpdateDiagnostics(
+        stage_timings_ms=dict(stage_timings_ms),
+        node_count=len(graph.nodes),
+        edge_count=len(graph.edges),
+        frontier_node_count=sum(1 for node in graph.nodes.values() if node.is_frontier),
+        frontier_cell_count=frontier_cell_count,
+        frontier_candidate_count=frontier_candidate_count,
+        connected_components=len(component_sizes),
+        current_component_size=current_component_size,
+        degree_min=degree_min,
+        degree_max=degree_max,
+        degree_avg=degree_avg,
+        current_node_id=graph.current_node_id,
+        current_node_status=current_node_status,
     )
+
+
+def _component_sizes(adjacency: Dict[int, set[int]], current_node_id: int | None) -> tuple[list[int], int]:
+    """计算无向图连通分量数量和 current node 所在分量大小"""
+    visited = set()
+    sizes = []
+    current_component_size = 0
+
+    for node_id in adjacency:
+        if node_id in visited:
+            continue
+        stack = [node_id]
+        visited.add(node_id)
+        component = []
+        while stack:
+            current = stack.pop()
+            component.append(current)
+            for neighbor in adjacency[current]:
+                if neighbor in visited:
+                    continue
+                visited.add(neighbor)
+                stack.append(neighbor)
+
+        component_size = len(component)
+        sizes.append(component_size)
+        if current_node_id in component:
+            current_component_size = component_size
+
+    return sizes, current_component_size

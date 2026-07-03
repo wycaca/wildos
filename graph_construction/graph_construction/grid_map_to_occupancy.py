@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass, fields
-from math import ceil, isfinite
 from pathlib import Path
-from collections import deque
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Optional
 
 from ament_index_python.packages import get_package_share_directory
 from grid_map_msgs.msg import GridMap
@@ -14,7 +12,13 @@ import numpy as np
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from std_msgs.msg import Float32MultiArray
+
+from graph_construction.grid_adapter import (
+    decode_grid_map_layer,
+    normalize_grid_map_layer,
+    orient_grid_map_array,
+    postprocess_classification,
+)
 
 
 @dataclass
@@ -45,6 +49,8 @@ class GridMapToOccupancyConfig:
 
 
 class GridMapToOccupancyNode(Node):
+    """将 GridMap 转成 OccupancyGrid, 仅用于 debug 和兼容旧工具"""
+
     def __init__(self, config: Dict[str, Any]):
         super().__init__("grid_map_to_occupancy")
         self.config = _adapter_config(config)
@@ -72,7 +78,7 @@ class GridMapToOccupancyNode(Node):
         )
 
     def _on_grid_map(self, msg: GridMap) -> None:
-        """Convert each GridMap update immediately unless timer mode is enabled"""
+        """除非启用 timer 模式, 否则每次 GridMap 更新后立即转换"""
         self.latest_grid_map = msg
         if not self._logged_first_input:
             self.get_logger().info(
@@ -83,6 +89,7 @@ class GridMapToOccupancyNode(Node):
             self._publish_occupancy(msg)
 
     def _on_timer(self) -> None:
+        """timer 模式下按固定频率发布最近一帧 GridMap 投影"""
         if self.latest_grid_map is None:
             return
         self._publish_occupancy(self.latest_grid_map)
@@ -103,29 +110,58 @@ class GridMapToOccupancyNode(Node):
             self._logged_first_publish = True
 
     def _convert(self, msg: GridMap) -> OccupancyGrid:
+        """复用主 GridMap 解码链路, 只在最后转换为 OccupancyGrid"""
         layers = {name: data for name, data in zip(msg.layers, msg.data)}
         if self.config.traversability_layer not in layers:
             raise ValueError(
                 f"GridMap layer '{self.config.traversability_layer}' not found, available={list(msg.layers)}"
             )
 
-        trav = _decode_multiarray(self.config.traversability_layer, layers[self.config.traversability_layer])
+        trav = decode_grid_map_layer(self.config.traversability_layer, layers[self.config.traversability_layer], msg)
         if self.config.elevation_layer in layers:
-            elevation = _decode_multiarray(self.config.elevation_layer, layers[self.config.elevation_layer])
+            elevation = decode_grid_map_layer(self.config.elevation_layer, layers[self.config.elevation_layer], msg)
             valid = np.isfinite(trav) & np.isfinite(elevation)
         else:
             valid = np.isfinite(trav)
 
-        trav = self._normalize_traversability(trav, valid)
-        trav = self._orient_array(trav)
-        valid = self._orient_array(valid)
+        self._last_normalization_stats = _normalization_stats(trav, valid, self.config)
+        trav = normalize_grid_map_layer(
+            trav,
+            valid,
+            enabled=self.config.normalize_traversability,
+            low_quantile=self.config.normalize_low_quantile,
+            high_quantile=self.config.normalize_high_quantile,
+        )
+        trav = orient_grid_map_array(
+            trav,
+            transpose=self.config.transpose,
+            flip_x=self.config.flip_x,
+            flip_y=self.config.flip_y,
+        )
+        valid = orient_grid_map_array(
+            valid,
+            transpose=self.config.transpose,
+            flip_x=self.config.flip_x,
+            flip_y=self.config.flip_y,
+        )
         rows, cols = trav.shape
 
-        grid = np.full((rows, cols), self.config.unknown_value, dtype=np.int16)
-        grid[valid & (trav >= self.config.free_threshold)] = self.config.free_value
-        grid[valid & (trav <= self.config.occupied_threshold)] = self.config.occupied_value
-        raw_grid = grid.copy()
-        grid = self._postprocess_grid(grid)
+        free = valid & (trav >= self.config.free_threshold)
+        occupied = valid & (trav <= self.config.occupied_threshold)
+        unknown = ~valid | (valid & ~(free | occupied))
+        raw_grid = _masks_to_occupancy_values(free, occupied, unknown, self.config)
+        free, occupied, unknown = postprocess_classification(
+            free,
+            occupied,
+            unknown,
+            enabled=self.config.enable_postprocess,
+            min_free_component_cells=self.config.min_free_component_cells,
+            fill_hole_max_cells=self.config.fill_hole_max_cells,
+            fill_hole_min_free_neighbor_ratio=self.config.fill_hole_min_free_neighbor_ratio,
+            majority_fill_iterations=self.config.majority_fill_iterations,
+            majority_fill_min_neighbors=self.config.majority_fill_min_neighbors,
+        )
+        grid = _masks_to_occupancy_values(free, occupied, unknown, self.config)
 
         if not self._logged_first_publish:
             self._log_first_grid_stats(raw_grid, grid, valid)
@@ -142,77 +178,8 @@ class GridMapToOccupancyNode(Node):
         out.data = [int(v) for v in grid.reshape(-1)]
         return out
 
-    def _normalize_traversability(self, trav: np.ndarray, valid: np.ndarray) -> np.ndarray:
-        """Stretch compressed traversability scores while preserving invalid cells"""
-        if not self.config.normalize_traversability:
-            return trav
-
-        finite_values = trav[valid & np.isfinite(trav)]
-        if finite_values.size < 2:
-            return trav
-
-        low_q = min(max(self.config.normalize_low_quantile, 0.0), 1.0)
-        high_q = min(max(self.config.normalize_high_quantile, 0.0), 1.0)
-        if high_q <= low_q:
-            self._last_normalization_stats = None
-            return trav
-
-        low = float(np.quantile(finite_values, low_q))
-        high = float(np.quantile(finite_values, high_q))
-        if not isfinite(low) or not isfinite(high) or high <= low:
-            self._last_normalization_stats = None
-            return trav
-
-        normalized = (trav - low) / (high - low)
-        self._last_normalization_stats = {
-            "valid_count": float(finite_values.size),
-            "raw_min": float(np.min(finite_values)),
-            "raw_median": float(np.median(finite_values)),
-            "raw_max": float(np.max(finite_values)),
-            "low": low,
-            "high": high,
-        }
-        return np.clip(normalized, 0.0, 1.0).astype(np.float32)
-
-    def _orient_array(self, array: np.ndarray) -> np.ndarray:
-        oriented = array
-        if self.config.transpose:
-            oriented = oriented.T
-        if self.config.flip_x:
-            oriented = np.flip(oriented, axis=1)
-        if self.config.flip_y:
-            oriented = np.flip(oriented, axis=0)
-        return oriented
-
-    def _postprocess_grid(self, grid: np.ndarray) -> np.ndarray:
-        """Apply conservative topology cleanup for graph sampling"""
-        if not self.config.enable_postprocess:
-            return grid
-
-        processed = grid.copy()
-        processed = _majority_fill_free(
-            processed,
-            free_value=self.config.free_value,
-            iterations=max(0, int(self.config.majority_fill_iterations)),
-            min_neighbors=max(1, int(self.config.majority_fill_min_neighbors)),
-        )
-        processed = _fill_enclosed_regions(
-            processed,
-            target_values={self.config.unknown_value, self.config.occupied_value},
-            free_value=self.config.free_value,
-            max_cells=max(0, int(self.config.fill_hole_max_cells)),
-            min_free_neighbor_ratio=min(max(self.config.fill_hole_min_free_neighbor_ratio, 0.0), 1.0),
-        )
-        processed = _remove_small_free_components(
-            processed,
-            free_value=self.config.free_value,
-            replacement_value=self.config.unknown_value,
-            min_cells=max(1, int(self.config.min_free_component_cells)),
-        )
-        return processed
-
     def _log_first_grid_stats(self, raw_grid: np.ndarray, grid: np.ndarray, valid: np.ndarray) -> None:
-        """Report first conversion statistics to catch threshold and publisher mixups"""
+        """输出首帧转换统计, 用于发现阈值或 publisher 混用问题"""
         unknown = int(np.count_nonzero(grid == self.config.unknown_value))
         free = int(np.count_nonzero(grid == self.config.free_value))
         occupied = int(np.count_nonzero(grid == self.config.occupied_value))
@@ -238,201 +205,62 @@ class GridMapToOccupancyNode(Node):
             )
 
 
-GridIndex = Tuple[int, int]
-
-
-def _majority_fill_free(
-    grid: np.ndarray,
-    free_value: int,
-    iterations: int,
-    min_neighbors: int,
+def _masks_to_occupancy_values(
+    free: np.ndarray,
+    occupied: np.ndarray,
+    unknown: np.ndarray,
+    config: GridMapToOccupancyConfig,
 ) -> np.ndarray:
-    """Fill one-cell cracks when most neighbors are already free"""
-    processed = grid.copy()
-    for _ in range(iterations):
-        free = processed == free_value
-        neighbor_count = np.zeros(processed.shape, dtype=np.uint8)
-        for dx, dy in _NEIGHBOR_OFFSETS_8:
-            shifted = np.zeros(processed.shape, dtype=bool)
-            src_y, dst_y = _shift_slices(free.shape[0], dy)
-            src_x, dst_x = _shift_slices(free.shape[1], dx)
-            shifted[dst_y, dst_x] = free[src_y, src_x]
-            neighbor_count += shifted.astype(np.uint8)
-        promote = (processed != free_value) & (neighbor_count >= min_neighbors)
-        if not np.any(promote):
-            break
-        processed[promote] = free_value
-    return processed
+    """把分类 mask 转成 OccupancyGrid 数值"""
+    grid = np.full(free.shape, config.unknown_value, dtype=np.int16)
+    grid[unknown] = config.unknown_value
+    grid[free] = config.free_value
+    grid[occupied] = config.occupied_value
+    return grid
 
 
-def _fill_enclosed_regions(
-    grid: np.ndarray,
-    target_values: Set[int],
-    free_value: int,
-    max_cells: int,
-    min_free_neighbor_ratio: float,
-) -> np.ndarray:
-    """Fill small non-free components surrounded by free cells"""
-    if max_cells <= 0:
-        return grid
+def _normalization_stats(
+    trav: np.ndarray,
+    valid: np.ndarray,
+    config: GridMapToOccupancyConfig,
+) -> Optional[Dict[str, float]]:
+    """记录归一化前的分布, 只用于首帧诊断日志"""
+    if not config.normalize_traversability:
+        return None
 
-    processed = grid.copy()
-    target = np.isin(processed, list(target_values))
-    visited = np.zeros(processed.shape, dtype=bool)
-    height, width = processed.shape
+    finite_values = trav[valid & np.isfinite(trav)]
+    if finite_values.size < 2:
+        return None
 
-    for iy in range(height):
-        for ix in range(width):
-            if visited[iy, ix] or not target[iy, ix]:
-                continue
+    low_q = min(max(float(config.normalize_low_quantile), 0.0), 1.0)
+    high_q = min(max(float(config.normalize_high_quantile), 0.0), 1.0)
+    if high_q <= low_q:
+        return None
 
-            component, touches_border = _collect_component(target, visited, ix, iy)
-            if touches_border or len(component) > max_cells:
-                continue
-            if _free_neighbor_ratio(processed, component, free_value) < min_free_neighbor_ratio:
-                continue
-            for cx, cy in component:
-                processed[cy, cx] = free_value
+    low = float(np.quantile(finite_values, low_q))
+    high = float(np.quantile(finite_values, high_q))
+    if not np.isfinite(low) or not np.isfinite(high) or high <= low:
+        return None
 
-    return processed
-
-
-def _remove_small_free_components(
-    grid: np.ndarray,
-    free_value: int,
-    replacement_value: int,
-    min_cells: int,
-) -> np.ndarray:
-    """Remove isolated free islands that cannot support graph nodes"""
-    processed = grid.copy()
-    free = processed == free_value
-    visited = np.zeros(processed.shape, dtype=bool)
-    height, width = processed.shape
-
-    for iy in range(height):
-        for ix in range(width):
-            if visited[iy, ix] or not free[iy, ix]:
-                continue
-            component, _ = _collect_component(free, visited, ix, iy)
-            if len(component) >= min_cells:
-                continue
-            for cx, cy in component:
-                processed[cy, cx] = replacement_value
-
-    return processed
-
-
-def _collect_component(
-    mask: np.ndarray,
-    visited: np.ndarray,
-    start_x: int,
-    start_y: int,
-) -> Tuple[List[GridIndex], bool]:
-    """Collect one 8-connected component from a boolean mask"""
-    height, width = mask.shape
-    queue: deque[GridIndex] = deque([(start_x, start_y)])
-    visited[start_y, start_x] = True
-    component: List[GridIndex] = []
-    touches_border = False
-
-    while queue:
-        ix, iy = queue.popleft()
-        component.append((ix, iy))
-        if ix == 0 or iy == 0 or ix == width - 1 or iy == height - 1:
-            touches_border = True
-
-        for dx, dy in _NEIGHBOR_OFFSETS_8:
-            nx = ix + dx
-            ny = iy + dy
-            if nx < 0 or ny < 0 or nx >= width or ny >= height:
-                continue
-            if visited[ny, nx] or not mask[ny, nx]:
-                continue
-            visited[ny, nx] = True
-            queue.append((nx, ny))
-
-    return component, touches_border
-
-
-def _free_neighbor_ratio(grid: np.ndarray, component: List[GridIndex], free_value: int) -> float:
-    free_neighbors = 0
-    non_component_neighbors = 0
-    component_set = set(component)
-    height, width = grid.shape
-
-    for ix, iy in component:
-        for dx, dy in _NEIGHBOR_OFFSETS_8:
-            nx = ix + dx
-            ny = iy + dy
-            if nx < 0 or ny < 0 or nx >= width or ny >= height or (nx, ny) in component_set:
-                continue
-            non_component_neighbors += 1
-            if grid[ny, nx] == free_value:
-                free_neighbors += 1
-
-    if non_component_neighbors == 0:
-        return 0.0
-    return float(free_neighbors) / float(non_component_neighbors)
-
-
-def _shift_slices(size: int, offset: int) -> Tuple[slice, slice]:
-    if offset < 0:
-        return slice(-offset, size), slice(0, size + offset)
-    if offset > 0:
-        return slice(0, size - offset), slice(offset, size)
-    return slice(0, size), slice(0, size)
-
-
-_NEIGHBOR_OFFSETS_8: Tuple[GridIndex, ...] = (
-    (-1, -1),
-    (0, -1),
-    (1, -1),
-    (-1, 0),
-    (1, 0),
-    (-1, 1),
-    (0, 1),
-    (1, 1),
-)
-
-
-def _decode_multiarray(name: str, array_msg: Float32MultiArray) -> np.ndarray:
-    data = np.asarray(array_msg.data, dtype=np.float32)
-    dims = array_msg.layout.dim
-
-    if len(dims) >= 2 and dims[0].label and dims[1].label:
-        label0 = dims[0].label
-        label1 = dims[1].label
-        if label0 == "row_index" and label1 == "column_index":
-            rows = dims[0].size
-            cols = dims[1].size
-            return _reshape_checked(name, data, rows, cols, "C")
-        if label0 == "column_index" and label1 == "row_index":
-            cols = dims[0].size
-            rows = dims[1].size
-            return _reshape_checked(name, data, rows, cols, "F")
-
-    if len(dims) >= 2:
-        rows = dims[1].size
-        cols = dims[0].size
-        return _reshape_checked(name, data, rows, cols, "C")
-
-    side = int(ceil(np.sqrt(data.size))) if data.size else 0
-    return _reshape_checked(name, data, side, side, "C")
-
-
-def _reshape_checked(name: str, data: np.ndarray, rows: int, cols: int, order: str) -> np.ndarray:
-    if rows * cols != data.size:
-        raise ValueError(f"Layer '{name}' layout size does not match data length")
-    return data.reshape((rows, cols), order=order)
+    return {
+        "valid_count": float(finite_values.size),
+        "raw_min": float(np.min(finite_values)),
+        "raw_median": float(np.median(finite_values)),
+        "raw_max": float(np.max(finite_values)),
+        "low": low,
+        "high": high,
+    }
 
 
 def _adapter_config(config: Dict[str, Any]) -> GridMapToOccupancyConfig:
+    """过滤 YAML 中属于 debug adapter 的配置项"""
     allowed = {field.name for field in fields(GridMapToOccupancyConfig)}
     values = {key: value for key, value in config.items() if key in allowed}
     return GridMapToOccupancyConfig(**values)
 
 
 def _load_config(config_name: str) -> Dict[str, Any]:
+    """加载安装目录或绝对路径中的 debug adapter 配置"""
     config_path = Path(config_name)
     if not config_path.is_absolute():
         config_path = Path(get_package_share_directory("graph_construction")) / "configs" / config_name
@@ -448,6 +276,7 @@ def _load_config(config_name: str) -> Dict[str, Any]:
 
 
 def main(args=None) -> None:
+    """ROS2 控制台脚本入口"""
     rclpy.init(args=args)
     custom_args = rclpy.utilities.remove_ros_args(args)
 

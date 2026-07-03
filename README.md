@@ -88,14 +88,29 @@ The current Unity simulation separates geometric mapping from visual scoring:
   -> /spot1/scored_nav_graph
 ```
 
-Use the LiDAR baseline as the default graph construction backend:
+Use the 2D LiDAR baseline as the default full simulation pipeline:
 
 ```bash
-./scripts/start_graph_construction_livox.sh
-./scripts/start_visual_navigation.sh
+./scripts/start_wildos_2d.sh
 ```
 
-`./scripts/start_graph_construction_elevation.sh` is an experimental elevation mapping backend. It publishes the projected 2D grid on `/spot1/elevation_traversability_grid`, not `/spot1/traversability_grid`, so it does not overwrite the LiDAR baseline map.
+Use the 3D elevation mapping backend for elevation-based graph construction:
+
+```bash
+./scripts/start_wildos_3d.sh
+```
+
+Both scripts launch the full chain: mapping backend, graph construction, odometry adapter, camera TF fallback, WildOS visual scoring, graphnav planner, and path follower.
+
+Topic and frame names are selected by profile. Built-in profiles live in `graph_construction/configs/topic_profiles.yaml`:
+
+```bash
+WILDOS_TOPIC_PROFILE=isaac ./scripts/start_wildos_2d.sh
+WILDOS_TOPIC_PROFILE=unity ./scripts/start_wildos_2d.sh
+WILDOS_TOPIC_PROFILE=robot ./scripts/start_wildos_2d.sh
+```
+
+Individual launch arguments still override profile values, for example `lidar_topic:=/custom/lidar`.
 
 <br>
 

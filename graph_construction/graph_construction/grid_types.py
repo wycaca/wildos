@@ -1,0 +1,258 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from heapq import heappop, heappush
+from math import cos, floor, hypot, sin
+from typing import Iterable, Optional, Tuple
+
+import numpy as np
+
+
+GridIndex = Tuple[int, int]
+
+
+@dataclass
+class ClassifiedGrid:
+    """图算法使用的通用 free, obstacle, unknown grid"""
+
+    width: int
+    height: int
+    resolution: float
+    origin_x: float
+    origin_y: float
+    frame_id: str
+    free: np.ndarray
+    obstacle: np.ndarray
+    unknown: np.ndarray
+    elevation: Optional[np.ndarray] = None
+    z_offset: float = 0.0
+    stats: Optional[dict] = None
+    grid_map_center_x: Optional[float] = None
+    grid_map_center_y: Optional[float] = None
+    grid_map_length_x: Optional[float] = None
+    grid_map_length_y: Optional[float] = None
+    grid_map_yaw: float = 0.0
+    grid_map_convention: bool = False
+
+    def in_bounds(self, ix: int, iy: int) -> bool:
+        """判断 cell index 是否在 grid 内"""
+        return 0 <= ix < self.width and 0 <= iy < self.height
+
+    def world_to_grid(self, x: float, y: float) -> Optional[GridIndex]:
+        """把 world XY 转成 grid index"""
+        if self.grid_map_convention:
+            local_x, local_y = self._world_to_map_axes(x, y)
+            length_x = self.grid_map_length_x or self.height * self.resolution
+            length_y = self.grid_map_length_y or self.width * self.resolution
+            iy = int(floor((length_x * 0.5 - local_x) / self.resolution))
+            ix = int(floor((length_y * 0.5 - local_y) / self.resolution))
+        else:
+            ix = int(floor((x - self.origin_x) / self.resolution))
+            iy = int(floor((y - self.origin_y) / self.resolution))
+        if not self.in_bounds(ix, iy):
+            return None
+        return ix, iy
+
+    def grid_to_world(
+        self,
+        ix: int,
+        iy: int,
+        z: Optional[float] = None,
+    ) -> Tuple[float, float, float]:
+        """把 grid index 转成 world-space cell 中心"""
+        if self.grid_map_convention:
+            length_x = self.grid_map_length_x or self.height * self.resolution
+            length_y = self.grid_map_length_y or self.width * self.resolution
+            local_x = length_x * 0.5 - (iy + 0.5) * self.resolution
+            local_y = length_y * 0.5 - (ix + 0.5) * self.resolution
+            x, y = self._map_axes_to_world(local_x, local_y)
+        else:
+            x = self.origin_x + (ix + 0.5) * self.resolution
+            y = self.origin_y + (iy + 0.5) * self.resolution
+        if z is None:
+            z = self.elevation_at_index(ix, iy)
+        return x, y, z
+
+    def elevation_at_index(self, ix: int, iy: int) -> float:
+        """返回 cell 的 elevation, 没有数据时使用 z_offset"""
+        if self.elevation is None or not self.in_bounds(ix, iy):
+            return self.z_offset
+        value = float(self.elevation[iy, ix])
+        if not np.isfinite(value):
+            return self.z_offset
+        return value + self.z_offset
+
+    def elevation_at_world(self, x: float, y: float) -> Optional[float]:
+        """返回 world XY 对应的 GridMap elevation"""
+        if self.elevation is None:
+            return None
+        grid_index = self.world_to_grid(x, y)
+        if grid_index is None:
+            return None
+        ix, iy = grid_index
+        value = float(self.elevation[iy, ix])
+        if not np.isfinite(value):
+            value = self._nearest_finite_elevation(ix, iy)
+        if value is None:
+            return None
+        return value + self.z_offset
+
+    def _nearest_finite_elevation(
+        self,
+        ix: int,
+        iy: int,
+        radius_cells: int = 3,
+    ) -> Optional[float]:
+        """为小范围空洞查找附近有限 elevation"""
+        if self.elevation is None:
+            return None
+        best_value = None
+        best_distance = float("inf")
+        for dy in range(-radius_cells, radius_cells + 1):
+            for dx in range(-radius_cells, radius_cells + 1):
+                nx = ix + dx
+                ny = iy + dy
+                if not self.in_bounds(nx, ny):
+                    continue
+                value = float(self.elevation[ny, nx])
+                if not np.isfinite(value):
+                    continue
+                distance = hypot(float(dx), float(dy))
+                if distance < best_distance:
+                    best_distance = distance
+                    best_value = value
+        return best_value
+
+    def project_to_elevation(
+        self,
+        position: Tuple[float, float, float],
+    ) -> Tuple[float, float, float]:
+        """尽量把 XY 位置投影到 elevation 表面"""
+        projected, _ = self.project_to_elevation_with_status(position)
+        return projected
+
+    def project_to_elevation_with_status(
+        self,
+        position: Tuple[float, float, float],
+    ) -> Tuple[Tuple[float, float, float], bool]:
+        """把 XY 位置投影到 elevation, 并返回是否成功"""
+        elevation = self.elevation_at_world(position[0], position[1])
+        if elevation is None:
+            return position, False
+        return (position[0], position[1], elevation), True
+
+    def is_free_index(self, ix: int, iy: int) -> bool:
+        """判断 cell 是否为已知 free"""
+        return self.in_bounds(ix, iy) and bool(self.free[iy, ix])
+
+    def is_obstacle_index(self, ix: int, iy: int) -> bool:
+        """判断 cell 是否为 obstacle 或越界"""
+        return (not self.in_bounds(ix, iy)) or bool(self.obstacle[iy, ix])
+
+    def is_unknown_index(self, ix: int, iy: int) -> bool:
+        """判断 cell 是否为 unknown"""
+        return self.in_bounds(ix, iy) and bool(self.unknown[iy, ix])
+
+    def is_world_collision_free(
+        self,
+        start_xy: Tuple[float, float],
+        end_xy: Tuple[float, float],
+    ) -> bool:
+        """检查 world-space 线段是否始终位于已知 free cell"""
+        start = self.world_to_grid(start_xy[0], start_xy[1])
+        end = self.world_to_grid(end_xy[0], end_xy[1])
+        if start is None or end is None:
+            return False
+        for ix, iy in bresenham_line(start[0], start[1], end[0], end[1]):
+            if self.is_obstacle_index(ix, iy) or self.is_unknown_index(ix, iy):
+                return False
+        return True
+
+    def _world_to_map_axes(self, x: float, y: float) -> Tuple[float, float]:
+        """把 world XY 转到 GridMap 本地轴坐标"""
+        center_x = self.grid_map_center_x if self.grid_map_center_x is not None else self.origin_x
+        center_y = self.grid_map_center_y if self.grid_map_center_y is not None else self.origin_y
+        dx = x - center_x
+        dy = y - center_y
+        yaw_cos = cos(self.grid_map_yaw)
+        yaw_sin = sin(self.grid_map_yaw)
+        local_x = yaw_cos * dx + yaw_sin * dy
+        local_y = -yaw_sin * dx + yaw_cos * dy
+        return local_x, local_y
+
+    def _map_axes_to_world(self, local_x: float, local_y: float) -> Tuple[float, float]:
+        """把 GridMap 本地轴坐标转到 world XY"""
+        center_x = self.grid_map_center_x if self.grid_map_center_x is not None else self.origin_x
+        center_y = self.grid_map_center_y if self.grid_map_center_y is not None else self.origin_y
+        yaw_cos = cos(self.grid_map_yaw)
+        yaw_sin = sin(self.grid_map_yaw)
+        x = center_x + yaw_cos * local_x - yaw_sin * local_y
+        y = center_y + yaw_sin * local_x + yaw_cos * local_y
+        return x, y
+
+
+def distance_to_mask(mask: np.ndarray, resolution: float) -> np.ndarray:
+    """计算近似 8 连通距离场"""
+    height, width = mask.shape
+    distances = np.full((height, width), np.inf, dtype=np.float32)
+    queue = []
+
+    source_ys, source_xs = np.where(mask)
+    for iy, ix in zip(source_ys.tolist(), source_xs.tolist()):
+        distances[iy, ix] = 0.0
+        heappush(queue, (0.0, ix, iy))
+
+    if not queue:
+        max_distance = hypot(width * resolution, height * resolution)
+        distances.fill(max_distance)
+        return distances
+
+    neighbor_steps = (
+        (-1, -1, 2**0.5),
+        (0, -1, 1.0),
+        (1, -1, 2**0.5),
+        (-1, 0, 1.0),
+        (1, 0, 1.0),
+        (-1, 1, 2**0.5),
+        (0, 1, 1.0),
+        (1, 1, 2**0.5),
+    )
+
+    while queue:
+        current_distance, ix, iy = heappop(queue)
+        if current_distance > float(distances[iy, ix]):
+            continue
+        for dx, dy, step in neighbor_steps:
+            nx = ix + dx
+            ny = iy + dy
+            if nx < 0 or ny < 0 or nx >= width or ny >= height:
+                continue
+            next_distance = current_distance + step * resolution
+            if next_distance >= float(distances[ny, nx]):
+                continue
+            distances[ny, nx] = next_distance
+            heappush(queue, (next_distance, nx, ny))
+
+    return distances
+
+
+def bresenham_line(x0: int, y0: int, x1: int, y1: int) -> Iterable[GridIndex]:
+    """生成 Bresenham 线经过的 grid cell"""
+    dx = abs(x1 - x0)
+    dy = abs(y1 - y0)
+    sx = 1 if x0 < x1 else -1
+    sy = 1 if y0 < y1 else -1
+    err = dx - dy
+    x, y = x0, y0
+
+    while True:
+        yield x, y
+        if x == x1 and y == y1:
+            break
+        err2 = 2 * err
+        if err2 > -dy:
+            err -= dy
+            x += sx
+        if err2 < dx:
+            err += dx
+            y += sy

@@ -4,7 +4,7 @@ from math import hypot
 from typing import Dict, List, Tuple
 
 from graph_construction.graph_memory import GraphState, InternalEdge
-from graph_construction.grid_adapter import ClassifiedGrid
+from graph_construction.grid_types import ClassifiedGrid
 
 
 class EdgeBuilder:
