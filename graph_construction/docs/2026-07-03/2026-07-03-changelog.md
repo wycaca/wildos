@@ -57,6 +57,26 @@
 - 将 2D / 3D launch 中 WildOS 节点输出改为 `both`, 便于目标搜索初始化日志落盘
 - `wildos/nav.py` 增加目标搜索模型加载和文本特征计算的中文启动日志
 - 新增 `2026-07-03-object-search-startup-diagnostics.md`, 记录目标搜索启动无发布者的诊断方法
+- 修复 WildOS 目标搜索模型路径, `c-radio_v3-b` 优先解析为本地 `ckpts/c-radio_v3-b_half.pth.tar`
+- 修复 WildOS SigLIP2 adaptor cache 路径, 优先使用完整缓存目录 `ckpts/siglip2`
+- SigLIP2 adaptor 会将 HuggingFace repo id 解析成本地 snapshot 路径, 并设置 `local_files_only=True`
+- `ExploRFM` 增加 RADIO backbone 和 head ckpt 阶段日志, 便于定位模型加载卡点
+- WildOS 目标搜索新增 `/spot1/object_search_target_pose`, 发布当前最高分目标 frontier
+- WildOS 目标搜索新增 `/spot1/object_search_target_viz`, 显示目标 frontier, 分数文本和相机检测射线
+- `/spot1/score_rings` 增强为完整方向弧线, 用颜色表达 heading score
+- `topic_profiles.yaml` 和 2D / 3D launch 增加 object search target topic override
+- 新增 `2026-07-03-object-target-and-score-viz.md`, 记录目标导航点语义, 可视化内容和验证方式
+- 修复 RViz2 `Duplicate Marker Check`, score ring 和 object target 的 `DELETEALL` marker 改用独立 clear namespace
+- 按 RViz 主视图要求简化 `/spot1/score_rings`, 默认只显示方向彩色圆环
+- 按 RViz 主视图要求简化 `/spot1/object_search_target_viz`, 检测文字只显示 `front detected`, `left detected`, `right detected`
+- 增强 `/spot1/nav_graph_viz` 红色 edge 显示, line width 从 `0.006` 调整到 `0.018`, alpha 从 `0.18` 调整到 `0.42`
+- 新增 `2026-07-03-nav-graph-viz-readability.md`, 说明障碍物后方不连通节点的显示语义和 edge 可读性调整
+- 调整 `/spot1/score_rings` 颜色映射, 低分为蓝 / 青色, 高分为黄色 / 红色
+- 新增 `camera_image_flip_x`, 用于目标 mask 反投影射线和 frontier 图像投影的水平轴补偿
+- 修正 Unity 目标搜索方向问题, `topic_profiles.yaml` 新增 `camera_static_tf_convention`
+- 保留 `y_forward_x_right` 作为可选相机 TF convention, 用于前向相机 optical z 对齐 `odom_fram +y` 的仿真
+- `camera_image_flip_x` 改为 profile 传参, Unity 默认关闭, 仅作为图像水平轴补偿开关保留
+- 根据 RViz 实测继续修正 Unity profile 为 `negative_y_forward_x_right`, 前向相机 optical z 对齐 `odom_fram -y`
 
 ## 实测结果
 
@@ -113,6 +133,12 @@
 - 已确认 2D 配置 `graph_construction.yaml` 中 `frontier_candidate_spacing=0.8`
 - live graph 确认本次 `/spot1/score_rings` 和 `/spot1/scored_nav_graph` 均没有 publisher, `/wildos` 节点不存在
 - `python3 -m py_compile visual_navigation/visual_navigation/wildos/nav.py graph_construction/launch/wildos_2d_sim.launch.py graph_construction/launch/elevation_visual_navigation_sim.launch.py` 通过
+- 已确认 `ckpts/siglip2` 包含完整 `google/siglip2-so400m-patch16-naflex` snapshot
+- 已确认根 `ckpts/models--google--siglip2-so400m-patch16-naflex` 存在 `.incomplete` 文件, 不应作为 WildOS SigLIP2 cache
+- 已验证 `AutoConfig` 和 `AutoProcessor` 可通过 `ckpts/siglip2/.../snapshots/<revision>` 离线读取 SigLIP2 本地 snapshot
+- `python3 -m py_compile visual_navigation/visual_navigation/wildos/nav.py visual_navigation/visual_navigation/wildos/viz.py graph_construction/launch/wildos_2d_sim.launch.py graph_construction/launch/elevation_visual_navigation_sim.launch.py` 通过
+- `python3 -m py_compile visual_navigation/visual_navigation/wildos/viz.py` 通过
+- 已验证 `topic_profiles.yaml`, `wildos_nav_sim_conf.yaml`, `wildos_nav_conf.yaml` 可用 `yaml.safe_load` 解析
 
 ## 诊断结论摘要
 
@@ -150,6 +176,9 @@
 - 2D 日志中 `frontier候选=frontier栅格=1306` 表示旧 2D 配置未启用候选降采样, 因此 2D 也需要默认开启候选间距
 - 目标搜索没有日志和 `score_rings` 无发布者的直接原因是 WildOS 进程没有保持运行, 不是 graph construction 没有 frontier
 - 启用 object search 后要先看 `/wildos` 是否存在, 再看相机同步和 score topic
+- `/spot1/object_search_target_pose` 表示当前最高分目标 frontier, 不是精确物体三角定位结果
+- `/spot1/score_rings` 默认只承担方向评分圆环显示, 不再显示 `max_score` 和 `best_bin` 文本
+- `/spot1/nav_graph_viz` 显示图中节点, 不等同于当前机器人可达节点集合, 当前可达性应看 current connected component 和 planner path
 
 ## 后续待办
 

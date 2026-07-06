@@ -68,16 +68,25 @@ planner_start_delay = 7.0s
 
 ## 修改内容
 
-为便于下次定位, 已做两处可观测性增强:
+为便于下次定位, 已做以下增强:
 
 1. 2D / 3D launch 中 WildOS 节点 `output` 从 `screen` 改为 `both`
 2. `wildos/nav.py` 在模型初始化和目标搜索文本特征计算前后打印中文状态
+3. WildOS 目标搜索启用时, RADIO 主模型优先解析为本地 `ckpts/c-radio_v3-b_half.pth.tar`
+4. WildOS SigLIP2 adaptor cache 优先解析为完整缓存目录 `ckpts/siglip2`
+5. SigLIP2 adaptor 会把 HuggingFace repo id 解析成本地 snapshot 路径, 并使用 `local_files_only=True`
+6. `ExploRFM` 增加 RADIO backbone, traversability head 和 frontier head 的阶段日志
 
 下次日志中应能看到:
 
 ```text
 WildOS 模型初始化开始, object_search=True
-WildOS 加载视觉模型, model=..., adaptor=siglip2
+WildOS 加载视觉模型, model=/.../ckpts/c-radio_v3-b_half.pth.tar, adaptor=siglip2, adaptor_path=/.../ckpts/siglip2
+ExploRFM 开始加载 RADIO backbone, model=/.../ckpts/c-radio_v3-b_half.pth.tar, adaptor=siglip2, adaptor_path=/.../ckpts/siglip2
+ExploRFM RADIO backbone 加载完成
+ExploRFM 开始加载 traversability head, ckpt=...
+ExploRFM 开始加载 frontier head, ckpt=...
+WildOS 模型加载完成
 WildOS 计算目标搜索文本特征, text_queries=[...]
 WildOS 目标搜索文本特征计算完成
 WildOS 模型初始化完成
@@ -87,6 +96,39 @@ WildOS 模型初始化完成
 如果这些日志没有出现, 说明 WildOS 尚未进入模型初始化或输出未被当前终端捕获
 
 如果只出现前几行后退出, 说明断点在模型加载或 text feature 计算阶段
+
+## 模型加载卡住点
+
+如果日志停在:
+
+```text
+WildOS 加载视觉模型, model=c-radio_v3-b, adaptor=siglip2
+```
+
+说明已经进入 `ExploRFMInference(...)` 构造函数, 但还没有返回
+
+本次排查到的高风险点:
+
+- `wildos/nav.py` 原先传入 `model_version=c-radio_v3-b`, `nvidia_radio/hubconf.py` 会走 `load_state_dict_from_url`
+- `wildos/nav.py` 原先传入 `adaptor_ckpt_path=ckpts`, 但完整 SigLIP2 cache 位于 `ckpts/siglip2`
+- `ckpts/models--google--siglip2-so400m-patch16-naflex` 下存在 `.incomplete` 文件, 表示根 `ckpts` 下的 SigLIP2 cache 不完整
+
+因此目标搜索启动时可能命中不完整 cache 或回退到网络等待
+
+修复后应优先走本地文件:
+
+```text
+ckpts/c-radio_v3-b_half.pth.tar
+ckpts/siglip2/models--google--siglip2-so400m-patch16-naflex
+```
+
+已验证:
+
+```bash
+.venv/bin/python3 -c "from pathlib import Path; from transformers import AutoConfig, AutoProcessor; cache=Path('ckpts/siglip2'); revision=(cache / 'models--google--siglip2-so400m-patch16-naflex' / 'refs' / 'main').read_text().strip(); path=cache / 'models--google--siglip2-so400m-patch16-naflex' / 'snapshots' / revision; AutoConfig.from_pretrained(path, local_files_only=True, trust_remote_code=True); AutoProcessor.from_pretrained(path, local_files_only=True, trust_remote_code=True); print(path)"
+```
+
+该命令可离线读取本地 snapshot, 不再访问 `huggingface.co`
 
 ## 正确验证方式
 

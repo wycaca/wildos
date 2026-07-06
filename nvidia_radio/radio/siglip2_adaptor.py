@@ -38,8 +38,18 @@ class SigLIP2Adaptor(GenericAdaptor):
         with rank_gate():
             print(f"[INFO] Loading SigLIP2 model and processor for version: {version}")
             print(f"[INFO] Using checkpoint path: {ckpt_path}")
-            model = AutoModel.from_pretrained(version, trust_remote_code=True, cache_dir=Path(ckpt_path))
-            proc = AutoProcessor.from_pretrained(version, trust_remote_code=True, cache_dir=Path(ckpt_path))
+            local_model_path = _resolve_local_hf_snapshot(version, Path(ckpt_path))
+            print(f"[INFO] Using local SigLIP2 path: {local_model_path}")
+            model = AutoModel.from_pretrained(
+                local_model_path,
+                trust_remote_code=True,
+                local_files_only=True,
+            )
+            proc = AutoProcessor.from_pretrained(
+                local_model_path,
+                trust_remote_code=True,
+                local_files_only=True,
+            )
 
         self.tokenizer = SigLIP2WrappedTokenizer(proc)
         self.text_model = model.text_model
@@ -93,6 +103,19 @@ def canonicalize_text(
     text = text.lower()
     text = " ".join(text.split())
     return text.strip()
+
+
+def _resolve_local_hf_snapshot(repo_id: str, cache_dir: Path):
+    """将 HuggingFace cache 解析成本地 snapshot 路径, 避免启动时访问网络"""
+    repo_cache = cache_dir / f"models--{repo_id.replace('/', '--')}"
+    ref_path = repo_cache / "refs" / "main"
+    if ref_path.exists():
+        revision = ref_path.read_text(encoding="utf-8").strip()
+        snapshot_path = repo_cache / "snapshots" / revision
+        if snapshot_path.exists():
+            return snapshot_path
+
+    return repo_id
 
 
 @adaptor_registry.register_adaptor("siglip2")

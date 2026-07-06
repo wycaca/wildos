@@ -13,12 +13,14 @@ class GeoFrontierToImage:
         traversability_class: str,
         cams_inverted: bool,
         heading_sim_thresh: float=0.0,
-        reach_in_2D: bool=False
+        reach_in_2D: bool=False,
+        image_flip_x: bool=False
     ):
         self.camera_mapping = camera_mapping
         self.frontiers_range = frontiers_range
         self.traversability_class = traversability_class
         self.cams_inverted = cams_inverted
+        self.image_flip_x = image_flip_x
         self.heading_sim_thresh = heading_sim_thresh
         self.reach_in_2D = reach_in_2D
 
@@ -145,6 +147,9 @@ class GeoFrontierToImage:
         if self.cams_inverted:
             frontier_pix[:, 0] = cam_info['height'] - frontier_pix[:, 0]
             frontier_pix[:, 1] = cam_info['width'] - frontier_pix[:, 1]
+        if self.image_flip_x:
+            # 适配仿真图像水平轴和 optical frame 不一致的情况
+            frontier_pix[:, 1] = (cam_info['width'] - 1) - frontier_pix[:, 1]
 
         valid_frontier_pix = frontier_pix[valid_frontiers].astype(int)
 

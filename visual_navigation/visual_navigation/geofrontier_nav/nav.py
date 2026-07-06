@@ -44,6 +44,7 @@ class GeoFrontierNav(GoalNavigator):
         # Nav Params
         "num_cameras": 3,
         "cams_inverted": True,
+        "camera_image_flip_x": False,
 
         # Nav graph params
         "frontiers_range": 12.0,
@@ -124,6 +125,7 @@ class GeoFrontierNav(GoalNavigator):
         # Nav parameters and initializations
         self.num_cameras = config.num_cameras
         self.cam_inverted = config.cams_inverted
+        self.camera_image_flip_x = self._config_bool(config.get("camera_image_flip_x", False))
         assert self.num_cameras in [1, 3], "Only 1 or 3 cameras are supported."
 
         # Navgraph frontiers to img
@@ -132,7 +134,8 @@ class GeoFrontierNav(GoalNavigator):
             frontiers_range=config.frontiers_range,
             traversability_class=config.traversability_class,
             cams_inverted=self.cam_inverted,
-            reach_in_2D=False
+            reach_in_2D=False,
+            image_flip_x=self.camera_image_flip_x
         )
         self.geofrontier_viz_colors = np.array([
             [0.528, 0.471, 0.701],
@@ -184,6 +187,13 @@ class GeoFrontierNav(GoalNavigator):
         self.init_publishers(config)
         self.init_subscribers(config)
         self.start_timer()
+
+    @staticmethod
+    def _config_bool(value):
+        """解析 launch dotlist 传入的布尔字符串"""
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in {"true", "1", "yes", "on"}
 
     def init_model(self, config):
         # vlm initializations

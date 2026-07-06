@@ -245,8 +245,8 @@ def main():
         raise RuntimeError(f"No image files found in: {INPUT_DIR}")
 
     model = ExploRFMInference(
-        frontier_ckpt="ckpts/frontier_head.ckpt",
-        traversability_ckpt="ckpts/trav_head.ckpt",
+        frontier_ckpt="ckpts/frontier_ckpt_new.ckpt",
+        traversability_ckpt="ckpts/traversability_ckpt.ckpt",
         model_version="ckpts/c-radio_v3-b_half.pth.tar",
         adaptor_version="siglip2",
         adaptor_ckpt_path="ckpts/siglip2",

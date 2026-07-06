@@ -98,6 +98,8 @@ def generate_launch_description():
             _profile_arg("lidar_parent_frame", "lidar_parent_frame"),
             _profile_arg("lidar_frame", "lidar_frame"),
             _profile_arg("camera_parent_frame", "camera_parent_frame"),
+            _profile_arg("camera_static_tf_convention", "camera_static_tf_convention"),
+            _profile_arg("camera_image_flip_x", "camera_image_flip_x"),
             _profile_arg("parent_frame", "parent_frame"),
             _profile_arg("cam_frame", "cam_frame"),
             _profile_arg("camera_img_topic", "camera_img_topic"),
@@ -109,6 +111,9 @@ def generate_launch_description():
             _profile_arg("valid_geofrontiers_topic", "valid_geofrontiers_topic"),
             _profile_arg("score_ring_topic", "score_ring_topic"),
             _profile_arg("graph_viz_topic", "graph_viz_topic"),
+            _profile_arg("object_mask_topic", "object_mask_topic"),
+            _profile_arg("object_target_pose_topic", "object_target_pose_topic"),
+            _profile_arg("object_target_viz_topic", "object_target_viz_topic"),
             _profile_arg("planner_odom_topic", "planner_odom_topic"),
             _profile_arg("goal_pose_topic", "goal_pose_topic"),
             _profile_arg("path_topic", "path_topic"),
@@ -168,12 +173,19 @@ def _launch_setup(context):
             "valid_geofrontiers_topic": _value(context, profile, "valid_geofrontiers_topic", "valid_geofrontiers_topic"),
             "score_ring_topic": _value(context, profile, "score_ring_topic", "score_ring_topic"),
             "graph_viz_topic": _value(context, profile, "graph_viz_topic", "graph_viz_topic"),
+            "object_mask_topic": _value(context, profile, "object_mask_topic", "object_mask_topic"),
+            "object_target_pose_topic": _value(context, profile, "object_target_pose_topic", "object_target_pose_topic"),
+            "object_target_viz_topic": _value(context, profile, "object_target_viz_topic", "object_target_viz_topic"),
+            "camera_image_flip_x": _value(context, profile, "camera_image_flip_x", "camera_image_flip_x"),
         }
     )
 
     use_sim_time = LaunchConfiguration("use_sim_time")
     log_level = LaunchConfiguration("log_level")
     camera_parent_frame = _value(context, profile, "camera_parent_frame", "camera_parent_frame")
+    camera_transforms = _camera_static_transforms(
+        _value(context, profile, "camera_static_tf_convention", "camera_static_tf_convention")
+    )
     planner_odom_topic = _value(context, profile, "planner_odom_topic", "planner_odom_topic")
     goal_pose_topic = _value(context, profile, "goal_pose_topic", "goal_pose_topic")
     scored_nav_graph_topic = _value(context, profile, "scored_nav_graph_topic", "scored_nav_graph_topic")
@@ -302,9 +314,9 @@ def _launch_setup(context):
         odom_adapter,
         _lidar_static_tf(context, profile),
         pointcloud_axis_adapter,
-        _camera_static_tf("front", camera_parent_frame, ["0.30", "0.00", "0.20", "0.5", "-0.5", "0.5", "-0.5"], publish_camera_static_tf),
-        _camera_static_tf("left", camera_parent_frame, ["0.00", "0.18", "0.20", "0.7071067812", "0.0", "0.0", "-0.7071067812"], publish_camera_static_tf),
-        _camera_static_tf("right", camera_parent_frame, ["0.00", "-0.18", "0.20", "0.0", "0.7071067812", "-0.7071067812", "0.0"], publish_camera_static_tf),
+        _camera_static_tf("front", camera_parent_frame, camera_transforms["front"], publish_camera_static_tf),
+        _camera_static_tf("left", camera_parent_frame, camera_transforms["left"], publish_camera_static_tf),
+        _camera_static_tf("right", camera_parent_frame, camera_transforms["right"], publish_camera_static_tf),
         elevation_mapping,
         TimerAction(period=LaunchConfiguration("graph_start_delay"), actions=[graph_construction]),
         TimerAction(period=LaunchConfiguration("visual_start_delay"), actions=[wildos]),
@@ -386,6 +398,30 @@ def _camera_static_tf(name, parent_frame, transform_args, condition):
         arguments=[*transform_args, parent_frame, f"{name}_camera"],
         condition=IfCondition(condition),
     )
+
+
+def _camera_static_transforms(convention):
+    """按仿真 profile 选择相机 optical frame 外参"""
+    transforms = {
+        "x_forward_y_left": {
+            "front": ["0.30", "0.00", "0.20", "0.5", "-0.5", "0.5", "-0.5"],
+            "left": ["0.00", "0.18", "0.20", "0.7071067812", "0.0", "0.0", "-0.7071067812"],
+            "right": ["0.00", "-0.18", "0.20", "0.0", "0.7071067812", "-0.7071067812", "0.0"],
+        },
+        "y_forward_x_right": {
+            "front": ["0.00", "0.30", "0.20", "0.7071067812", "0.0", "0.0", "-0.7071067812"],
+            "left": ["-0.18", "0.00", "0.20", "0.5", "0.5", "-0.5", "-0.5"],
+            "right": ["0.18", "0.00", "0.20", "0.5", "-0.5", "0.5", "-0.5"],
+        },
+        "negative_y_forward_x_right": {
+            "front": ["0.00", "-0.30", "0.20", "0.0", "0.7071067812", "-0.7071067812", "0.0"],
+            "left": ["-0.18", "0.00", "0.20", "0.5", "0.5", "-0.5", "-0.5"],
+            "right": ["0.18", "0.00", "0.20", "0.5", "-0.5", "0.5", "-0.5"],
+        },
+    }
+    if convention not in transforms:
+        raise ValueError(f"Unsupported camera_static_tf_convention: {convention}")
+    return transforms[convention]
 
 
 def _profile_arg(name, profile_key):

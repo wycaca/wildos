@@ -2,6 +2,7 @@ import rclpy
 from rclpy.executors import ExternalShutdownException
 
 from nav_msgs.msg import Odometry
+from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import CompressedImage, Image as ImageMsg, CameraInfo
 from message_filters import ApproximateTimeSynchronizer, Subscriber
 from graphnav_msgs.msg import NavigationGraph, KeyValue
@@ -46,6 +47,7 @@ class WildOS_Nav(TFLookupSubscriber):
         # 导航参数
         "num_cameras": 3,
         "cams_inverted": True,
+        "camera_image_flip_x": False,
         "num_angular_bins": 16,
         "reach_in_2D": True,
 
@@ -83,6 +85,9 @@ class WildOS_Nav(TFLookupSubscriber):
         "valid_geofrontiers_topic": "within_range_geofrontiers",
         "score_ring_topic": "/spot1/score_rings",
         "graph_viz_topic": "/spot1/navgraph_viz",
+        "object_mask_topic": "/spot1/object_mask",
+        "object_target_pose_topic": "/spot1/object_search_target_pose",
+        "object_target_viz_topic": "/spot1/object_search_target_viz",
 
         # ROS2 订阅参数
         "qos_history_depth": 1,
@@ -92,13 +97,16 @@ class WildOS_Nav(TFLookupSubscriber):
         # 目标搜索参数
         "object_search_config": {
             # "text_queries": ["NASA logo"],
-            "text_queries": ["orange flag"],
+            # "text_queries": ["orange flag"],
             # "text_queries": ["golf cart"],
             # "text_queries": ["garbage container"],
+            "text_queries": ["blue bucket"],
             "pixel_level_seg": False,
             "mask_threshold": 0.09,#0.08,
             "obj_frontier_score": 0.9,
-            "obj_trav_score": 0.9
+            "obj_trav_score": 0.9,
+            "target_min_score": 0.2,
+            "target_ray_length": 8.0
         },
 
         # TF 查询配置
@@ -137,6 +145,7 @@ class WildOS_Nav(TFLookupSubscriber):
         # 导航参数和初始化
         self.num_cameras = config.num_cameras
         self.cam_inverted = config.cams_inverted
+        self.camera_image_flip_x = self._config_bool(config.get("camera_image_flip_x", False))
         assert self.num_cameras in [1, 3], "Only 1 or 3 cameras are supported."
         self.num_angular_bins = config.num_angular_bins
         self.reach_in_2D = config.reach_in_2D
@@ -145,6 +154,11 @@ class WildOS_Nav(TFLookupSubscriber):
         self.frontier_uuid_to_scores = {}
         self.frontier_uuid_to_scoring_distance = {}
         self.removed_frontier_positions = np.zeros((0, 3), dtype=np.float32)
+        self.object_target_min_score = 0.0
+        self.object_target_ray_length = 8.0
+        if self.object_search_mode:
+            self.object_target_min_score = float(config.object_search_config.get("target_min_score", 0.2))
+            self.object_target_ray_length = float(config.object_search_config.get("target_ray_length", 8.0))
 
         # 将导航图 frontier 投影到图像
         self.geofrontier_to_image = GeoFrontierToImage(
@@ -153,7 +167,8 @@ class WildOS_Nav(TFLookupSubscriber):
             traversability_class=config.traversability_class,
             cams_inverted=self.cam_inverted,
             heading_sim_thresh=config.heading_sim_thresh,
-            reach_in_2D=False
+            reach_in_2D=False,
+            image_flip_x=self.camera_image_flip_x
         )
         self.traversability_class = config.traversability_class
         self.default_max_score = config.default_max_score
@@ -222,8 +237,10 @@ class WildOS_Nav(TFLookupSubscriber):
 
         if do_object_search and config.adaptor_version is None:
             config.adaptor_version = "siglip2"
+        model_path = self._resolve_wildos_model_path(config.model_version)
+        adaptor_ckpt_path = self._resolve_wildos_adaptor_path(config.adaptor_version)
         print(
-            f"WildOS 加载视觉模型, model={config.model_version}, adaptor={config.adaptor_version}",
+            f"WildOS 加载视觉模型, model={model_path}, adaptor={config.adaptor_version}, adaptor_path={adaptor_ckpt_path}",
             flush=True,
         )
 
@@ -231,9 +248,9 @@ class WildOS_Nav(TFLookupSubscriber):
         self.model = ExploRFMInference(
             frontier_ckpt=HOME_DIR / "ckpts" / config.frontier_ckpt,
             traversability_ckpt=HOME_DIR / "ckpts" / config.traversability_ckpt,
-            model_version=config.model_version,
+            model_version=model_path,
             adaptor_version=config.adaptor_version,
-            adaptor_ckpt_path=HOME_DIR / "ckpts",
+            adaptor_ckpt_path=adaptor_ckpt_path,
             use_naclip=config.use_naclip,
             use_summary_for_spatial=config.use_summary_for_spatial,
             radio_dim=config.radio_dim,
@@ -259,6 +276,36 @@ class WildOS_Nav(TFLookupSubscriber):
             self.text_feats = self.model.forward_on_text(self.text_queries)
             print("WildOS 目标搜索文本特征计算完成", flush=True)
 
+    def _resolve_wildos_model_path(self, model_version):
+        """优先使用本地 RADIO 权重, 避免启动时回退到网络下载"""
+        model_version = str(model_version)
+        model_path = Path(model_version).expanduser()
+        if model_path.is_absolute() or model_path.exists():
+            return model_path
+
+        local_model_path = HOME_DIR / "ckpts" / f"{model_version}_half.pth.tar"
+        if local_model_path.exists():
+            return local_model_path
+
+        return model_version
+
+    def _resolve_wildos_adaptor_path(self, adaptor_version):
+        """SigLIP2 需要指向完整 HuggingFace cache 目录"""
+        if adaptor_version is None:
+            return None
+
+        adaptor_path = HOME_DIR / "ckpts" / str(adaptor_version)
+        if adaptor_path.exists():
+            return adaptor_path
+
+        return HOME_DIR / "ckpts"
+
+    @staticmethod
+    def _config_bool(value):
+        """解析 launch dotlist 传入的布尔字符串"""
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in {"true", "1", "yes", "on"}
 
     def init_publishers(self, config: OmegaConf):
         self.scored_navgraph_pub = self.create_publisher(
@@ -289,7 +336,17 @@ class WildOS_Nav(TFLookupSubscriber):
         if self.object_search_mode:
             self.object_mask_publisher = self.create_publisher(
                 ObjectMaskWithTf,
-                "/spot1/object_mask",
+                config.object_mask_topic,
+                10
+            )
+            self.object_target_pose_publisher = self.create_publisher(
+                PoseStamped,
+                config.object_target_pose_topic,
+                10
+            )
+            self.object_target_viz_publisher = self.create_publisher(
+                MarkerArray,
+                config.object_target_viz_topic,
                 10
             )
 
@@ -388,6 +445,9 @@ class WildOS_Nav(TFLookupSubscriber):
         batch_img_frontiers = batch_img_frontiers.cpu().numpy().astype(np.float32)
         batch_img_traversability = batch_img_traversability.cpu().numpy().astype(np.float32)
 
+        object_detected = False
+        object_target_candidate = None
+        object_detection_rays = []
         if self.object_search_mode:
             if self.model.model_precision.is_fp16():
                 spatial_feats = spatial_feats.half()
@@ -401,6 +461,7 @@ class WildOS_Nav(TFLookupSubscriber):
             )
 
             if np.sum(binary_mask) > 0:
+                object_detected = True
                 tf_list = [tf_data[f"world_from_cam{i}"] for i in range(self.num_cameras)]
                 self.object_mask_publisher.publish(
                     get_objectmask_msg(binary_mask, self.cam_inverted, odom_msg, tf_list, cam_info_msgs)
@@ -442,6 +503,15 @@ class WildOS_Nav(TFLookupSubscriber):
                 "paths": paths,
             })
 
+        if self.object_search_mode:
+            object_target_candidate = self.select_object_target_candidate(
+                geofrontiers,
+                nav_data,
+                object_detected
+            )
+            if object_detected:
+                object_detection_rays = self.build_object_detection_rays(binary_mask, all_cam_data)
+
         # 发布评分后的 navgraph
         robot_pos = np.array([
             odom_msg.pose.pose.position.x,
@@ -451,6 +521,19 @@ class WildOS_Nav(TFLookupSubscriber):
         updated_navgraph, removed_uuids, updated_uuids = self.update_navgraph_with_scores(
             navgraph_msg, geofrontiers, nav_data, robot_pos
         )
+        if object_target_candidate is not None:
+            self.annotate_object_target_node(updated_navgraph, object_target_candidate)
+            self.publish_object_target_pose(object_target_candidate, updated_navgraph.header)
+        if self.object_search_mode:
+            self.object_target_viz_publisher.publish(
+                self.viz.visualize_object_search_target(
+                    object_target_candidate,
+                    object_detection_rays,
+                    self.global_frame,
+                    self.get_clock().now().to_msg(),
+                    list(self.text_queries)[0]
+                )
+            )
         self.scored_navgraph_pub.publish(updated_navgraph)
         self.viz.delete_markers(self.withinrange_geofront_pub)
         self.withinrange_geofront_pub.publish(
@@ -481,6 +564,96 @@ class WildOS_Nav(TFLookupSubscriber):
         )
         
         print(f"Finished Heavy")
+
+    def select_object_target_candidate(self, geofrontiers, nav_data, object_detected):
+        """从目标增强后的 frontier scores 中选择当前目标导航点候选"""
+        if not object_detected:
+            return None
+
+        best_candidate = None
+        for cam_idx in range(self.num_cameras):
+            if not geofrontiers[cam_idx] or "scores" not in nav_data[cam_idx]:
+                continue
+
+            for frontier_idx, scores in enumerate(nav_data[cam_idx]["scores"]):
+                scores = self.normalize_frontier_scores(scores)
+                if scores.size == 0:
+                    continue
+                score = float(np.max(scores))
+                if score < self.object_target_min_score:
+                    continue
+
+                heading_bin = int(np.argmax(scores))
+                frontier_node = geofrontiers[cam_idx]["frontier_nodes"][frontier_idx]
+                if best_candidate is None or score > best_candidate["score"]:
+                    best_candidate = {
+                        "node": frontier_node,
+                        "uuid": self.uuid_to_str(frontier_node.uuid),
+                        "score": score,
+                        "heading_bin": heading_bin,
+                        "camera_idx": cam_idx,
+                        "camera_name": CAMERA_MAPPING[cam_idx],
+                    }
+
+        if best_candidate is not None:
+            self.get_logger().info(
+                "目标导航点候选已更新, "
+                f"camera={best_candidate['camera_name']}, "
+                f"score={best_candidate['score']:.2f}, "
+                f"heading_bin={best_candidate['heading_bin']}"
+            )
+        return best_candidate
+
+    def build_object_detection_rays(self, binary_mask, all_cam_data):
+        """将图像目标 mask 质心转成 RViz 中的相机观测射线"""
+        rays = []
+        for cam_idx in range(self.num_cameras):
+            mask = binary_mask[cam_idx, 0]
+            ys, xs = np.nonzero(mask)
+            if len(xs) == 0:
+                continue
+
+            cam_data = all_cam_data[cam_idx]
+            pixel_y = float(np.mean(ys))
+            pixel_x = float(np.mean(xs))
+            if self.cam_inverted:
+                pixel_y = float(cam_data["height"]) - pixel_y
+                pixel_x = float(cam_data["width"]) - pixel_x
+            if self.camera_image_flip_x:
+                pixel_x = float(cam_data["width"] - 1) - pixel_x
+
+            ray_cam = np.linalg.inv(cam_data["K"]) @ np.array([pixel_x, pixel_y, 1.0], dtype=np.float64)
+            ray_cam = ray_cam / np.linalg.norm(ray_cam)
+            ray_world = cam_data["R_wc"] @ ray_cam
+            ray_world = ray_world / np.linalg.norm(ray_world)
+            start = cam_data["t_wc"].reshape(3).astype(np.float64)
+            end = start + self.object_target_ray_length * ray_world
+            rays.append({
+                "camera_name": CAMERA_MAPPING[cam_idx],
+                "pixel_count": int(len(xs)),
+                "start": start,
+                "end": end,
+            })
+        return rays
+
+    def annotate_object_target_node(self, navgraph_msg, candidate):
+        """把当前目标导航点写入 scored graph, 方便后续节点或 echo 检查"""
+        for node in navgraph_msg.nodes:
+            if self.uuid_to_str(node.uuid) != candidate["uuid"]:
+                continue
+            node.properties.append(KeyValue(key="object_target_score", value=[candidate["score"]]))
+            node.properties.append(KeyValue(key="object_target_heading_bin", value=[float(candidate["heading_bin"])]))
+            return
+
+    def publish_object_target_pose(self, candidate, header):
+        """发布当前目标导航点 PoseStamped, 这是目标 frontier 而不是精确物体坐标"""
+        target_pose = PoseStamped()
+        target_pose.header = header
+        target_pose.pose.position.x = candidate["node"].pose.position.x
+        target_pose.pose.position.y = candidate["node"].pose.position.y
+        target_pose.pose.position.z = candidate["node"].pose.position.z
+        target_pose.pose.orientation.w = 1.0
+        self.object_target_pose_publisher.publish(target_pose)
 
     def remove_old_frontiers(self, navgraph_msg):
         # 移除不再存在于 navgraph 的 frontier

@@ -51,14 +51,20 @@ class ExploRFM(nn.Module):
         
         self.traversability_head = None
         if traversability_ckpt:
+            print(f"ExploRFM 开始加载 traversability head, ckpt={traversability_ckpt}", flush=True)
             self.init_traversability_head(traversability_ckpt)
 
         self.frontier_head = None
         if frontier_ckpt:
+            print(f"ExploRFM 开始加载 frontier head, ckpt={frontier_ckpt}", flush=True)
             self.init_frontier_head(frontier_ckpt)
 
     def init_radio_backbone(self) -> None:
         """Initialize the RADIO backbone model."""
+        print(
+            f"ExploRFM 开始加载 RADIO backbone, model={self.model_version}, adaptor={self.adaptor_version}, adaptor_path={self.adaptor_ckpt_path}",
+            flush=True,
+        )
         self.radio_model, chk = radio_model(
             version=self.model_version,
             progress=True,
@@ -73,6 +79,7 @@ class ExploRFM(nn.Module):
             gaussian_device='cuda',
             use_summary_for_spatial=self.use_summary_for_spatial,
         )
+        print("ExploRFM RADIO backbone 加载完成", flush=True)
     
     def init_traversability_head(self, traversability_ckpt: str) -> None:
         """Initialize the traversability detection head."""

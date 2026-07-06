@@ -86,6 +86,7 @@ Graph Construction 不负责:
     -> /spot1/nav_graph
     -> visual_navigation / WildOS
     -> /spot1/scored_nav_graph
+    -> /spot1/object_search_target_pose
     -> graphnav_planner
     -> /spot1/graphnav_planner/path
 ```
@@ -361,6 +362,12 @@ export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 - `grid_map_to_occupancy` 仅作为 debug / 兼容 adapter 保留, 默认 graph 输入不经过它
 - 2D LiDAR baseline 默认启用 `frontier_candidate_spacing: 0.8`, 用于降低密集 frontier_points 的 owner 分配成本
 - 3D elevation 默认启用 `frontier_candidate_spacing: 0.5`, 用于降低密集 frontier_points 的 owner 分配成本
+- WildOS 目标搜索默认应加载本地 `ckpts/c-radio_v3-b_half.pth.tar` 和完整 SigLIP2 cache `ckpts/siglip2`
+- `/spot1/object_search_target_pose` 是目标语义引导下的最高分 frontier, 不是精确物体坐标
+- `/spot1/object_search_target_viz` 显示目标 frontier 和相机检测射线
+- `/spot1/score_rings` 默认只显示 frontier heading score 的方向彩色圆环
+- Unity profile 默认 `camera_static_tf_convention: negative_y_forward_x_right`, 对应 `odom_fram` 的 `-y 前, x 右, z 上`
+- `camera_image_flip_x` 仅作为图像水平轴补偿开关保留, Unity 当前默认关闭
 
 正在关注:
 
@@ -369,6 +376,8 @@ export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 - 3D LiDAR 近场地面不可观测问题, 优先从传感器安装几何, FOV, 近距过滤和 elevation mapping 过滤链路排查
 - AGX Orin 部署效率问题, 优先用 stage timing 和真实 runtime 采样确定瓶颈
 - 目标搜索启用后必须先确认 `/wildos` 节点存在, 再检查 `/spot1/score_rings`, `/spot1/scored_nav_graph` 和 `/spot1/model_visualization` 的 publisher
+- 如果目标搜索日志停在 `WildOS 加载视觉模型`, 优先检查是否误用根 `ckpts/models--google--...` 的不完整 HuggingFace cache
+- SigLIP2 离线加载应使用 `ckpts/siglip2/.../snapshots/<revision>`, 不要让启动路径依赖在线 repo id 解析
 - 三相机视觉输入和 `front`, `left`, `right` 语义保持
 - 运行时同步, QoS, TF buffer 和 stamp 差异诊断
 

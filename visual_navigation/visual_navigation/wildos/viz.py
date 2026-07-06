@@ -115,9 +115,9 @@ class VisualizeGoalAgnosticGeoFrontierScoring(VisualizeGeoFrontierScoring):
         edge_marker.id = 1
         edge_marker.type = Marker.LINE_LIST
         edge_marker.action = Marker.ADD
-        edge_marker.scale.x = 0.006
+        edge_marker.scale.x = 0.018
         edge_marker.color = ColorRGBA()
-        edge_marker.color.a = 0.18
+        edge_marker.color.a = 0.42
         edge_marker.color.r = 1.0
         edge_marker.color.g = 0.0
         edge_marker.color.b = 0.0
@@ -326,37 +326,22 @@ class VisualizeGoalAgnosticGeoFrontierScoring(VisualizeGeoFrontierScoring):
         :return: MarkerArray for visualization in RViz.
         """
         marker_array = MarkerArray()
+        self._append_delete_all(marker_array, frame_id, stamp, "score_rings_clear")
 
-        # Remove markers for removed frontiers
-        for uuid in removed_uuids:
-            for i in range(self.num_bins):
-                marker = Marker()
-                marker.header.frame_id = frame_id
-                marker.header.stamp = stamp
-                marker.ns = "geofrontier_score_ring"
-                marker.id = self.uuid_to_marker_id[uuid][i]
-                marker.action = Marker.DELETE
-                marker_array.markers.append(marker)
-
-        # Add/modify markers for updated frontiers
-        for uuid in updated_uuids:
-            scores, node = frontier_uuid_to_scores[uuid]
+        marker_id = 0
+        for _, (scores, node) in frontier_uuid_to_scores.items():
+            scores = np.nan_to_num(np.asarray(scores, dtype=np.float32), nan=0.0, posinf=1.0, neginf=0.0)
+            scores = np.clip(scores, 0.0, 1.0)
 
             node_pos = np.array([
                 node.pose.position.x,
                 node.pose.position.y,
                 node.pose.position.z
-            ])
-
-            marker_action = Marker.MODIFY
-            if uuid not in self.uuid_to_marker_id:
-                self.uuid_to_marker_id[uuid] = np.arange(self.marker_id, self.marker_id + self.num_bins).tolist()
-                self.marker_id += self.num_bins
-                marker_action = Marker.ADD
+            ], dtype=np.float64)
 
             for bin_idx, score in enumerate(scores):
                 score = float(np.clip(score, 0.0, 1.0))
-                color = plt.cm.jet(score)  # Use jet colormap for scores
+                color = self._score_ring_color(score)
                 angle_st = self.bin_starts[bin_idx]
                 angle_end = angle_st + self.discretization_angle
 
@@ -364,25 +349,114 @@ class VisualizeGoalAgnosticGeoFrontierScoring(VisualizeGeoFrontierScoring):
                 marker.header.frame_id = frame_id
                 marker.header.stamp = stamp
                 marker.ns = "geofrontier_score_ring"
-                marker.action = marker_action
-                marker.id = self.uuid_to_marker_id[uuid][bin_idx]
+                marker.action = Marker.ADD
+                marker.id = marker_id
+                marker_id += 1
                 marker.type = Marker.LINE_STRIP
 
-                start_pt = node_pos + self.ring_radius * np.array([np.cos(angle_st), np.sin(angle_st), 0])
-                end_pt = node_pos + self.ring_radius * np.array([np.cos(angle_end), np.sin(angle_end), 0])
-                start_pt = start_pt.astype(np.float64)
-                end_pt = end_pt.astype(np.float64)
-                marker.points.append(Point(x=start_pt[0], y=start_pt[1], z=start_pt[2]))
-                marker.points.append(Point(x=end_pt[0], y=end_pt[1], z=end_pt[2]))
+                for angle in np.linspace(angle_st, angle_end, 6):
+                    pt = node_pos + self.ring_radius * np.array([np.cos(angle), np.sin(angle), 0.0])
+                    marker.points.append(Point(x=pt[0], y=pt[1], z=pt[2] + 0.08))
 
                 marker.scale.x = 0.12  # Line width
-                marker.color.r = color[0]
-                marker.color.g = color[1]
-                marker.color.b = color[2]
+                marker.color.r = color.r
+                marker.color.g = color.g
+                marker.color.b = color.b
                 marker.color.a = 0.75
                 marker_array.markers.append(marker)
 
         return marker_array
+
+    def visualize_object_search_target(self, candidate, detection_rays, frame_id, stamp, _query_text):
+        """发布目标搜索导航点和图像检测射线的 RViz marker"""
+        marker_array = MarkerArray()
+        self._append_delete_all(marker_array, frame_id, stamp, "object_search_clear")
+
+        if candidate is not None:
+            color = plt.cm.jet(float(np.clip(candidate["score"], 0.0, 1.0)))
+            node_pose = candidate["node"].pose
+
+            target_marker = Marker()
+            target_marker.header.frame_id = frame_id
+            target_marker.header.stamp = stamp
+            target_marker.ns = "object_search_target"
+            target_marker.id = 0
+            target_marker.type = Marker.SPHERE
+            target_marker.action = Marker.ADD
+            self._set_marker_pose(target_marker, node_pose, z_offset=0.45)
+            target_marker.scale.x = 0.75
+            target_marker.scale.y = 0.75
+            target_marker.scale.z = 0.35
+            target_marker.color.r = color[0]
+            target_marker.color.g = color[1]
+            target_marker.color.b = color[2]
+            target_marker.color.a = 1.0
+            marker_array.markers.append(target_marker)
+
+        for ray_id, ray in enumerate(detection_rays):
+            ray_marker = Marker()
+            ray_marker.header.frame_id = frame_id
+            ray_marker.header.stamp = stamp
+            ray_marker.ns = "object_search_detection_ray"
+            ray_marker.id = ray_id
+            ray_marker.type = Marker.LINE_STRIP
+            ray_marker.action = Marker.ADD
+            ray_marker.points.append(Point(x=ray["start"][0], y=ray["start"][1], z=ray["start"][2]))
+            ray_marker.points.append(Point(x=ray["end"][0], y=ray["end"][1], z=ray["end"][2]))
+            ray_marker.scale.x = 0.06
+            ray_marker.color.r = 1.0
+            ray_marker.color.g = 0.55
+            ray_marker.color.b = 0.0
+            ray_marker.color.a = 0.85
+            marker_array.markers.append(ray_marker)
+
+            ray_text = Marker()
+            ray_text.header.frame_id = frame_id
+            ray_text.header.stamp = stamp
+            ray_text.ns = "object_search_detection_text"
+            ray_text.id = ray_id
+            ray_text.type = Marker.TEXT_VIEW_FACING
+            ray_text.action = Marker.ADD
+            ray_text.pose.position.x = ray["end"][0]
+            ray_text.pose.position.y = ray["end"][1]
+            ray_text.pose.position.z = ray["end"][2] + 0.25
+            ray_text.scale.z = 0.24
+            ray_text.color.r = 1.0
+            ray_text.color.g = 0.75
+            ray_text.color.b = 0.25
+            ray_text.color.a = 1.0
+            ray_text.text = f"{ray['camera_name']} detected"
+            marker_array.markers.append(ray_text)
+
+        return marker_array
+
+    @staticmethod
+    def _append_delete_all(marker_array, frame_id, stamp, namespace):
+        marker = Marker()
+        marker.header.frame_id = frame_id
+        marker.header.stamp = stamp
+        marker.ns = namespace
+        marker.id = 0
+        marker.action = Marker.DELETEALL
+        marker_array.markers.append(marker)
+
+    @staticmethod
+    def _set_marker_pose(marker, pose, z_offset=0.0):
+        marker.pose.position.x = pose.position.x
+        marker.pose.position.y = pose.position.y
+        marker.pose.position.z = pose.position.z + z_offset
+        marker.pose.orientation = pose.orientation
+
+    @staticmethod
+    def _score_ring_color(score):
+        """低分用冷色, 高分用黄红色突出显示"""
+        score = float(np.clip(score, 0.0, 1.0))
+        if score < 0.5:
+            t = score / 0.5
+            return ColorRGBA(r=0.0, g=0.25 + 0.55 * t, b=1.0 - 0.65 * t, a=1.0)
+
+        t = (score - 0.5) / 0.5
+        return ColorRGBA(r=1.0, g=1.0 - 0.85 * t, b=0.0, a=1.0)
     
     def visualize_model_det_front(self, nav_data, all_cam_data):
         img_grid = {}

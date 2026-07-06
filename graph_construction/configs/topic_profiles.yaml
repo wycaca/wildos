@@ -16,6 +16,8 @@ profiles:
     odom_pose_source_2d: tf
     odom_fallback_to_message_2d: "false"
     camera_parent_frame: base_link
+    camera_static_tf_convention: x_forward_y_left
+    camera_image_flip_x: "false"
     lidar_parent_frame: base_link
     lidar_frame: lidar
     pointcloud_axis_mode_3d: isaac_lidar_to_base
@@ -35,6 +37,9 @@ profiles:
     valid_geofrontiers_topic: /spot1/within_range_geofrontiers
     score_ring_topic: /spot1/score_rings
     graph_viz_topic: /spot1/nav_graph_viz
+    object_mask_topic: /spot1/object_mask
+    object_target_pose_topic: /spot1/object_search_target_pose
+    object_target_viz_topic: /spot1/object_search_target_viz
     goal_pose_topic: /goal_pose
     path_topic: /path2
     camera_img_topic: /unitree_go2/{}_cam/color_image
@@ -57,6 +62,8 @@ profiles:
     odom_pose_source_2d: message
     odom_fallback_to_message_2d: "true"
     camera_parent_frame: odom_fram
+    camera_static_tf_convention: negative_y_forward_x_right
+    camera_image_flip_x: "false"
     lidar_parent_frame: odom_fram
     lidar_frame: livox_frame
     pointcloud_axis_mode_3d: identity
@@ -76,6 +83,9 @@ profiles:
     valid_geofrontiers_topic: /spot1/within_range_geofrontiers
     score_ring_topic: /spot1/score_rings
     graph_viz_topic: /spot1/nav_graph_viz
+    object_mask_topic: /spot1/object_mask
+    object_target_pose_topic: /spot1/object_search_target_pose
+    object_target_viz_topic: /spot1/object_search_target_viz
     goal_pose_topic: /goal_pose
     path_topic: /path2
     camera_img_topic: /camera/{}/color/image/compressed
@@ -98,6 +108,8 @@ profiles:
     odom_pose_source_2d: message
     odom_fallback_to_message_2d: "true"
     camera_parent_frame: spot1/base_link
+    camera_static_tf_convention: x_forward_y_left
+    camera_image_flip_x: "false"
     lidar_parent_frame: spot1/base_link
     lidar_frame: spot1/ouster_front
     pointcloud_axis_mode_3d: identity
@@ -117,6 +129,9 @@ profiles:
     valid_geofrontiers_topic: /spot1/within_range_geofrontiers
     score_ring_topic: /spot1/score_rings
     graph_viz_topic: /spot1/nav_graph_viz
+    object_mask_topic: /spot1/object_mask
+    object_target_pose_topic: /spot1/object_search_target_pose
+    object_target_viz_topic: /spot1/object_search_target_viz
     goal_pose_topic: /goal_pose
     path_topic: /path2
     camera_img_topic: /spot1/realsense/{}/color/image_raw/compressed
