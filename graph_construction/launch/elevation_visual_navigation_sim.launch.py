@@ -83,6 +83,7 @@ def generate_launch_description():
             _profile_arg("odom_output_topic", "odom_output_topic"),
             _profile_arg("odom_parent_frame", "odom_parent_frame"),
             _profile_arg("odom_child_frame", "odom_child_frame"),
+            _profile_arg("base_frame", "base_frame"),
             DeclareLaunchArgument("odom_stamp_mode", default_value="now", description="Adapted odometry stamp mode"),
             DeclareLaunchArgument("odom_pose_source", default_value="tf", description="Adapted odometry pose source"),
             DeclareLaunchArgument(
@@ -114,8 +115,28 @@ def generate_launch_description():
             _profile_arg("object_mask_topic", "object_mask_topic"),
             _profile_arg("object_target_pose_topic", "object_target_pose_topic"),
             _profile_arg("object_target_viz_topic", "object_target_viz_topic"),
+            _profile_arg("object_reached_topic", "object_reached_topic"),
+            _profile_arg("object_search_initial_goal_distance", "object_search_initial_goal_distance"),
+            _profile_arg("object_search_initial_goal_heading_deg", "object_search_initial_goal_heading_deg"),
+            _profile_arg("object_search_mask_threshold", "object_search_mask_threshold"),
+            _profile_arg("visual_frontiers_range", "visual_frontiers_range"),
+            _profile_arg("visual_frontier_threshold", "visual_frontier_threshold"),
+            _profile_arg("object_search_detection_debug_interval", "object_search_detection_debug_interval"),
+            _profile_arg("object_search_goal_publish_rate", "object_search_goal_publish_rate"),
+            _profile_arg("object_search_target_timeout_sec", "object_search_target_timeout_sec"),
+            _profile_arg("object_search_latch_target_after_first_detection", "object_search_latch_target_after_first_detection"),
+            _profile_arg("object_search_latch_target_timeout_sec", "object_search_latch_target_timeout_sec"),
+            _profile_arg("object_search_memory_timeout_sec", "object_search_memory_timeout_sec"),
+            _profile_arg("object_search_memory_goal_distance", "object_search_memory_goal_distance"),
+            _profile_arg("object_search_target_reached_radius", "object_search_target_reached_radius"),
+            _profile_arg("object_search_object_reached_timeout_sec", "object_search_object_reached_timeout_sec"),
+            _profile_arg("object_search_reached_mask_fraction", "object_search_reached_mask_fraction"),
+            _profile_arg("object_search_reached_min_pixel_count", "object_search_reached_min_pixel_count"),
+            _profile_arg("object_search_reached_confirm_frames", "object_search_reached_confirm_frames"),
+            _profile_arg("object_search_goal_viz_topic", "object_search_goal_viz_topic"),
             _profile_arg("planner_odom_topic", "planner_odom_topic"),
             _profile_arg("goal_pose_topic", "goal_pose_topic"),
+            _profile_arg("tracking_goal_pose_topic", "tracking_goal_pose_topic"),
             _profile_arg("path_topic", "path_topic"),
             DeclareLaunchArgument(
                 "publish_camera_static_tf",
@@ -176,6 +197,49 @@ def _launch_setup(context):
             "object_mask_topic": _value(context, profile, "object_mask_topic", "object_mask_topic"),
             "object_target_pose_topic": _value(context, profile, "object_target_pose_topic", "object_target_pose_topic"),
             "object_target_viz_topic": _value(context, profile, "object_target_viz_topic", "object_target_viz_topic"),
+            "object_reached_topic": _value(context, profile, "object_reached_topic", "object_reached_topic"),
+            "object_search_config.mask_threshold": _value(
+                context,
+                profile,
+                "object_search_mask_threshold",
+                "object_search_mask_threshold",
+            ),
+            "frontiers_range": _float_value(
+                context,
+                profile,
+                "visual_frontiers_range",
+                "visual_frontiers_range",
+            ),
+            "frontier_threshold": _float_value(
+                context,
+                profile,
+                "visual_frontier_threshold",
+                "visual_frontier_threshold",
+            ),
+            "object_search_config.detection_debug_interval": _value(
+                context,
+                profile,
+                "object_search_detection_debug_interval",
+                "object_search_detection_debug_interval",
+            ),
+            "object_search_config.reached_mask_fraction": _value(
+                context,
+                profile,
+                "object_search_reached_mask_fraction",
+                "object_search_reached_mask_fraction",
+            ),
+            "object_search_config.reached_min_pixel_count": _value(
+                context,
+                profile,
+                "object_search_reached_min_pixel_count",
+                "object_search_reached_min_pixel_count",
+            ),
+            "object_search_config.reached_confirm_frames": _value(
+                context,
+                profile,
+                "object_search_reached_confirm_frames",
+                "object_search_reached_confirm_frames",
+            ),
             "camera_image_flip_x": _value(context, profile, "camera_image_flip_x", "camera_image_flip_x"),
         }
     )
@@ -201,7 +265,7 @@ def _launch_setup(context):
 
     elevation_share = get_package_share_directory("elevation_mapping_cupy")
     core_param = PathJoinSubstitution([TextSubstitution(text=elevation_share), "config", "core", "core_param.yaml"])
-    base_frame = _value(context, profile, "odom_child_frame", "odom_child_frame")
+    base_frame = _value(context, profile, "base_frame", "base_frame")
 
     elevation_mapping = Node(
         package="elevation_mapping_cupy",
@@ -289,12 +353,108 @@ def _launch_setup(context):
         parameters=[{"use_sim_time": use_sim_time}],
     )
 
+    object_search_goal_mux = Node(
+        package="visual_navigation",
+        executable="object_search_goal_mux",
+        output="screen",
+        parameters=[
+            {"use_sim_time": use_sim_time},
+            {"output_goal_topic": goal_pose_topic},
+            {"goal_viz_topic": _value(context, profile, "object_search_goal_viz_topic", "object_search_goal_viz_topic")},
+            {"object_target_pose_topic": _value(context, profile, "object_target_pose_topic", "object_target_pose_topic")},
+            {"object_reached_topic": _value(context, profile, "object_reached_topic", "object_reached_topic")},
+            {"odom_topic": odom_output_topic},
+            {"frame_id": global_frame},
+            {
+                "publish_rate": _float_value(
+                    context,
+                    profile,
+                    "object_search_goal_publish_rate",
+                    "object_search_goal_publish_rate",
+                )
+            },
+            {
+                "initial_goal_distance": _float_value(
+                    context,
+                    profile,
+                    "object_search_initial_goal_distance",
+                    "object_search_initial_goal_distance",
+                )
+            },
+            {
+                "initial_goal_heading_deg": _float_value(
+                    context,
+                    profile,
+                    "object_search_initial_goal_heading_deg",
+                    "object_search_initial_goal_heading_deg",
+                )
+            },
+            {
+                "target_timeout_sec": _float_value(
+                    context,
+                    profile,
+                    "object_search_target_timeout_sec",
+                    "object_search_target_timeout_sec",
+                )
+            },
+            {
+                "latch_target_after_first_detection": _bool_value(
+                    context,
+                    profile,
+                    "object_search_latch_target_after_first_detection",
+                    "object_search_latch_target_after_first_detection",
+                )
+            },
+            {
+                "latch_target_timeout_sec": _float_value(
+                    context,
+                    profile,
+                    "object_search_latch_target_timeout_sec",
+                    "object_search_latch_target_timeout_sec",
+                )
+            },
+            {
+                "memory_timeout_sec": _float_value(
+                    context,
+                    profile,
+                    "object_search_memory_timeout_sec",
+                    "object_search_memory_timeout_sec",
+                )
+            },
+            {
+                "memory_goal_distance": _float_value(
+                    context,
+                    profile,
+                    "object_search_memory_goal_distance",
+                    "object_search_memory_goal_distance",
+                )
+            },
+            {
+                "target_reached_radius": _float_value(
+                    context,
+                    profile,
+                    "object_search_target_reached_radius",
+                    "object_search_target_reached_radius",
+                )
+            },
+            {
+                "object_reached_timeout_sec": _float_value(
+                    context,
+                    profile,
+                    "object_search_object_reached_timeout_sec",
+                    "object_search_object_reached_timeout_sec",
+                )
+            },
+        ],
+        condition=IfCondition(LaunchConfiguration("do_object_search")),
+    )
+
     planner = _planner_node(ns, use_sim_time, planner_odom_topic, goal_pose_topic, scored_nav_graph_topic)
     path_follower = _path_follower_node(
         ns,
         use_sim_time,
         planner_odom_topic,
-        goal_pose_topic,
+        _value(context, profile, "tracking_goal_pose_topic", "tracking_goal_pose_topic"),
         _value(context, profile, "path_topic", "path_topic"),
     )
 
@@ -320,7 +480,7 @@ def _launch_setup(context):
         elevation_mapping,
         TimerAction(period=LaunchConfiguration("graph_start_delay"), actions=[graph_construction]),
         TimerAction(period=LaunchConfiguration("visual_start_delay"), actions=[wildos]),
-        TimerAction(period=LaunchConfiguration("planner_start_delay"), actions=[planner, path_follower]),
+        TimerAction(period=LaunchConfiguration("planner_start_delay"), actions=[object_search_goal_mux, planner, path_follower]),
     ]
 
 
@@ -338,9 +498,11 @@ def _planner_node(ns, use_sim_time, odom_topic, goal_pose_topic, scored_nav_grap
             {"frontier_score_factor": 20.0},
             {"min_local_frontier_score": 0.4},
             {"local_frontier_radius": 10.0},
-            {"path_smoothness_period": 0.0},
+            {"path_smoothness_period": 10.0},
             {"trav_class": "default"},
             {"goal_radius": 3.0},
+            {"append_virtual_goal_to_path": False},
+            {"append_frontier_point_to_path": False},
         ],
         remappings=[
             ("~/nav_graph", scored_nav_graph_topic),
@@ -350,7 +512,7 @@ def _planner_node(ns, use_sim_time, odom_topic, goal_pose_topic, scored_nav_grap
     )
 
 
-def _path_follower_node(ns, use_sim_time, odom_topic, goal_pose_topic, path_topic):
+def _path_follower_node(ns, use_sim_time, odom_topic, tracking_goal_pose_topic, path_topic):
     return Node(
         package="graphnav_planner",
         executable="path_follower_node",
@@ -364,7 +526,7 @@ def _path_follower_node(ns, use_sim_time, odom_topic, goal_pose_topic, path_topi
         remappings=[
             ("~/path", path_topic),
             ("~/odom", odom_topic),
-            ("~/goal_pose", goal_pose_topic),
+            ("~/goal_pose", tracking_goal_pose_topic),
         ],
     )
 
@@ -472,3 +634,23 @@ def _value(context, profile, arg_name, profile_key):
     if override:
         return override
     return str(profile[profile_key])
+
+
+def _bool_value(context, profile, arg_name, profile_key):
+    raw_value = _value(context, profile, arg_name, profile_key)
+    if isinstance(raw_value, bool):
+        return raw_value
+    normalized = str(raw_value).strip().lower()
+    if normalized in {"true", "1", "yes", "on"}:
+        return True
+    if normalized in {"false", "0", "no", "off"}:
+        return False
+    raise ValueError(f"Invalid boolean value for {arg_name}: {raw_value}")
+
+
+def _float_value(context, profile, arg_name, profile_key):
+    raw_value = _value(context, profile, arg_name, profile_key)
+    try:
+        return float(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid float value for {arg_name}: {raw_value}") from exc

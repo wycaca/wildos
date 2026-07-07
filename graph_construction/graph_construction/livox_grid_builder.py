@@ -44,6 +44,15 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "unknown_value": -1,
     "free_value": 0,
     "obstacle_value": 100,
+    "origin_mode": "rolling",
+    "origin_snap_to_resolution": False,
+    "force_odd_grid_size": False,
+    "robot_clear_radius": 0.0,
+    "obstacle_detection_mode": "ray_height",
+    "height_diff_obstacle_threshold": 0.05,
+    "high_obstacle_min_height": 0.3,
+    "fixed_origin_x": None,
+    "fixed_origin_y": None,
     "assume_input_in_grid_frame": False,
     "tf_timeout_sec": 0.1,
     "scan_accumulation_time_sec": 4.0,
@@ -71,6 +80,15 @@ class LivoxGridBuilderConfig:
     unknown_value: int = -1
     free_value: int = 0
     obstacle_value: int = 100
+    origin_mode: str = "rolling"
+    origin_snap_to_resolution: bool = False
+    force_odd_grid_size: bool = False
+    robot_clear_radius: float = 0.0
+    obstacle_detection_mode: str = "ray_height"
+    height_diff_obstacle_threshold: float = 0.05
+    high_obstacle_min_height: float = 0.3
+    fixed_origin_x: Optional[float] = None
+    fixed_origin_y: Optional[float] = None
     assume_input_in_grid_frame: bool = False
     tf_timeout_sec: float = 0.1
     scan_accumulation_time_sec: float = 4.0
@@ -93,15 +111,22 @@ class LivoxGridBuilder(Node):
     def __init__(self, config: Dict[str, Any]) -> None:
         super().__init__("livox_grid_builder")
         self.config = _builder_config({**DEFAULT_CONFIG, **config})
+        _validate_config(self.config)
         self.latest_cloud: Optional[PointCloud2] = None
         self.latest_odom: Optional[Odometry] = None
         self._logged_first_cloud = False
         self._logged_first_odom = False
         self._logged_first_grid = False
         self._logged_missing_tf = False
+        self._logged_assume_input_frame = False
         self._logged_first_accumulated_scan = False
+        self._logged_fixed_origin = False
+        self._logged_robot_outside_fixed_grid = False
+        self._logged_cached_tf_fallback = False
+        self._last_cloud_transform: Optional[TransformStamped] = None
         self._cloud_observations: Deque[CloudObservation] = deque()
         self._last_processed_cloud_key: Optional[Tuple[int, int, str, int]] = None
+        self._fixed_origin: Optional[Tuple[float, float]] = None
 
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
@@ -114,7 +139,14 @@ class LivoxGridBuilder(Node):
         self.create_timer(1.0 / publish_rate, self._on_timer)
 
         self.get_logger().info(
-            f"Livox 栅格构建已启动, lidar={self.config.lidar_topic}, grid={self.config.grid_topic}"
+            f"Livox 栅格构建已启动, lidar={self.config.lidar_topic}, grid={self.config.grid_topic}, "
+            f"grid_frame={self.config.grid_frame}, origin_mode={self.config.origin_mode}, "
+            f"resolution={self.config.resolution:.3f}, size={self.config.local_width:.1f}x{self.config.local_height:.1f}, "
+            f"mode={self.config.obstacle_detection_mode}, snap={self.config.origin_snap_to_resolution}, "
+            f"force_odd={self.config.force_odd_grid_size}, robot_clear={self.config.robot_clear_radius:.2f}, "
+            f"height_range=({self.config.min_obstacle_height:.2f},{self.config.max_obstacle_height:.2f}), "
+            f"inflation={self.config.obstacle_inflation_radius:.2f}, "
+            f"assume_input_in_grid_frame={self.config.assume_input_in_grid_frame}"
         )
 
     def _on_cloud(self, msg: PointCloud2) -> None:
@@ -214,22 +246,43 @@ class LivoxGridBuilder(Node):
     def _lookup_cloud_transform(self, cloud: PointCloud2) -> Optional[TransformStamped]:
         """查询点云 frame 到 grid frame 的 TF, 简化模式下跳过查询"""
         if self.config.assume_input_in_grid_frame or cloud.header.frame_id == self.config.grid_frame:
+            if self.config.assume_input_in_grid_frame and not self._logged_assume_input_frame:
+                self.get_logger().info(
+                    f"点云坐标按 {self.config.grid_frame} 处理, 跳过 {cloud.header.frame_id} 到 "
+                    f"{self.config.grid_frame} 的 TF 转换"
+                )
+                self._logged_assume_input_frame = True
             return None
 
         try:
-            return self.tf_buffer.lookup_transform(
+            transform = self.tf_buffer.lookup_transform(
                 self.config.grid_frame,
                 cloud.header.frame_id,
                 Time(),
                 timeout=Duration(seconds=float(self.config.tf_timeout_sec)),
             )
+            self._last_cloud_transform = transform
+            return transform
         except Exception as exc:
+            if self._is_past_extrapolation(exc) and self._last_cloud_transform is not None:
+                if not self._logged_cached_tf_fallback:
+                    self.get_logger().warn(
+                        f"点云时间早于 TF 缓存, 已使用上一帧 TF 兜底, "
+                        f"source={cloud.header.frame_id}, target={self.config.grid_frame}, error={exc}"
+                    )
+                    self._logged_cached_tf_fallback = True
+                return self._last_cloud_transform
             if not self._logged_missing_tf:
                 self.get_logger().warn(
                     f"缺少从 {cloud.header.frame_id} 到 {self.config.grid_frame} 的 TF, error={exc}"
                 )
                 self._logged_missing_tf = True
             return None
+
+    @staticmethod
+    def _is_past_extrapolation(error: Exception) -> bool:
+        msg = str(error)
+        return "extrapolation into the past" in msg
 
     def _build_grid(
         self,
@@ -240,13 +293,35 @@ class LivoxGridBuilder(Node):
         射线经过的 cell 标为 free, 命中点附近按膨胀半径标为 obstacle
         未被射线观测到的区域保持 unknown, 用于后续 frontier 检测
         """
-        width = max(1, int(ceil(self.config.local_width / self.config.resolution)))
-        height = max(1, int(ceil(self.config.local_height / self.config.resolution)))
+        width = self._grid_cell_count(self.config.local_width)
+        height = self._grid_cell_count(self.config.local_height)
         robot = _odom_position(odom)
-        origin_x = robot[0] - width * self.config.resolution * 0.5
-        origin_y = robot[1] - height * self.config.resolution * 0.5
-        grid = np.full((height, width), int(self.config.unknown_value), dtype=np.int16)
+        origin_x, origin_y = self._grid_origin(robot, width, height)
+        if self.config.obstacle_detection_mode == "height_diff":
+            grid = self._build_height_diff_grid(origin_x, origin_y, width, height, robot)
+        else:
+            grid = self._build_ray_height_grid(origin_x, origin_y, width, height)
 
+        self._clear_robot_center(grid, robot, origin_x, origin_y)
+
+        return self._grid_message(grid, origin_x, origin_y, width, height)
+
+    def _grid_cell_count(self, length_m: float) -> int:
+        """计算 grid cell 数, 可选强制奇数保证唯一中心 cell"""
+        count = max(1, int(ceil(float(length_m) / self.config.resolution)))
+        if self.config.force_odd_grid_size and count % 2 == 0:
+            count += 1
+        return count
+
+    def _build_ray_height_grid(
+        self,
+        origin_x: float,
+        origin_y: float,
+        width: int,
+        height: int,
+    ) -> np.ndarray:
+        """用射线清空和单点高度阈值生成 grid"""
+        grid = np.full((height, width), int(self.config.unknown_value), dtype=np.int16)
         for observation in self._cloud_observations:
             origin_index = _world_to_grid(
                 observation.sensor_origin[0],
@@ -261,8 +336,103 @@ class LivoxGridBuilder(Node):
                 relative_z = point[2] - observation.robot_position[2]
                 if self.config.min_obstacle_height <= relative_z <= self.config.max_obstacle_height:
                     self._mark_obstacle(grid, endpoint)
+        return grid
 
-        return self._grid_message(grid, origin_x, origin_y, width, height)
+    def _build_height_diff_grid(
+        self,
+        origin_x: float,
+        origin_y: float,
+        width: int,
+        height: int,
+        robot: Point3D,
+    ) -> np.ndarray:
+        """用 cell 内高度差生成稳定局部 costmap"""
+        grid = np.full((height, width), int(self.config.unknown_value), dtype=np.int16)
+        max_z = np.full((height, width), -np.inf, dtype=np.float32)
+        min_z = np.full((height, width), np.inf, dtype=np.float32)
+
+        for observation in self._cloud_observations:
+            min_z_dynamic = observation.robot_position[2] + self.config.min_obstacle_height
+            max_z_dynamic = observation.robot_position[2] + self.config.max_obstacle_height
+            for point in observation.points:
+                if point[2] < min_z_dynamic or point[2] > max_z_dynamic:
+                    continue
+                ix, iy = _world_to_grid(point[0], point[1], origin_x, origin_y, self.config.resolution)
+                if not (0 <= ix < width and 0 <= iy < height):
+                    continue
+                max_z[iy, ix] = max(max_z[iy, ix], point[2])
+                min_z[iy, ix] = min(min_z[iy, ix], point[2])
+
+        observed = np.isfinite(max_z)
+        grid[observed] = int(self.config.free_value)
+        height_span = max_z - min_z
+        wall_mask = observed & (height_span > self.config.height_diff_obstacle_threshold)
+        high_mask = observed & (max_z > robot[2] + self.config.high_obstacle_min_height)
+        obstacle_indices = np.argwhere(wall_mask | high_mask)
+        for iy, ix in obstacle_indices:
+            self._mark_obstacle(grid, (int(ix), int(iy)))
+        return grid
+
+    def _grid_origin(self, robot: Point3D, width: int, height: int) -> Tuple[float, float]:
+        """按配置选择 rolling 或 fixed grid 原点"""
+        map_width = width * self.config.resolution
+        map_height = height * self.config.resolution
+        if self.config.origin_mode == "fixed":
+            if self._fixed_origin is None:
+                origin_x = (
+                    float(self.config.fixed_origin_x)
+                    if self.config.fixed_origin_x is not None
+                    else robot[0] - map_width * 0.5
+                )
+                origin_y = (
+                    float(self.config.fixed_origin_y)
+                    if self.config.fixed_origin_y is not None
+                    else robot[1] - map_height * 0.5
+                )
+                self._fixed_origin = (origin_x, origin_y)
+            if not self._logged_fixed_origin:
+                self.get_logger().info(
+                    f"使用固定 map grid 原点, origin=({self._fixed_origin[0]:.3f}, "
+                    f"{self._fixed_origin[1]:.3f}), size={width}x{height}"
+                )
+                self._logged_fixed_origin = True
+            robot_index = _world_to_grid(robot[0], robot[1], self._fixed_origin[0], self._fixed_origin[1], self.config.resolution)
+            if (
+                not self._logged_robot_outside_fixed_grid
+                and not (0 <= robot_index[0] < width and 0 <= robot_index[1] < height)
+            ):
+                self.get_logger().warn(
+                    "机器人已离开固定 grid 范围, 请增大 local_width/local_height 或重置 map origin"
+                )
+                self._logged_robot_outside_fixed_grid = True
+            return self._fixed_origin
+
+        origin_x = robot[0] - map_width * 0.5
+        origin_y = robot[1] - map_height * 0.5
+        if self.config.origin_snap_to_resolution:
+            origin_x = floor(origin_x / self.config.resolution) * self.config.resolution
+            origin_y = floor(origin_y / self.config.resolution) * self.config.resolution
+        return origin_x, origin_y
+
+    def _clear_robot_center(
+        self,
+        grid: np.ndarray,
+        robot: Point3D,
+        origin_x: float,
+        origin_y: float,
+    ) -> None:
+        """清空机器人中心附近 cell, 避免自身点云污染 anchor"""
+        if self.config.robot_clear_radius <= 0.0:
+            return
+        center = _world_to_grid(robot[0], robot[1], origin_x, origin_y, self.config.resolution)
+        radius_cells = max(1, int(ceil(self.config.robot_clear_radius / self.config.resolution)))
+        cx, cy = center
+        for iy in range(cy - radius_cells, cy + radius_cells + 1):
+            for ix in range(cx - radius_cells, cx + radius_cells + 1):
+                if not (0 <= iy < grid.shape[0] and 0 <= ix < grid.shape[1]):
+                    continue
+                if hypot(ix - cx, iy - cy) * self.config.resolution <= self.config.robot_clear_radius:
+                    grid[iy, ix] = int(self.config.free_value)
 
     def _sensor_origin(self, robot: Point3D, transform: Optional[TransformStamped]) -> Point3D:
         """返回 grid frame 下的传感器原点"""
@@ -373,13 +543,35 @@ def _stamp_to_seconds(cloud: PointCloud2) -> float:
 
 def _builder_config(config: Dict[str, Any]) -> LivoxGridBuilderConfig:
     """从完整配置中提取 LivoxGridBuilderConfig 字段"""
-    allowed = {field.name for field in fields(LivoxGridBuilderConfig)}
+    field_map = {field.name: field for field in fields(LivoxGridBuilderConfig)}
     values = {
-        key: value
+        key: _coerce_config_value(value, field_map[key].type)
         for key, value in config.items()
-        if key in allowed
+        if key in field_map
     }
     return LivoxGridBuilderConfig(**values)
+
+
+def _validate_config(config: LivoxGridBuilderConfig) -> None:
+    """校验配置枚举, 避免拼写错误导致地图模式异常"""
+    if config.obstacle_detection_mode not in {"ray_height", "height_diff"}:
+        raise ValueError(
+            "obstacle_detection_mode must be 'ray_height' or 'height_diff', "
+            f"got {config.obstacle_detection_mode!r}"
+        )
+    if config.origin_mode not in {"rolling", "fixed"}:
+        raise ValueError(f"origin_mode must be 'rolling' or 'fixed', got {config.origin_mode!r}")
+
+
+def _coerce_config_value(value: Any, target_type: Any) -> Any:
+    """把 launch 字符串参数转成 dataclass 需要的基础类型"""
+    if (target_type is bool or str(target_type) == "bool") and isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+    return value
 
 
 def _load_config(config_name: str, overrides: list[str] | None = None) -> Dict[str, Any]:

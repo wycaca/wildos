@@ -1,0 +1,76 @@
+# 2026-07-07 changelog
+
+## 已完成
+
+- 记录 Unity 新 TF 主链路为 `map -> odom_3D -> base_link`
+- `topic_profiles.yaml` 新增 `base_frame`, 用于区分里程计层和机器人本体层
+- Unity profile 保持 `odom_child_frame=odom_3D`, 并将 `camera_parent_frame` 和 `lidar_parent_frame` 改为 `base_link`
+- 3D launch 中 elevation mapping 的 `base_frame` 改为从 profile 读取, 不再复用 `odom_child_frame`
+- 更新 `AGENT_README.md`, 记录 Unity 当前 frame 约定和 fallback static TF 约束
+- 新增 `2026-07-07-unity-tf-frame-update.md`, 记录问题原因, 修改内容和验证命令
+- 修正 Unity camera static TF 约定, 从旧 `negative_y_forward_x_right` 改为 `x_forward_y_left`
+- 记录目标搜索检测射线右偏问题, 根因是旧相机 optical z 在当前 `base_link` 下指向右侧
+- `TFLookupSubscriber` 增加过去外推 fallback, 图像时间略早于 TF buffer 时回退 latest TF
+- `livox_grid_builder` 增加上一帧 TF 缓存, 启动期点云时间早于 TF buffer 时可继续构图
+- `goalagnostic_scoring` 增加零长度 frontier heading 保护, 避免 `invalid value encountered in divide`
+- `object_search_goal_mux` 增加有限 latch 超时, 目标丢失后不会无限保持最后一个 frontier
+- 三套 profile 默认将 `object_search_latch_target_after_first_detection` 改为 `false`
+- `object_search_goal_mux` 新增目标记忆状态, 目标丢失后进入 `TARGET_MEMORY_GUIDED_SEARCH`
+- `object_search_goal_mux` 新增 `TARGET_REACHED_VIEWPOINT`, 优先由 WildOS 近距离目标 mask 确认触发, active target frontier 距离仅作为兜底
+- WildOS 新增 `/spot1/object_search_reached`, 用目标 mask 面积连续确认是否到达可达观察点
+- 三套 profile 新增 `object_search_memory_timeout_sec`, `object_search_memory_goal_distance`, `object_search_target_reached_radius`, `object_search_object_reached_timeout_sec`
+- 三套 profile 新增 `object_search_reached_mask_fraction`, `object_search_reached_min_pixel_count`, `object_search_reached_confirm_frames`
+- `wildos/nav.py` 将无目标检测日志改为首次 WARN, 后续 DEBUG 计数
+- `geofrontier_to_image.py` 增加零长度 frontier heading 保护, 避免 NaN heading 影响可见 frontier 判断
+- Unity profile 将目标搜索 mask 阈值调整为 `0.10`, 让物体识别更保守
+- Unity profile 将 WildOS `frontiers_range` 调整为 `11.0`, `frontier_threshold` 调整为 `0.55`, 略微增加可见视觉 frontier 候选
+- 三套 profile 新增 `object_search_mask_threshold`, `object_search_detection_debug_interval`, `object_search_goal_publish_rate`
+- 2D 和 3D launch 透传目标搜索 mask 阈值, 未检测诊断间隔和 goal mux 发布频率
+- `object_search_goal_mux` 默认 `publish_rate` 从 `1.0Hz` 调整为 `5.0Hz`, 提高 `/goal_pose` 触发 planner 重规划的频率
+- WildOS 未检测到目标时新增每路相机最高相似度和近阈值像素日志
+- 新增 `2026-07-07-object-search-path-latency.md`, 记录 `/corrected_path` 路径发布慢的诊断链路
+- 修复 WildOS 启动崩溃, launch dotlist 传入的 `object_search_config.mask_threshold` 为字符串时, WildOS 侧显式转换为 `float`
+- `object_search_goal_mux` 的 `TARGET_MEMORY_GUIDED_SEARCH` 改为复用最近目标 frontier pose, 避免固定方向外推到墙边或非安全区域
+- `graphnav_planner` 新增 `append_virtual_goal_to_path` 和 `append_frontier_point_to_path`, 默认关闭
+- 2D 和 3D launch 中 planner 默认只输出真实 graph node 路径, 不再把虚拟 goal 或未知 frontier 平均点追加到执行路径
+- `graphnav_planner` 增加零长度 heading 保护, 避免 goal 与节点重合时产生 NaN orientation
+- Unity profile 将 `lidar_assume_input_in_grid_frame` 调整为 `true`, 避免 Unity 世界坐标点云被 `livox_frame -> map` TF 二次旋转
+- Unity profile 新增 `grid_odom_topic=/spot1/odom_for_scoring`, 2D grid builder 不再直接用 `/unity/odom` 的 `odom_3D` frame 作为局部 grid 中心
+- Unity profile 的自研 builder 调试链路改为 `grid_origin_mode=rolling`, 并启用 resolution 对齐, 奇数 grid 和中心清空
+- Unity 2D `odom_pose_source_2d` 改为 `tf`, 让 `/spot1/odom_for_scoring` 优先使用 TF 中的 map 位姿
+- Isaac 和 robot profile 保持 `lidar_assume_input_in_grid_frame=false`
+- `livox_grid_builder` 启动日志新增 `grid_frame` 和 `assume_input_in_grid_frame`
+- `livox_grid_builder` 对字符串 bool 配置显式转换, 避免 `"false"` 被当成 True
+- `livox_grid_builder` 新增 `origin_mode=fixed`, `fixed_origin_x`, `fixed_origin_y`, 并保留固定 grid 越界告警
+- 2D 和 3D launch 将 `graphnav_planner.path_smoothness_period` 从 `0.0` 恢复到 `10.0`, 降低每帧重规划导致的路径跳变
+- 新增 `2026-07-07-unity-livox-grid-frame.md`, 记录 Unity 点云和 2D grid frame 对齐策略
+- Unity 2D 临时切换到同事发布的 `/combined_grid`, 并通过 `launch_livox_grid_builder=false` 禁止本仓库 grid builder 同时发布
+- 新增 `2026-07-07-combined-grid-test.md`, 记录 `/combined_grid` 测试链路和恢复自研 grid builder 的启动方式
+- 新增 `2026-07-07-combined-grid-implementation-reference.md`, 记录同事 rolling local costmap 的实现要点
+- 新增 `2026-07-07-vision-threshold-tuning.md`, 记录目标 mask 和视觉 frontier 阈值调整
+- 清理 visual_navigation 中每帧输出的 `Started Heavy` 和 `Finished Heavy` 调试 print, 避免 WildOS 运行时刷屏
+- `livox_grid_builder` 新增 rolling origin snap, odd grid size, robot center clear 和 `height_diff` 障碍模式
+- Unity 自研 builder 调试参数切换为 `20m x 20m`, `0.1m`, `min_obstacle_height=0.0`, `obstacle_inflation_radius=0.2`, `height_diff`, `origin_snap_to_resolution=true`
+- 新增 `2026-07-07-livox-grid-builder-stabilization.md`, 记录自研 builder 稳定化和 A/B 测试方式
+- Unity 2D 默认切回本仓库自研 `livox_grid_builder`, graph 默认重新消费 `/spot1/traversability_grid`
+
+## 诊断结论摘要
+
+- `odom_3D` 是 Unity 当前里程计中间层, 不应作为相机或 LiDAR 的机器人本体父 frame
+- `base_link` 是当前运行时真实机器人本体 frame
+- WildOS 的 `map -> front_camera` 断链, 优先检查 camera static TF 是否挂在 `base_link`
+- LiDAR 的启动期 TF 时间外推报错如果来自旧 install tree, 需要重新构建 `graph_construction`
+- 当前 Unity `base_link` 遵循 ROS 常用约定, `+X` 为前方, `+Y` 为左侧, 因此 front camera 应使用 `x_forward_y_left`
+- TF 过去外推保护只兜底小范围启动期时间差, 如果持续出现, 仍应检查 `/clock`, `/tf`, 点云 stamp 和 static TF publisher 是否一致
+- `TARGET_FRONTIER_LATCHED` 适合短暂遮挡容忍, 不适合默认开启, 否则目标丢失后会继续追最后一个侧向 frontier
+- 目标搜索记忆的是最近一次目标 frontier 安全节点, 不是固定方向外推点, 避免机器人移动后仍沿旧方向贴墙前进
+- 看到目标不等于完成, 当前完成判据是近距离目标 mask 连续确认或到达可达目标 frontier 观察点
+- 右相机肉眼可见目标但 WildOS 打印未检测时, 优先判断 `mask_threshold` 是否高于该帧文本相似度, 不能先假定 planner 或 `/corrected_path` 故障
+- Unity 当前路径输出为 `/corrected_path`, 如果 `/spot1/object_search_target_pose` 没有更新, 下游路径不会及时切向目标
+- launch 覆盖参数为了兼容 `{}` topic 模板会以 YAML 字符串形式传入, WildOS 使用数值参数前必须显式转换类型
+- `frontier_points` 是未知边界表达, 不是默认可执行路径点, 执行路径应优先停在 graph node 上
+- Unity `/livox/lidar` 当前按点坐标已经在 `map` 中处理, 不能再按狗本体上的 `livox_frame` TF 二次转换
+- 2D grid 中心必须和点云使用同一坐标系, Unity 当前应使用 `/spot1/odom_for_scoring` 的 `map` frame odom
+- Unity 2D 自研 builder 当前参考 `/combined_grid` 使用 rolling local map, 但 origin 必须按 resolution 对齐, cell 数应稳定, graph frame 和 odom frame 必须一致
+- 原论文强调 sparse navigation graph 的空间记忆, 当前实现需要避免坐标系二次旋转, 原点亚像素漂移和每帧路线切换破坏探索连续性
+- `/combined_grid` 当前仅作为对照测试输入, 不再是 Unity 2D 默认地图输入

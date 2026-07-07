@@ -302,8 +302,6 @@ class LRN(GoalNavigator):
             self.get_logger().warn("No waypoints provided, skipping processing.")
             return
 
-        print(f"Started Heavy")
-
         # Extract messages
         odom_from_baselink = tf_data["world_from_body"]
 

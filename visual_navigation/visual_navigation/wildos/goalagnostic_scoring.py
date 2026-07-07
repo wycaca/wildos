@@ -179,7 +179,10 @@ class GoalAgnosticScoring(ScoringGeometricFrontiers):
         frontier_points = np.array(frontier_points)
 
         direction = np.mean(frontier_points, axis=0) - node_pos
-        heading = direction / np.linalg.norm(direction)
+        direction_norm = np.linalg.norm(direction)
+        if direction_norm < 1e-6:
+            return np.zeros_like(self.angles_deg, dtype=np.float32)
+        heading = direction / direction_norm
 
         heading_angle = np.rad2deg(np.arctan2(heading[1], heading[0]))
         gauss_scores = self.get_gauss_scores(heading_angle, std, def_max_score)

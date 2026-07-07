@@ -294,8 +294,6 @@ class ImgFrontierNav(GoalNavigator):
             self.get_logger().warn("No waypoints provided, skipping processing.")
             return
 
-        print(f"Started Heavy")
-
         # Extract messages
         odom_msg = msg["odom"]
         msgs = msg["cam_msgs"]
@@ -406,7 +404,6 @@ class ImgFrontierNav(GoalNavigator):
             depth_imgs[chosen_cam]
         )
         self.publish_goal_waypoints()
-        print(f"Finished Heavy")
 
     def compute_nav2_goal(self, cam_frame_id, path, cam_data, depth_img):
         cam_path_3d = self.project_img_path(cam_frame_id, path, cam_data, depth_img)

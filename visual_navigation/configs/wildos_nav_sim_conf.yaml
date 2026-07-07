@@ -65,6 +65,7 @@ object_search_config:
         - "blue bucket"
     pixel_level_seg: false
     mask_threshold: 0.09
+    detection_debug_interval: 20
     obj_frontier_score: 0.9
     obj_trav_score: 0.9
     target_min_score: 0.2

@@ -1,0 +1,20 @@
+object_search_goal_mux:
+  ros__parameters:
+    output_goal_topic: /goal_pose
+    goal_viz_topic: /spot1/object_search_goal_viz
+    object_target_pose_topic: /spot1/object_search_target_pose
+    object_reached_topic: /spot1/object_search_reached
+    odom_topic: /spot1/odom_for_scoring
+    frame_id: map
+    initial_goal_mode: heading
+    initial_goal_distance: 30.0
+    initial_goal_heading_deg: 0.0
+    publish_rate: 5.0
+    target_timeout_sec: 3.0
+    latch_target_after_first_detection: false
+    latch_target_timeout_sec: 3.0
+    memory_timeout_sec: 10.0
+    memory_goal_distance: 10.0
+    target_reached_radius: 1.5
+    object_reached_timeout_sec: 2.0
+    require_subscriber: true

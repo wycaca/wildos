@@ -117,8 +117,8 @@ std::vector<Eigen::Vector3d> Planner::plan_to_goal(Eigen::Vector3d& goal, double
         frontier_path_distance = std::min(frontier_path_distance, d);
       }
 
-      // compute heading to the goal
-      Eigen::Vector3d heading = (goal - node_pos).normalized();
+      Eigen::Vector3d goal_delta = goal - node_pos;
+      Eigen::Vector3d heading = goal_delta.norm() > 1e-6 ? goal_delta.normalized() : Eigen::Vector3d::UnitX();
       bool has_frontier_scores = false;
       double cur_frontier_dist_cost_factor = std::numeric_limits<double>::max();
       for (const auto& kv: node.properties)
@@ -221,14 +221,19 @@ std::vector<Eigen::Vector3d> Planner::plan_to_goal(Eigen::Vector3d& goal, double
     size_t idx = 0;
     for (const auto& node_id : path->vertices)
     {
+      if (node_id == virtual_goal && !append_virtual_goal_to_path_)
+      {
+        idx++;
+        continue;
+      }
       const auto& node = graph_.get_vertex(node_id);
       const auto& pos = node.pose.position;
       path_points.push_back(Eigen::Vector3d(pos.x, pos.y, pos.z));
       if (idx == path->vertices.size() - 2 && trav_class_idx_ < node.trav_properties.size() &&
           node.trav_properties[trav_class_idx_].is_frontier)
       {
-        // if second to last, add frontier point as well
-        if (!node.trav_properties[trav_class_idx_].frontier_points.empty())
+        // frontier point 是未知边界点, 默认不进入执行路径
+        if (append_frontier_point_to_path_ && !node.trav_properties[trav_class_idx_].frontier_points.empty())
         {
           Eigen::Vector3d mean_frontier(0.0, 0.0, 0.0);
           double n_frontier_points = node.trav_properties[trav_class_idx_].frontier_points.size();

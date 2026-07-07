@@ -85,10 +85,44 @@ fix_executable_shebang() {
   fi
 }
 
+launch_arg_enabled() {
+  local name="$1"
+  local arg
+  local value
+  for arg in "$@"; do
+    if [[ "${arg}" == "${name}:="* ]]; then
+      value="${arg#*:=}"
+      case "${value,,}" in
+        true|1|yes|on)
+          return 0
+          ;;
+      esac
+    fi
+  done
+  return 1
+}
+
+ensure_installed_executable() {
+  local executable="$1"
+  local package="$2"
+  local script_path
+  script_path="$(find "${INSTALL_ROOT}" -path "*/lib/${package}/${executable}" -type f -print -quit 2>/dev/null || true)"
+  if [[ -z "${script_path}" ]]; then
+    echo "缺少已安装可执行脚本: ${package}/${executable}" >&2
+    echo "请重新构建后再启动: colcon build --packages-select visual_navigation graph_construction --symlink-install" >&2
+    exit 1
+  fi
+}
+
 ensure_python_module "omegaconf"
 ensure_python_module "explorfm"
 fix_executable_shebang "wildos"
 fix_executable_shebang "odom_frame_adapter"
+fix_executable_shebang "object_search_goal_mux"
+
+if launch_arg_enabled "do_object_search" "$@"; then
+  ensure_installed_executable "object_search_goal_mux" "visual_navigation"
+fi
 
 echo "启动 WildOS 2D, profile=${WILDOS_TOPIC_PROFILE}, python=${PYTHON_BIN}"
 

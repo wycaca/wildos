@@ -287,8 +287,6 @@ class ExploRFMTriangulator(TFLookupSubscriber):
 
     def do_processing(self, msg, tf_data):
 
-        print(f"Started Heavy")
-
         # Extract messages
         odom_msg = msg["odom"]
         lidar_msg = msg["lidar"]
@@ -401,7 +399,6 @@ class ExploRFMTriangulator(TFLookupSubscriber):
         if goal_hyp is not None:
             self.particle_viz_publisher.publish(goal_hyp)
 
-        print(f"Finished Heavy")
 
     def get_object_masks(self, rgb_imgs):
         """

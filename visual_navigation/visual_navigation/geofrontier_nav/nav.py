@@ -275,8 +275,6 @@ class GeoFrontierNav(GoalNavigator):
             self.get_logger().warn("No waypoints provided, skipping processing.")
             return
 
-        print(f"Started Heavy")
-
         # Extract messages
         odom_msg = msg["odom"]
         navgraph_msg = msg["navgraph"]
@@ -369,7 +367,6 @@ class GeoFrontierNav(GoalNavigator):
             self.br.cv2_to_imgmsg(self.viz.visualize_model_det(nav_data), encoding="rgb8")
         )
         self.publish_goal_waypoints()
-        print(f"Finished Heavy")
 
 def main(args=None):
     rclpy.init(args=args)

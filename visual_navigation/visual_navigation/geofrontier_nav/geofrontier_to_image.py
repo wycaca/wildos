@@ -106,7 +106,10 @@ class GeoFrontierToImage:
         frontier_points = np.array(frontier_points)
 
         direction = np.mean(frontier_points, axis=0) - node_pos
-        return direction / np.linalg.norm(direction)
+        direction_norm = np.linalg.norm(direction)
+        if direction_norm < 1e-6:
+            return np.zeros(3, dtype=np.float32)
+        return direction / direction_norm
     
     def get_visible_frontiers(
         self, cam_info: Dict, frontier_pos: np.ndarray, frontier_headings: np.ndarray

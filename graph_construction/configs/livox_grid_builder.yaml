@@ -18,6 +18,13 @@ unknown_value: -1
 free_value: 0
 obstacle_value: 100
 
+origin_mode: rolling
+origin_snap_to_resolution: false
+force_odd_grid_size: false
+robot_clear_radius: 0.0
+obstacle_detection_mode: ray_height
+height_diff_obstacle_threshold: 0.05
+high_obstacle_min_height: 0.3
 assume_input_in_grid_frame: false
 tf_timeout_sec: 0.1
 scan_accumulation_time_sec: 4.0

@@ -264,6 +264,8 @@ public:
   double min_local_frontier_score_ = 0.4;
   double local_frontier_radius_ = 7.0;
   double path_smoothness_period_ = 10.0; // seconds
+  bool append_virtual_goal_to_path_ = false;
+  bool append_frontier_point_to_path_ = false;
 
   visualization_msgs::msg::MarkerArray get_score_visualization(const rclcpp::Time& stamp, std::string frame_id, bool with_id_text = false) const;
 

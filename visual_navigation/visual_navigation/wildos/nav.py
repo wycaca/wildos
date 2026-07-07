@@ -6,6 +6,7 @@ from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import CompressedImage, Image as ImageMsg, CameraInfo
 from message_filters import ApproximateTimeSynchronizer, Subscriber
 from graphnav_msgs.msg import NavigationGraph, KeyValue
+from std_msgs.msg import Bool
 from visualization_msgs.msg import MarkerArray
 from cv_bridge import CvBridge
 from object_search_msgs.msg import ObjectMaskWithTf
@@ -88,6 +89,7 @@ class WildOS_Nav(TFLookupSubscriber):
         "object_mask_topic": "/spot1/object_mask",
         "object_target_pose_topic": "/spot1/object_search_target_pose",
         "object_target_viz_topic": "/spot1/object_search_target_viz",
+        "object_reached_topic": "/spot1/object_search_reached",
 
         # ROS2 订阅参数
         "qos_history_depth": 1,
@@ -102,11 +104,15 @@ class WildOS_Nav(TFLookupSubscriber):
             # "text_queries": ["garbage container"],
             "text_queries": ["blue bucket"],
             "pixel_level_seg": False,
-            "mask_threshold": 0.09,#0.08,
+            "mask_threshold": 0.09,
+            "detection_debug_interval": 20,
             "obj_frontier_score": 0.9,
             "obj_trav_score": 0.9,
             "target_min_score": 0.2,
-            "target_ray_length": 8.0
+            "target_ray_length": 8.0,
+            "reached_mask_fraction": 0.01,
+            "reached_min_pixel_count": 1200,
+            "reached_confirm_frames": 2
         },
 
         # TF 查询配置
@@ -119,7 +125,10 @@ class WildOS_Nav(TFLookupSubscriber):
             "wait_for_oldest": True,  # buffer 满时是否等待
             "clear_buffer_on_process": True,  # 处理后是否清空 buffer
             "spin_thread": False,     # 是否单独线程 spin TF listener
-        }
+        },
+
+        # 日志配置
+        "callback_log_interval": 100,
     }
 
     def __init__(self, config: OmegaConf=OmegaConf.create(), do_object_search=False):
@@ -137,7 +146,10 @@ class WildOS_Nav(TFLookupSubscriber):
         )
         self.get_logger().info("WildOS 模型初始化完成")
         if self.object_search_mode:
-            self.get_logger().info(f"目标搜索已启用, text_queries={list(self.text_queries)}")
+            self.get_logger().info(
+                f"目标搜索已启用, text_queries={list(self.text_queries)}, "
+                f"mask_threshold={self.mask_threshold:.3f}"
+            )
 
         # 用于转换 ROS 和 OpenCV 图像
         self.br = CvBridge()
@@ -156,9 +168,23 @@ class WildOS_Nav(TFLookupSubscriber):
         self.removed_frontier_positions = np.zeros((0, 3), dtype=np.float32)
         self.object_target_min_score = 0.0
         self.object_target_ray_length = 8.0
+        self.object_detection_debug_interval = 20
+        self._object_missing_log_count = 0
+        self._object_reached_confirm_count = 0
+        self._object_reached_last_state = False
         if self.object_search_mode:
             self.object_target_min_score = float(config.object_search_config.get("target_min_score", 0.2))
             self.object_target_ray_length = float(config.object_search_config.get("target_ray_length", 8.0))
+            self.object_detection_debug_interval = max(
+                int(config.object_search_config.get("detection_debug_interval", 20)),
+                1,
+            )
+            self.object_reached_mask_fraction = float(config.object_search_config.get("reached_mask_fraction", 0.01))
+            self.object_reached_min_pixel_count = int(config.object_search_config.get("reached_min_pixel_count", 1200))
+            self.object_reached_confirm_frames = max(
+                int(config.object_search_config.get("reached_confirm_frames", 2)),
+                1,
+            )
 
         # 将导航图 frontier 投影到图像
         self.geofrontier_to_image = GeoFrontierToImage(
@@ -197,6 +223,7 @@ class WildOS_Nav(TFLookupSubscriber):
             reach_scale=reach_scale
         )
         self.compute_paths = config.compute_paths
+        self.callback_log_interval = max(int(config.get("callback_log_interval", 100)), 1)
 
         # 可视化
         self.geofrontier_viz_colors = np.array([
@@ -266,9 +293,9 @@ class WildOS_Nav(TFLookupSubscriber):
             self.object_search_mode = True
             self.text_queries = config.object_search_config.text_queries
             self.pixel_level_seg = config.object_search_config.pixel_level_seg
-            self.mask_threshold = config.object_search_config.mask_threshold
-            self.obj_frontier_score = config.object_search_config.obj_frontier_score
-            self.obj_trav_score = config.object_search_config.obj_trav_score
+            self.mask_threshold = float(config.object_search_config.mask_threshold)
+            self.obj_frontier_score = float(config.object_search_config.obj_frontier_score)
+            self.obj_trav_score = float(config.object_search_config.obj_trav_score)
 
             assert len(self.text_queries) == 1, "Only single object search is supported in this version."
 
@@ -349,6 +376,11 @@ class WildOS_Nav(TFLookupSubscriber):
                 config.object_target_viz_topic,
                 10
             )
+            self.object_reached_publisher = self.create_publisher(
+                Bool,
+                config.object_reached_topic,
+                10
+            )
 
     def init_subscribers(self, config):
 
@@ -377,7 +409,10 @@ class WildOS_Nav(TFLookupSubscriber):
     
     def listener_callback(self, odom_msg, navgraph_msg, *msgs):
         self.clbk_cntr += 1
-        self.get_logger().info(f"Received callback {self.clbk_cntr}")
+        if self.clbk_cntr == 1:
+            self.get_logger().info("WildOS 已收到第一帧同步输入")
+        elif self.clbk_cntr % self.callback_log_interval == 0:
+            self.get_logger().debug(f"WildOS 已处理同步输入次数={self.clbk_cntr}")
 
         assert odom_msg.header.frame_id == self.global_frame, \
             f"Odom frame {odom_msg.header.frame_id} does not match global frame {self.global_frame}"
@@ -395,7 +430,7 @@ class WildOS_Nav(TFLookupSubscriber):
 
     def do_processing(self, msg, tf_data):
         
-        print(f"Started Heavy")
+        self.get_logger().debug("WildOS 开始执行视觉评分")
 
         # 提取消息
         odom_msg = msg["odom"]
@@ -462,6 +497,8 @@ class WildOS_Nav(TFLookupSubscriber):
 
             if np.sum(binary_mask) > 0:
                 object_detected = True
+                self._object_missing_log_count = 0
+                self._publish_object_reached(binary_mask)
                 tf_list = [tf_data[f"world_from_cam{i}"] for i in range(self.num_cameras)]
                 self.object_mask_publisher.publish(
                     get_objectmask_msg(binary_mask, self.cam_inverted, odom_msg, tf_list, cam_info_msgs)
@@ -469,7 +506,8 @@ class WildOS_Nav(TFLookupSubscriber):
                 batch_img_frontiers = np.maximum(batch_img_frontiers, self.obj_frontier_score*binary_mask)
                 batch_img_traversability = np.maximum(batch_img_traversability, self.obj_trav_score*binary_mask)
             else:
-                self.get_logger().warn("No object detected in the scene, skipping object mask publish.")
+                self._publish_object_reached(None)
+                self._log_object_missing(text_sim_spatial)
 
         # 给几何 frontier 评分
         nav_data = []
@@ -562,8 +600,6 @@ class WildOS_Nav(TFLookupSubscriber):
                 self.get_clock().now().to_msg()
             )
         )
-        
-        print(f"Finished Heavy")
 
     def select_object_target_candidate(self, geofrontiers, nav_data, object_detected):
         """从目标增强后的 frontier scores 中选择当前目标导航点候选"""
@@ -603,6 +639,68 @@ class WildOS_Nav(TFLookupSubscriber):
                 f"heading_bin={best_candidate['heading_bin']}"
             )
         return best_candidate
+
+    def _log_object_missing(self, text_sim_spatial=None) -> None:
+        self._object_missing_log_count += 1
+        summary = self._object_detection_debug_summary(text_sim_spatial)
+        if self._object_missing_log_count == 1:
+            self.get_logger().warn(f"当前帧未检测到目标, 跳过 object mask 发布{summary}")
+        elif self._object_missing_log_count % self.object_detection_debug_interval == 0:
+            self.get_logger().info(f"连续未检测到目标帧数={self._object_missing_log_count}{summary}")
+
+    def _object_detection_debug_summary(self, text_sim_spatial) -> str:
+        """汇总每路相机的目标相似度, 用于判断远距离目标是否低于阈值"""
+        if text_sim_spatial is None:
+            return ""
+
+        scores = np.asarray(text_sim_spatial)
+        if scores.ndim == 4:
+            scores = np.max(scores, axis=1)
+        elif scores.ndim > 4:
+            scores = scores.reshape(scores.shape[0], -1, scores.shape[-2], scores.shape[-1])
+            scores = np.max(scores, axis=1)
+        if scores.ndim != 3 or scores.shape[0] == 0:
+            return ""
+
+        loose_threshold = self.mask_threshold * 0.8
+        camera_scores = []
+        near_pixels = []
+        for cam_idx in range(min(self.num_cameras, scores.shape[0])):
+            cam_scores = np.nan_to_num(scores[cam_idx], nan=-1.0, posinf=-1.0, neginf=-1.0)
+            camera_scores.append(f"{CAMERA_MAPPING.get(cam_idx, cam_idx)}/{float(np.max(cam_scores)):.3f}")
+            near_pixels.append(f"{CAMERA_MAPPING.get(cam_idx, cam_idx)}/{int(np.sum(cam_scores > loose_threshold))}")
+        return (
+            f", threshold={self.mask_threshold:.3f}, "
+            f"相机最高相似度={','.join(camera_scores)}, "
+            f"近阈值像素={','.join(near_pixels)}"
+        )
+
+    def _publish_object_reached(self, binary_mask) -> None:
+        reached = self._object_reached_from_mask(binary_mask)
+        self.object_reached_publisher.publish(Bool(data=reached))
+        if reached != self._object_reached_last_state:
+            self._object_reached_last_state = reached
+            self.get_logger().info(f"目标近距离确认={reached}")
+
+    def _object_reached_from_mask(self, binary_mask) -> bool:
+        """用目标 mask 面积估计是否已经到达可达观察点"""
+        if binary_mask is None:
+            self._object_reached_confirm_count = 0
+            return False
+
+        masks = np.asarray(binary_mask)[:, 0]
+        image_area = max(float(masks.shape[-2] * masks.shape[-1]), 1.0)
+        max_pixel_count = int(np.max(np.sum(masks > 0, axis=(-2, -1))))
+        max_fraction = max_pixel_count / image_area
+        reached_candidate = (
+            max_pixel_count >= self.object_reached_min_pixel_count
+            and max_fraction >= self.object_reached_mask_fraction
+        )
+        if reached_candidate:
+            self._object_reached_confirm_count += 1
+        else:
+            self._object_reached_confirm_count = 0
+        return self._object_reached_confirm_count >= self.object_reached_confirm_frames
 
     def build_object_detection_rays(self, binary_mask, all_cam_data):
         """将图像目标 mask 质心转成 RViz 中的相机观测射线"""

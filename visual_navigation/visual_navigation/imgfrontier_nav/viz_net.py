@@ -139,8 +139,6 @@ class VizModelPred(Node):
 
         self.get_logger().info(f"Received callback {self.clbk_cntr}")
     
-        print(f"Started Heavy")
-
         # Extract messages
         if self.using_compressed_imgs:
             convert_func = self.br.compressed_imgmsg_to_cv2
@@ -224,7 +222,6 @@ class VizModelPred(Node):
         cv2.waitKey(1)
         cv2.imwrite(f"viz_outputs/imgs/rgb_{self.clbk_cntr:03d}.png", rgb_img[:,:,::-1])
 
-        print(f"Finished Heavy")
 
 
 
