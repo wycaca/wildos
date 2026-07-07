@@ -29,8 +29,6 @@ public:
     this->declare_parameter("min_local_frontier_score", 0.4);
     this->declare_parameter("local_frontier_radius", 7.0);
     this->declare_parameter("path_smoothness_period", 10.0);
-    this->declare_parameter("append_virtual_goal_to_path", false);
-    this->declare_parameter("append_frontier_point_to_path", false);
 
     planner_.frontier_dist_cost_factor_ = this->get_parameter("frontier_dist_cost_factor").as_double();
     planner_.goal_dist_cost_factor_ = this->get_parameter("goal_dist_cost_factor").as_double();
@@ -38,8 +36,6 @@ public:
     planner_.min_local_frontier_score_ = this->get_parameter("min_local_frontier_score").as_double();
     planner_.local_frontier_radius_ = this->get_parameter("local_frontier_radius").as_double();
     planner_.path_smoothness_period_ = this->get_parameter("path_smoothness_period").as_double();
-    planner_.append_virtual_goal_to_path_ = this->get_parameter("append_virtual_goal_to_path").as_bool();
-    planner_.append_frontier_point_to_path_ = this->get_parameter("append_frontier_point_to_path").as_bool();
 
     this->declare_parameter("trav_class", "default");
     planner_.set_trav_class(this->get_parameter("trav_class").as_string());
@@ -96,16 +92,10 @@ private:
         path_msg.poses[i].pose.position.z = path[i].z();
         if (i < path.size() - 1)
         {
-          // 朝向下一个 waypoint, 距离过小时保留单位 x 方向
-          Eigen::Vector3d delta = path[i + 1] - path[i];
-          Eigen::Vector3d d = delta.norm() > 1e-6 ? delta.normalized() : Eigen::Vector3d::UnitX();
+          // heading towards next waypoint
+          Eigen::Vector3d d = (path[i + 1] - path[i]).normalized();
           Eigen::Matrix3d m = Eigen::Matrix3d::Identity();
-          Eigen::Vector3d y_axis = Eigen::Vector3d::UnitZ().cross(d);
-          if (y_axis.norm() < 1e-6)
-          {
-            y_axis = Eigen::Vector3d::UnitY();
-          }
-          m.col(1) = y_axis.normalized();
+          m.col(1) = Eigen::Vector3d::UnitZ().cross(d).normalized();
           m.col(0) = m.col(1).cross(m.col(2)).normalized();
           Eigen::Quaterniond q(m);
           path_msg.poses[i].pose.orientation.x = q.x();
