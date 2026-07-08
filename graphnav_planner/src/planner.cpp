@@ -23,10 +23,19 @@ void Planner::set_trav_class(std::string trav_class)
 void Planner::update_graph(graphnav_msgs::msg::NavigationGraph::ConstSharedPtr graph)
 {
   graph_ = graaf::undirected_graph<graphnav_msgs::msg::Node, double>();
+  unexplored_space_map_.reset();
+  frontier_scores_.clear();
   for (size_t i = 0; i < graph->nodes.size(); i++)
   {
     graphnav_msgs::msg::Node node = graph->nodes[i];
     graph_.add_vertex(node, i);
+  }
+  if (graph->nodes.empty())
+  {
+    latest_frontier_.reset();
+    latest_frontier_time_.reset();
+    RCLCPP_WARN(logger_, "收到空导航图, 跳过 planner 更新");
+    return;
   }
   auto trav_class_it = std::find(graph->trav_classes.begin(), graph->trav_classes.end(), trav_class_);
   if (trav_class_it == graph->trav_classes.end())
@@ -38,6 +47,13 @@ void Planner::update_graph(graphnav_msgs::msg::NavigationGraph::ConstSharedPtr g
   trav_class_idx_ = std::distance(graph->trav_classes.begin(), trav_class_it);
   for (auto edge : graph->edges)
   {
+    if (edge.from_idx >= graph->nodes.size() || edge.to_idx >= graph->nodes.size())
+    {
+      RCLCPP_WARN(logger_, "导航图 edge 越界, 跳过 edge, from=%lu, to=%lu, nodes=%zu",
+                  static_cast<unsigned long>(edge.from_idx), static_cast<unsigned long>(edge.to_idx),
+                  graph->nodes.size());
+      continue;
+    }
     if (trav_class_idx_ < edge.traversability.size())
     {
       double weight = edge.traversability[trav_class_idx_].traversability_cost;
@@ -45,11 +61,23 @@ void Planner::update_graph(graphnav_msgs::msg::NavigationGraph::ConstSharedPtr g
     }
   }
   current_node_idx_ = graph->current_node_idx;
+  if (current_node_idx_ >= graph->nodes.size())
+  {
+    latest_frontier_.reset();
+    latest_frontier_time_.reset();
+    RCLCPP_WARN(logger_, "current_node_idx 越界, 跳过 planner 更新, current=%lu, nodes=%zu",
+                static_cast<unsigned long>(current_node_idx_), graph->nodes.size());
+    return;
+  }
   unexplored_space_map_ = compute_unexplored_space_map();
 }
 
-UnexploredSpaceMap Planner::compute_unexplored_space_map()
+std::optional<UnexploredSpaceMap> Planner::compute_unexplored_space_map()
 {
+  if (graph_.get_vertices().empty())
+  {
+    return std::nullopt;
+  }
   double min_x = std::numeric_limits<double>::max();
   double max_x = std::numeric_limits<double>::lowest();
   double min_y = std::numeric_limits<double>::max();
@@ -61,6 +89,12 @@ UnexploredSpaceMap Planner::compute_unexplored_space_map()
     max_x = std::max(max_x, pos.x);
     min_y = std::min(min_y, pos.y);
     max_y = std::max(max_y, pos.y);
+  }
+  if (!std::isfinite(min_x) || !std::isfinite(max_x) || !std::isfinite(min_y) || !std::isfinite(max_y) ||
+      max_x < min_x || max_y < min_y)
+  {
+    RCLCPP_WARN(logger_, "导航图边界非法, 跳过 unexplored map 构建");
+    return std::nullopt;
   }
   double resolution = 1.0;
   double margin = 10.0;
@@ -84,6 +118,7 @@ std::vector<Eigen::Vector3d> Planner::plan_to_goal(Eigen::Vector3d& goal, double
 {
   if (!unexplored_space_map_)
   {
+    RCLCPP_WARN(logger_, "planner 暂无有效导航图, 跳过路径规划");
     return {};
   }
   unexplored_space_map_->compute_distance_from(goal.x(), goal.y());
@@ -117,8 +152,9 @@ std::vector<Eigen::Vector3d> Planner::plan_to_goal(Eigen::Vector3d& goal, double
         frontier_path_distance = std::min(frontier_path_distance, d);
       }
 
-      // compute heading to the goal
-      Eigen::Vector3d heading = (goal - node_pos).normalized();
+      // goal 和 node 重合时跳过方向评分, 避免 NaN heading
+      Eigen::Vector3d goal_delta = goal - node_pos;
+      Eigen::Vector3d heading = goal_delta.norm() > 1e-6 ? goal_delta.normalized() : Eigen::Vector3d::UnitX();
       bool has_frontier_scores = false;
       double cur_frontier_dist_cost_factor = std::numeric_limits<double>::max();
       for (const auto& kv: node.properties)
@@ -184,11 +220,11 @@ std::vector<Eigen::Vector3d> Planner::plan_to_goal(Eigen::Vector3d& goal, double
   }
   
 
-  // if current_time is within path_smoothness_period_ of latest_frontier_time_, prefer local frontiers
+  // 平滑周期内优先使用上一次目标附近的 frontier
   bool use_local_frontiers = false;
   if (!local_scored_frontiers.empty())
   {
-    if ((current_time - *latest_frontier_time_).seconds() < path_smoothness_period_)
+    if (latest_frontier_time_ && (current_time - *latest_frontier_time_).seconds() < path_smoothness_period_)
     {
       for (auto id: local_scored_frontiers)
       {

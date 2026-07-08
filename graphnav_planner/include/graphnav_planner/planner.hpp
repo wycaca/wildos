@@ -5,6 +5,8 @@
 #include <vector>
 #include <unordered_map>
 #include <map>
+#include <optional>
+#include <limits>
 #include <sstream>
 #include <iomanip>
 #include <graaflib/graph.h>
@@ -19,7 +21,7 @@
 namespace graphnav_planner
 {
 
-// Utility function to convert UUID to string
+// 将 UUID 转成日志可读字符串
 inline std::string uuid_to_string(const graphnav_msgs::msg::UUID& uuid)
 {
   std::ostringstream oss;
@@ -60,7 +62,7 @@ public:
     origin_y_ = min_y - margin;
     size_x_ = static_cast<int>(std::ceil((max_x - min_x + 2 * margin) / resolution_));
     size_y_ = static_cast<int>(std::ceil((max_y - min_y + 2 * margin) / resolution_));
-    map_ = Eigen::MatrixXi::Ones(size_x_, size_y_);  // initialize as unexplored
+    map_ = Eigen::MatrixXi::Ones(size_x_, size_y_);  // 1 表示未探索
   }
 
   void mark_explored(double x, double y, double radius)
@@ -78,7 +80,7 @@ public:
           int ny = iy + dy;
           if (nx >= 0 && nx < map_.rows() && ny >= 0 && ny < map_.cols())
           {
-            map_(nx, ny) = 0;  // mark as explored
+            map_(nx, ny) = 0;  // 0 表示已探索
           }
         }
       }
@@ -137,7 +139,7 @@ public:
         if (!in_bounds(nx, ny))
           continue;
         if (map_(nx, ny) == 0)
-          continue;  // skip explored
+          continue;  // 跳过已探索区域
         float new_dist = dist_map_(static_cast<int>(x), static_cast<int>(y)) + cost[dir] * resolution_;
         if (new_dist < dist_map_(nx, ny))
         {
@@ -213,7 +215,7 @@ private:
   double origin_x_;
   double origin_y_;
   double resolution_;
-  Eigen::MatrixXi map_;  // 1 = unexplored, 0 = explored
+  Eigen::MatrixXi map_;  // 1 为未探索, 0 为已探索
   Eigen::MatrixXf dist_map_;
 };
 
@@ -243,14 +245,14 @@ public:
   }
 
 private:
-  UnexploredSpaceMap compute_unexplored_space_map();
+  std::optional<UnexploredSpaceMap> compute_unexplored_space_map();
 
   rclcpp::Logger logger_;
   std::string trav_class_;
 
   graaf::undirected_graph<graphnav_msgs::msg::Node, double> graph_;
-  graaf::vertex_id_t current_node_idx_;
-  size_t trav_class_idx_;
+  graaf::vertex_id_t current_node_idx_ = 0;
+  size_t trav_class_idx_ = 0;
   std::optional<UnexploredSpaceMap> unexplored_space_map_;
   std::optional<Eigen::Vector3d> latest_frontier_;
   std::optional<rclcpp::Time> latest_frontier_time_;

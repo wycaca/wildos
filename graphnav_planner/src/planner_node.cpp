@@ -92,10 +92,22 @@ private:
         path_msg.poses[i].pose.position.z = path[i].z();
         if (i < path.size() - 1)
         {
-          // heading towards next waypoint
-          Eigen::Vector3d d = (path[i + 1] - path[i]).normalized();
+          // 相邻路径点重合时保留默认朝向, 避免零向量归一化
+          Eigen::Vector3d delta = path[i + 1] - path[i];
+          if (delta.norm() < 1e-6)
+          {
+            path_msg.poses[i].pose.orientation.w = 1.0;
+            continue;
+          }
+          Eigen::Vector3d d = delta.normalized();
           Eigen::Matrix3d m = Eigen::Matrix3d::Identity();
-          m.col(1) = Eigen::Vector3d::UnitZ().cross(d).normalized();
+          Eigen::Vector3d lateral = Eigen::Vector3d::UnitZ().cross(d);
+          if (lateral.norm() < 1e-6)
+          {
+            path_msg.poses[i].pose.orientation.w = 1.0;
+            continue;
+          }
+          m.col(1) = lateral.normalized();
           m.col(0) = m.col(1).cross(m.col(2)).normalized();
           Eigen::Quaterniond q(m);
           path_msg.poses[i].pose.orientation.x = q.x();
