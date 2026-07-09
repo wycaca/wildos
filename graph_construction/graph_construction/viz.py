@@ -20,6 +20,7 @@ class GraphVisualizer:
     """
 
     MAX_RADIUS_MARKER = 20.0
+    GRAPH_MARKER_Z_LIFT = 0.25
 
     def build_markers(
         self,
@@ -155,7 +156,7 @@ class GraphVisualizer:
         marker.scale.y = scale
         marker.scale.z = scale
         marker.color = color
-        marker.points = [self._point(node.position) for node in nodes]
+        marker.points = [self._graph_point(node.position) for node in nodes]
         return marker
 
     def _edge_marker(self, header: Header, graph: GraphState) -> Marker:
@@ -173,8 +174,8 @@ class GraphVisualizer:
             node_b = graph.nodes.get(edge.to_id)
             if node_a is None or node_b is None:
                 continue
-            marker.points.append(self._point(node_a.position))
-            marker.points.append(self._point(node_b.position))
+            marker.points.append(self._graph_point(node_a.position))
+            marker.points.append(self._graph_point(node_b.position))
         return marker
 
     def _frontier_point_marker(self, header: Header, frontier_nodes: Iterable[InternalNode]) -> Marker:
@@ -190,7 +191,7 @@ class GraphVisualizer:
         marker.scale.z = 0.18
         marker.color = ColorRGBA(r=0.7, g=0.0, b=1.0, a=0.9)
         for node in frontier_nodes:
-            marker.points.extend([self._point(point) for point in node.frontier_points])
+            marker.points.extend([self._graph_point(point) for point in node.frontier_points])
         return marker
 
     def _radius_marker(
@@ -209,7 +210,7 @@ class GraphVisualizer:
         marker.id = marker_id
         marker.action = Marker.ADD
         marker.type = Marker.CYLINDER
-        marker.pose.position = self._point(node.position)
+        marker.pose.position = self._graph_point(node.position)
         marker.pose.orientation.w = 1.0
         marker.scale.x = max(0.01, radius * 2.0)
         marker.scale.y = max(0.01, radius * 2.0)
@@ -235,7 +236,7 @@ class GraphVisualizer:
         marker.scale.y = 0.18
         marker.scale.z = 0.18
         marker.color = ColorRGBA(r=1.0, g=0.9, b=0.0, a=0.65)
-        marker.points = [self._point(point) for point in graph.trajectory_points]
+        marker.points = [self._graph_point(point) for point in graph.trajectory_points]
         return marker
 
     def _current_node_marker(self, header: Header, node: InternalNode) -> Marker:
@@ -246,7 +247,7 @@ class GraphVisualizer:
         marker.id = 7
         marker.action = Marker.ADD
         marker.type = Marker.SPHERE
-        marker.pose.position = self._point(node.position)
+        marker.pose.position = self._graph_point(node.position)
         marker.pose.orientation.w = 1.0
         marker.scale.x = 0.6
         marker.scale.y = 0.6
@@ -335,6 +336,10 @@ class GraphVisualizer:
         point.y = float(position[1])
         point.z = float(position[2])
         return point
+
+    def _graph_point(self, position: Tuple[float, float, float]) -> Point:
+        """抬高 graph marker, 避免被 GridMap surface 深度遮挡"""
+        return self._point((position[0], position[1], position[2] + self.GRAPH_MARKER_Z_LIFT))
 
     def _is_current_node(self, node: InternalNode, stamp_seconds: float) -> bool:
         """判断节点是否来自当前局部 grid 更新"""

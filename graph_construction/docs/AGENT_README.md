@@ -7,9 +7,8 @@
 优先阅读:
 
 1. `graph_construction/docs/AGENT_README.md`
-2. 当天 `graph_construction/docs/YYYY-MM-DD/YYYY-MM-DD-changelog.md`
-3. 和当前任务相关的具体说明文档
-4. 相关源码
+2. 和当前任务相关的具体说明文档
+3. 相关源码
 
 如果运行现象和源码判断冲突, 以实际 ROS graph, install tree, launch 参数和运行中 topic 为准
 
@@ -17,19 +16,11 @@
 
 每次代码或配置变动都必须同步写文档
 
-文档分两类:
+后续只写具体说明文档:
 
-- 变更记录文档: `graph_construction/docs/YYYY-MM-DD/YYYY-MM-DD-changelog.md`
 - 具体说明文档: `graph_construction/docs/YYYY-MM-DD/YYYY-MM-DD-topic-name.md`
 
-变更记录文档只写:
-
-- 已完成
-- 实测结果
-- 诊断结论摘要
-- 后续待办
-
-从 2026-07-03 开始, changelog 不再需要单独写 `文档同步` 小节
+从 2026-07-08 开始, 后续不再新增或更新 changelog / change log
 
 具体说明文档写:
 
@@ -40,9 +31,7 @@
 - 修改内容
 - 验证步骤
 
-不要把长篇分析塞进 changelog, 也不要只在具体说明文档里记录已完成变更
-
-如果同一天有多次变更, 优先更新当天同一个 changelog
+历史 changelog 仅作为旧记录保留, 不作为后续文档同步入口
 
 ## 代码注释规则
 
@@ -75,13 +64,15 @@ Graph Construction 不负责:
 
 ## 当前默认系统链路
 
-默认 LiDAR baseline:
+默认 elevation/2.5D GridMap 主线, 对齐论文和社区实现:
 
 ```text
 /unitree_go2/lidar/points or /livox/lidar
-    -> livox_grid_builder
-    -> /spot1/traversability_grid
-    -> graph_construction
+    -> pointcloud_axis_adapter
+    -> aligned_lidar_topic
+    -> elevation_mapping_cupy
+    -> /elevation_mapping_node/elevation_map_raw
+    -> graph_construction GridMap path
     -> /spot1/nav_graph
     -> visual_navigation / WildOS
     -> /spot1/scored_nav_graph
@@ -90,23 +81,21 @@ Graph Construction 不负责:
     -> /spot1/graphnav_planner/path
 ```
 
-实验 elevation backend:
+2D OccupancyGrid fallback, 仅用于隔离自研 grid builder 或对照 `/combined_grid`:
 
 ```text
-/unitree_go2/lidar/points
-    -> pointcloud_axis_adapter
-    -> /unitree_go2/lidar/points_aligned
-    -> elevation_mapping_cupy
-    -> /elevation_mapping_node/elevation_map_raw
-    -> graph_construction GridMap path
+/unitree_go2/lidar/points or /mapokk
+    -> livox_grid_builder
+    -> /spot1/traversability_grid
+    -> graph_construction OccupancyGrid path
     -> /spot1/nav_graph
 ```
 
-三相机视觉链路只影响 visual scoring, 不应直接改变 `/spot1/traversability_grid`
+三相机视觉链路只影响 visual scoring, 不应直接改变 elevation GridMap 或 2D fallback grid
 
-2D baseline 的 `/spot1/traversability_grid` 是 LiDAR 观测生成的局部 OccupancyGrid, 不是仿真器全局真值地图, 未被射线观测过的区域必须保持 unknown
+2D fallback 的 `/spot1/traversability_grid` 是 LiDAR 观测生成的局部 OccupancyGrid, 不是仿真器全局真值地图, 未被射线观测过的区域必须保持 unknown
 
-Isaac LiDAR 单帧可能只包含旋转扫描中的一个扇区, `livox_grid_builder` 默认累计最近扫描帧后再生成局部 grid, 避免 RViz 中只看到随雷达转动的扇形地图
+Isaac LiDAR 单帧可能只包含旋转扫描中的一个扇区, 2D fallback 的 `livox_grid_builder` 默认累计最近扫描帧后再生成局部 grid, 避免 RViz 中只看到随雷达转动的扇形地图
 
 ## 当前实现边界
 
@@ -151,16 +140,18 @@ viz.py
 
 ## 当前启动入口
 
-只使用两个完整启动脚本:
+优先使用 elevation/2.5D 完整启动脚本:
 
 ```bash
-./scripts/start_wildos_2d.sh
+./scripts/start_wildos_elevation.sh
 ./scripts/start_wildos_3d.sh
 ```
 
-`start_wildos_2d.sh` 启动 LiDAR GridMap baseline, graph construction, odom adapter, 三相机 static TF fallback, WildOS visual scoring, graphnav planner 和 path follower
+`start_wildos_3d.sh` 仅作为兼容入口, 会转发到 `start_wildos_elevation.sh`
 
-`start_wildos_3d.sh` 启动 elevation mapping, pointcloud axis adapter, graph construction, odom adapter, 三相机 static TF fallback, WildOS visual scoring, graphnav planner 和 path follower
+`start_wildos_elevation.sh` 启动 elevation mapping, pointcloud axis adapter, graph construction, odom adapter, 三相机 static TF fallback, WildOS visual scoring, graphnav planner 和 path follower
+
+`start_wildos_2d.sh` 仅作为 2D OccupancyGrid fallback, 用于隔离 `livox_grid_builder` 或对照 `/combined_grid`
 
 脚本会自动执行:
 
@@ -197,39 +188,46 @@ graph_construction/configs/topic_profiles.yaml
 - 默认 profile: `isaac`
 - 默认 namespace: `spot1`
 - 默认 `ROS_DOMAIN_ID`: `3`
-- 2D 默认 RMW: `rmw_cyclonedds_cpp`
-- 3D 默认 RMW: `rmw_fastrtps_cpp`
+- 2D fallback 默认 RMW: `rmw_cyclonedds_cpp`
+- elevation/2.5D 默认 RMW: `rmw_fastrtps_cpp`
 - 默认 raw LiDAR: `/unitree_go2/lidar/points`
 - 默认 aligned LiDAR: `/unitree_go2/lidar/points_aligned`
 - 默认 raw odom: `/odom`
 - 默认 adapted odom: `/spot1/odom_for_scoring`
-- Isaac 2D 默认 odom pose source: `tf`, `fallback_to_message=false`
-- Unity 2D 默认 odom pose source: `tf`, `fallback_to_message=true`
-- Unity 当前 TF 主链路: `map -> odom_3D -> base_link`
-- Unity 的 `odom_3D` 是里程计中间层, `base_link` 是机器人本体层, 相机和 LiDAR fallback TF 应挂在 `base_link`
-- Unity 2D grid builder 默认 odom 输入: `/spot1/odom_for_scoring`
-- Unity 2D 当前已切回本仓库自研 `livox_grid_builder`, `launch_livox_grid_builder=true`
+- Isaac 2D fallback 默认 odom pose source: `tf`, `fallback_to_message=false`
+- Unity 2D fallback 默认 odom pose source: `tf`, `fallback_to_message=true`
+- Unity 当前稳定参考系: `odom_3D`, `base_link` 是机器人本体层, 相机和 LiDAR fallback TF 应挂在 `base_link`
+- Unity elevation 默认点云输入: `/livox/lidar`, 输出对齐 topic: `/livox/lidar_aligned`
+- Unity 2D fallback grid builder 默认 odom 输入: `/unity/odom`
+- Unity 2D fallback 仍保留本仓库自研 `livox_grid_builder`, `launch_livox_grid_builder=true`
 - `/combined_grid` 仅作为对照测试输入保留, 参考实现见 `2026-07-07-combined-grid-implementation-reference.md`, 其负值 cell 是同事 A* 的自定义代价语义
-- Unity 2D 自研 `livox_grid_builder` 调试链路保留, `/livox/lidar` 按 Unity 已输出的世界坐标处理, `lidar_assume_input_in_grid_frame=true`
-- Unity 2D 自研 `livox_grid_builder` 调试链路使用 rolling local map, `grid_origin_mode=rolling`
-- Unity 2D 自研 `livox_grid_builder` 当前调试参数: `grid_resolution=0.1`, `grid_local_width=20.0`, `grid_local_height=20.0`, `grid_min_obstacle_height=0.0`, `grid_obstacle_inflation_radius=0.2`, `grid_origin_snap_to_resolution=true`, `grid_force_odd_grid_size=true`, `grid_robot_clear_radius=0.2`, `grid_obstacle_detection_mode=height_diff`
-- Unity 3D 点云输出 frame: `livox_frame`, axis mode: `identity`, 让 elevation mapping 通过 TF 转换点云
+- Unity 2D fallback 自研 `livox_grid_builder` 默认订阅 `/mapokk`, 该点云已对齐到 `grid_frame=odom_3D`, `lidar_assume_input_in_grid_frame=true`
+- Unity 2D fallback 自研 `livox_grid_builder` 调试链路使用 rolling local map, `grid_origin_mode=rolling`
+- Unity 2D fallback 自研 `livox_grid_builder` 当前调试参数: `lidar_topic=/mapokk`, `grid_resolution=0.1`, `grid_local_width=14.0`, `grid_local_height=14.0`, `grid_min_obstacle_height=-0.2`, `grid_obstacle_inflation_radius=0.25`, `grid_origin_snap_to_resolution=true`, `grid_force_odd_grid_size=true`, `grid_robot_clear_radius=0.2`, `grid_obstacle_detection_mode=height_diff`, `grid_height_diff_mark_rays_free=true`, `grid_height_diff_fill_unobserved_as_free=true`, `grid_height_diff_unknown_border_width=1.2`, `grid_height_diff_obstacle_threshold=0.04`, `grid_high_obstacle_min_height=0.12`
+- Unity elevation 点云输出 frame: `livox_frame`, axis mode: `identity`, 让 elevation mapping 通过 TF 转换点云
 - 默认 2D traversability grid: `/spot1/traversability_grid`
-- 默认 3D GridMap: `/elevation_mapping_node/elevation_map_raw`
+- 默认 elevation GridMap: `/elevation_mapping_node/elevation_map_raw`
 - 默认 graph output: `/spot1/nav_graph`
 - 默认 scored graph: `/spot1/scored_nav_graph`
 - 默认 path output: Isaac/robot 为 `/path2`, Unity 为 `/multi_planned_path`
-- 默认 goal input: `/goal_pose`
+- 默认 goal input: Isaac/robot 为 `/goal_pose`, Unity 为 `/spot1/graphnav_goal_pose`
 - object search 默认初始 goal: 当前 odom 朝向前方 `30.0m`
 - object search 默认目标 frontier 输入: `/spot1/object_search_target_pose`
 - object search 默认目标可视化: `/spot1/object_search_goal_viz`
+- object search 默认 selected frontier: `/spot1/object_search_selected_frontier`
+- object search 默认状态输出: `/spot1/object_search_status`
 - object search 默认到达确认: `/spot1/object_search_reached`
 - object search 默认 goal mux 发布频率: `5.0Hz`
+- object search 默认目标候选日志间隔: `2.0s`
+- elevation graph/path 默认 z offset: `0.08m`, RViz graph marker 额外抬高 `0.25m`
+- graph construction 默认不剪枝 disconnected components, 避免 current node 短时误判时清空大部分图
+- graphnav planner 默认 launch 权重: `goal_dist_cost_factor=1.0`, `frontier_score_factor=20.0`, 目标到达和目标连边按 3D 距离判断
 - object search 默认目标 mask 阈值: Isaac/robot 为 `0.09`, Unity 当前为 `0.10`
 - WildOS visual frontier 默认: Isaac/robot 为 `frontiers_range=9.0`, `frontier_threshold=0.60`, Unity 当前为 `frontiers_range=11.0`, `frontier_threshold=0.55`
 - object search 默认未检测诊断间隔: `20` 个 WildOS 同步处理帧
 - object search 默认 `target_timeout_sec=3.0`, `latch_target_after_first_detection=false`, `latch_target_timeout_sec=3.0`
 - object search 默认目标记忆: `memory_timeout_sec=10.0`, `memory_goal_distance=10.0`, `target_reached_radius=1.5`
+- object search 默认 graph frontier selection 开启, `frontier_min_dwell_sec=8.0`, `frontier_switch_min_score_margin=0.15`, `frontier_progress_timeout_sec=12.0`, `frontier_same_position_radius=1.2`, `deadend_blacklist_timeout_sec=20.0`
 - object search 默认近距离确认: `reached_mask_fraction=0.01`, `reached_min_pixel_count=1200`, `reached_confirm_frames=2`
 - 默认 path follower 跟踪点输出: `/spot1/tracking_goal_pose`
 - 默认三相机图像: `/unitree_go2/{}_cam/color_image`, 其中 `{}` 为 `front`, `left`, `right`
@@ -410,11 +408,15 @@ export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 - Unity profile 默认 `camera_parent_frame=base_link`, `lidar_parent_frame=base_link`, `odom_child_frame=odom_3D`
 - `camera_image_flip_x` 仅作为图像水平轴补偿开关保留, Unity 当前默认关闭
 - 目标不在视野时的 object search 设计见 `2026-07-06-object-search-exploration-design.md`
-- `object_search_goal_mux` 已实现, 负责给 graphnav planner 提供 initial search goal, 三角定位仍是第二阶段
-- 目标丢失后优先进入 `TARGET_MEMORY_GUIDED_SEARCH`, 复用最近目标 frontier 安全节点, 不把固定方向外推成自由空间 goal
+- `object_search_goal_mux` 已扩展为 stable frontier selector, 默认订阅 `/spot1/scored_nav_graph` 并发布稳定 graph frontier goal
+- 目标未出现时优先进入 `GEOMETRIC_EXPLORE`, 从 scored graph 选择稳定 frontier, 不再持续追随机器人 yaw 生成远处 goal
+- 如果 graph construction 重建 frontier UUID, `object_search_goal_mux` 会用 `frontier_same_position_radius` 继承近邻 frontier, 避免 selected frontier 每帧换号
+- 目标丢失后优先进入 `TARGET_MEMORY_GUIDED_FRONTIER`, 复用最近目标方向上的稳定 graph frontier, 不把固定方向外推成自由空间 goal
 - `TARGET_REACHED_VIEWPOINT` 表示目标近距离可见或已到达目标 frontier 对应观察点, 不等于物体精确抵达
+- `SEARCHING_WITH_INITIAL_GOAL` 只作为 scored graph 暂不可用时的 fallback
 - `TARGET_FRONTIER_LATCHED` 默认关闭, 只在需要短暂遮挡容忍时手动开启
-- `/goal_pose` 只作为 planner 高层 goal 输入, 不要让 path follower 或底层控制节点继续发布到同一个 topic
+- Unity 下 `/spot1/graphnav_goal_pose` 只作为 planner 高层 goal 输入, 避免外部 `nav_slam/astar` 订阅公共 `/goal_pose` 后改写路线
+- `graphnav_planner` 当高层 goal topic 附近已有 graph node 时优先直连该目标, virtual goal 默认只参与搜索, 不进入可执行 path
 - `graphnav_planner` 默认不把虚拟 goal 和未知 `frontier_points` 追加到执行路径, `/corrected_path` 应优先由真实 graph node 组成
 - RViz2 查看高层搜索目标优先订阅 `/spot1/object_search_goal_viz`, 类型为 `visualization_msgs/MarkerArray`
 - 社区参考仓库本地副本位于 `external_references/nebula2-wildos-main_ws`, 当前记录 commit `225be74`, 该目录被 `.gitignore` 忽略
@@ -433,13 +435,14 @@ export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 - Unity 启动期可能出现图像或点云时间略早于 TF buffer 的过去外推, 当前代码会用 latest TF 或上一帧 TF 兜底
 - 如果 TF 过去外推持续出现, 优先检查 `/clock`, `/tf`, 点云 stamp 和 static TF publisher 是否一致
 - 三相机视觉输入和 `front`, `left`, `right` 语义保持
-- 目标搜索路径慢时先看 WildOS 未检测日志中的每路相机最高相似度, 再看 `/spot1/object_search_target_pose`, `/goal_pose`, `/corrected_path` 或 profile 配置的 `path_topic`
-- 路径贴墙或离开绿色 graph node 区域时, 优先检查是否有节点重新打开了 `append_virtual_goal_to_path` 或 `append_frontier_point_to_path`
-- 点云和 2D grid 错位时, 优先检查 `livox_grid_builder` 日志中的 `assume_input_in_grid_frame` 和 odom frame, Unity 应为 True 且 odom frame 应为 `map`
+- 目标搜索路径慢时先看 WildOS 未检测日志中的每路相机最高相似度, 再看 `/spot1/object_search_target_pose`, profile 配置的 `goal_pose_topic`, `/corrected_path` 或 profile 配置的 `path_topic`
+- 路径贴墙或穿障碍时, 优先检查 `append_virtual_goal_to_path=false`, graph edge corridor clearance, `min_obstacle_clearance` 和 `grid_obstacle_inflation_radius`
+- 点云和 2D grid 错位或随狗转向旋转时, 优先检查 `livox_grid_builder` 日志中的 `lidar`, `grid_frame`, `assume_input_in_grid_frame` 和 odom frame, Unity 自研 builder 当前应为 `lidar=/mapokk`, `grid_frame=odom_3D`, `assume_input_in_grid_frame=True`, odom 输入为 `/unity/odom`
 - Unity 2D 默认使用本仓库 `livox_grid_builder`, 应看到本仓库 `livox_grid_builder` 进程启动
 - Unity 2D 临时回切 `/combined_grid` 对照测试时, 启动命令需要显式加 `launch_livox_grid_builder:=false traversability_grid_topic:=/combined_grid`
-- Unity 2D 自研 builder 地图随狗旋转或路线乱跳时, 优先检查 `origin_mode=rolling`, `snap=True`, `mode=height_diff`, `height_range=(0.00,1.80)`, `inflation=0.20` 是否生效
-- 路线每帧剧烈变化时, 优先检查 `graphnav_planner.path_smoothness_period`, 当前 2D/3D launch 应为 `10.0`
+- Unity 2D 自研 builder 地图随狗旋转, 路线乱跳或没有视觉边界点时, 优先检查 `lidar=/mapokk`, `grid_frame=odom_3D`, `assume_input_in_grid_frame=True`, `origin_mode=rolling`, `snap=True`, `mode=height_diff`, `height_rays=True`, `height_fill_free=True`, `height_unknown_border=1.20`, `height_range=(-0.20,1.80)`, `inflation=0.25` 是否生效
+- 路线每帧剧烈变化时, 优先检查 `/spot1/object_search_status`, `/spot1/object_search_selected_frontier`, `object_search_frontier_min_dwell_sec`, `object_search_frontier_switch_min_score_margin`, `graphnav_planner.path_smoothness_period` 和 `path_switch_hysteresis_sec`
+- 未看到目标时, `object_search_goal_mux` 应优先保持 selected frontier, 只有 scored graph 暂不可用时才回退到初始搜索 goal
 - 运行时同步, QoS, TF buffer 和 stamp 差异诊断
 
 暂缓:

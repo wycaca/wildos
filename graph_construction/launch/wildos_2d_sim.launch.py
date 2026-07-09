@@ -7,7 +7,7 @@ from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, TextSubstitution
 from launch_ros.actions import Node
 
-from graph_construction.topic_profiles import load_topic_profile
+from graph_construction.topic_profiles import load_topic_profile, profile_key_description
 
 
 def generate_launch_description():
@@ -81,6 +81,9 @@ def generate_launch_description():
             _profile_arg("grid_force_odd_grid_size", "grid_force_odd_grid_size"),
             _profile_arg("grid_robot_clear_radius", "grid_robot_clear_radius"),
             _profile_arg("grid_obstacle_detection_mode", "grid_obstacle_detection_mode"),
+            _profile_arg("grid_height_diff_mark_rays_free", "grid_height_diff_mark_rays_free"),
+            _profile_arg("grid_height_diff_fill_unobserved_as_free", "grid_height_diff_fill_unobserved_as_free"),
+            _profile_arg("grid_height_diff_unknown_border_width", "grid_height_diff_unknown_border_width"),
             _profile_arg("grid_height_diff_obstacle_threshold", "grid_height_diff_obstacle_threshold"),
             _profile_arg("grid_high_obstacle_min_height", "grid_high_obstacle_min_height"),
             _profile_arg("odom_input_topic", "odom_input_topic"),
@@ -123,6 +126,7 @@ def generate_launch_description():
             _profile_arg("visual_frontiers_range", "visual_frontiers_range"),
             _profile_arg("visual_frontier_threshold", "visual_frontier_threshold"),
             _profile_arg("object_search_detection_debug_interval", "object_search_detection_debug_interval"),
+            _profile_arg("object_search_target_log_period_sec", "object_search_target_log_period_sec"),
             _profile_arg("object_search_goal_publish_rate", "object_search_goal_publish_rate"),
             _profile_arg("object_search_target_timeout_sec", "object_search_target_timeout_sec"),
             _profile_arg("object_search_latch_target_after_first_detection", "object_search_latch_target_after_first_detection"),
@@ -131,14 +135,38 @@ def generate_launch_description():
             _profile_arg("object_search_memory_goal_distance", "object_search_memory_goal_distance"),
             _profile_arg("object_search_target_reached_radius", "object_search_target_reached_radius"),
             _profile_arg("object_search_object_reached_timeout_sec", "object_search_object_reached_timeout_sec"),
+            _profile_arg("object_search_reached_latch_timeout_sec", "object_search_reached_latch_timeout_sec"),
+            _profile_arg(
+                "object_search_object_reached_require_target_distance",
+                "object_search_object_reached_require_target_distance",
+            ),
+            _profile_arg(
+                "object_search_object_reached_max_target_distance",
+                "object_search_object_reached_max_target_distance",
+            ),
             _profile_arg("object_search_reached_mask_fraction", "object_search_reached_mask_fraction"),
             _profile_arg("object_search_reached_min_pixel_count", "object_search_reached_min_pixel_count"),
             _profile_arg("object_search_reached_confirm_frames", "object_search_reached_confirm_frames"),
             _profile_arg("object_search_goal_viz_topic", "object_search_goal_viz_topic"),
+            _profile_arg("object_search_selected_frontier_topic", "object_search_selected_frontier_topic"),
+            _profile_arg("object_search_status_topic", "object_search_status_topic"),
+            _profile_arg("object_search_enable_graph_frontier_selection", "object_search_enable_graph_frontier_selection"),
+            _profile_arg("object_search_frontier_min_dwell_sec", "object_search_frontier_min_dwell_sec"),
+            _profile_arg("object_search_frontier_switch_min_score_margin", "object_search_frontier_switch_min_score_margin"),
+            _profile_arg("object_search_frontier_progress_timeout_sec", "object_search_frontier_progress_timeout_sec"),
+            _profile_arg("object_search_frontier_progress_min_delta", "object_search_frontier_progress_min_delta"),
+            _profile_arg("object_search_frontier_reached_radius", "object_search_frontier_reached_radius"),
+            _profile_arg("object_search_frontier_same_position_radius", "object_search_frontier_same_position_radius"),
+            _profile_arg("object_search_deadend_blacklist_timeout_sec", "object_search_deadend_blacklist_timeout_sec"),
+            _profile_arg("object_search_frontier_score_weight", "object_search_frontier_score_weight"),
+            _profile_arg("object_search_frontier_distance_weight", "object_search_frontier_distance_weight"),
+            _profile_arg("object_search_frontier_switch_penalty", "object_search_frontier_switch_penalty"),
             _profile_arg("planner_odom_topic", "planner_odom_topic"),
             _profile_arg("goal_pose_topic", "goal_pose_topic"),
             _profile_arg("tracking_goal_pose_topic", "tracking_goal_pose_topic"),
             _profile_arg("path_topic", "path_topic"),
+            _profile_arg("object_search_initial_goal_latch_timeout_sec", "object_search_initial_goal_latch_timeout_sec"),
+            _profile_arg("object_search_initial_goal_reached_radius", "object_search_initial_goal_reached_radius"),
             DeclareLaunchArgument(
                 "publish_camera_static_tf",
                 default_value="true",
@@ -219,6 +247,24 @@ def _launch_setup(context):
                 "grid_obstacle_detection_mode",
                 "grid_obstacle_detection_mode",
             ),
+            "height_diff_mark_rays_free": _bool_value(
+                context,
+                profile,
+                "grid_height_diff_mark_rays_free",
+                "grid_height_diff_mark_rays_free",
+            ),
+            "height_diff_fill_unobserved_as_free": _bool_value(
+                context,
+                profile,
+                "grid_height_diff_fill_unobserved_as_free",
+                "grid_height_diff_fill_unobserved_as_free",
+            ),
+            "height_diff_unknown_border_width": _float_value(
+                context,
+                profile,
+                "grid_height_diff_unknown_border_width",
+                "grid_height_diff_unknown_border_width",
+            ),
             "height_diff_obstacle_threshold": _float_value(
                 context,
                 profile,
@@ -289,6 +335,12 @@ def _launch_setup(context):
                 profile,
                 "object_search_detection_debug_interval",
                 "object_search_detection_debug_interval",
+            ),
+            "object_search_config.target_log_period_sec": _value(
+                context,
+                profile,
+                "object_search_target_log_period_sec",
+                "object_search_target_log_period_sec",
             ),
             "object_search_config.reached_mask_fraction": _value(
                 context,
@@ -416,10 +468,29 @@ def _launch_setup(context):
             {"use_sim_time": use_sim_time},
             {"output_goal_topic": goal_pose_topic},
             {"goal_viz_topic": _value(context, profile, "object_search_goal_viz_topic", "object_search_goal_viz_topic")},
+            {
+                "selected_frontier_topic": _value(
+                    context,
+                    profile,
+                    "object_search_selected_frontier_topic",
+                    "object_search_selected_frontier_topic",
+                )
+            },
+            {"status_topic": _value(context, profile, "object_search_status_topic", "object_search_status_topic")},
+            {"nav_graph_topic": scored_nav_graph_topic},
             {"object_target_pose_topic": _value(context, profile, "object_target_pose_topic", "object_target_pose_topic")},
             {"object_reached_topic": _value(context, profile, "object_reached_topic", "object_reached_topic")},
             {"odom_topic": odom_output_topic},
             {"frame_id": global_frame},
+            {"traversability_class": "default"},
+            {
+                "enable_graph_frontier_selection": _bool_value(
+                    context,
+                    profile,
+                    "object_search_enable_graph_frontier_selection",
+                    "object_search_enable_graph_frontier_selection",
+                )
+            },
             {
                 "publish_rate": _float_value(
                     context,
@@ -442,6 +513,22 @@ def _launch_setup(context):
                     profile,
                     "object_search_initial_goal_heading_deg",
                     "object_search_initial_goal_heading_deg",
+                )
+            },
+            {
+                "initial_goal_latch_timeout_sec": _float_value(
+                    context,
+                    profile,
+                    "object_search_initial_goal_latch_timeout_sec",
+                    "object_search_initial_goal_latch_timeout_sec",
+                )
+            },
+            {
+                "initial_goal_reached_radius": _float_value(
+                    context,
+                    profile,
+                    "object_search_initial_goal_reached_radius",
+                    "object_search_initial_goal_reached_radius",
                 )
             },
             {
@@ -500,6 +587,110 @@ def _launch_setup(context):
                     "object_search_object_reached_timeout_sec",
                 )
             },
+            {
+                "reached_latch_timeout_sec": _float_value(
+                    context,
+                    profile,
+                    "object_search_reached_latch_timeout_sec",
+                    "object_search_reached_latch_timeout_sec",
+                )
+            },
+            {
+                "object_reached_require_target_distance": _bool_value(
+                    context,
+                    profile,
+                    "object_search_object_reached_require_target_distance",
+                    "object_search_object_reached_require_target_distance",
+                )
+            },
+            {
+                "object_reached_max_target_distance": _float_value(
+                    context,
+                    profile,
+                    "object_search_object_reached_max_target_distance",
+                    "object_search_object_reached_max_target_distance",
+                )
+            },
+            {
+                "frontier_min_dwell_sec": _float_value(
+                    context,
+                    profile,
+                    "object_search_frontier_min_dwell_sec",
+                    "object_search_frontier_min_dwell_sec",
+                )
+            },
+            {
+                "frontier_switch_min_score_margin": _float_value(
+                    context,
+                    profile,
+                    "object_search_frontier_switch_min_score_margin",
+                    "object_search_frontier_switch_min_score_margin",
+                )
+            },
+            {
+                "frontier_progress_timeout_sec": _float_value(
+                    context,
+                    profile,
+                    "object_search_frontier_progress_timeout_sec",
+                    "object_search_frontier_progress_timeout_sec",
+                )
+            },
+            {
+                "frontier_progress_min_delta": _float_value(
+                    context,
+                    profile,
+                    "object_search_frontier_progress_min_delta",
+                    "object_search_frontier_progress_min_delta",
+                )
+            },
+            {
+                "frontier_reached_radius": _float_value(
+                    context,
+                    profile,
+                    "object_search_frontier_reached_radius",
+                    "object_search_frontier_reached_radius",
+                )
+            },
+            {
+                "frontier_same_position_radius": _float_value(
+                    context,
+                    profile,
+                    "object_search_frontier_same_position_radius",
+                    "object_search_frontier_same_position_radius",
+                )
+            },
+            {
+                "deadend_blacklist_timeout_sec": _float_value(
+                    context,
+                    profile,
+                    "object_search_deadend_blacklist_timeout_sec",
+                    "object_search_deadend_blacklist_timeout_sec",
+                )
+            },
+            {
+                "frontier_score_weight": _float_value(
+                    context,
+                    profile,
+                    "object_search_frontier_score_weight",
+                    "object_search_frontier_score_weight",
+                )
+            },
+            {
+                "frontier_distance_weight": _float_value(
+                    context,
+                    profile,
+                    "object_search_frontier_distance_weight",
+                    "object_search_frontier_distance_weight",
+                )
+            },
+            {
+                "frontier_switch_penalty": _float_value(
+                    context,
+                    profile,
+                    "object_search_frontier_switch_penalty",
+                    "object_search_frontier_switch_penalty",
+                )
+            },
         ],
         condition=IfCondition(LaunchConfiguration("do_object_search")),
     )
@@ -541,8 +732,11 @@ def _planner_node(ns, use_sim_time, odom_topic, goal_pose_topic, scored_nav_grap
             {"goal_dist_cost_factor": 1.0},
             {"frontier_score_factor": 20.0},
             {"min_local_frontier_score": 0.4},
-            {"local_frontier_radius": 10.0},
-            {"path_smoothness_period": 10.0},
+            {"local_frontier_radius": 5.0},
+            {"path_smoothness_period": 15.0},
+            {"path_switch_hysteresis_sec": 6.0},
+            {"path_switch_min_endpoint_delta": 3.0},
+            {"path_switch_min_goal_delta": 5.0},
             {"trav_class": "default"},
             {"goal_radius": 3.0},
             {"append_virtual_goal_to_path": False},
@@ -642,7 +836,11 @@ def _camera_static_transforms(convention):
 
 
 def _profile_arg(name, profile_key):
-    return DeclareLaunchArgument(name, default_value="", description=f"Override topic profile key '{profile_key}'")
+    return DeclareLaunchArgument(
+        name,
+        default_value="",
+        description=f"{profile_key_description(profile_key)}, 留空使用 topic profile",
+    )
 
 
 def _config_override_args(overrides):

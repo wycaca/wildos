@@ -1,7 +1,10 @@
 import numpy as np
 
 from graph_construction.graph_builder import GraphBuilderConfig, SparseGraphBuilder
+from graph_construction.edge_builder import EdgeBuilder
+from graph_construction.graph_memory import GraphState
 from graph_construction.grid_types import ClassifiedGrid
+from graph_construction.grid_types import distance_to_mask
 
 
 def test_graph_builder_returns_stage_timing_diagnostics():
@@ -83,3 +86,80 @@ def test_frontier_candidate_spacing_reduces_assignment_work():
 
     assert result.diagnostics.frontier_cell_count > result.diagnostics.frontier_candidate_count
     assert result.diagnostics.frontier_candidate_count > 0
+
+
+def test_edge_builder_rejects_edges_without_corridor_clearance():
+    """验证 graph edge 不只检查中心线, 还要满足 obstacle clearance"""
+    free = np.ones((3, 5), dtype=bool)
+    obstacle = np.zeros((3, 5), dtype=bool)
+    unknown = np.zeros((3, 5), dtype=bool)
+    obstacle[1, 2] = True
+    free[1, 2] = False
+    grid = ClassifiedGrid(
+        width=5,
+        height=3,
+        resolution=1.0,
+        origin_x=0.0,
+        origin_y=0.0,
+        frame_id="map",
+        free=free,
+        obstacle=obstacle,
+        unknown=unknown,
+    )
+    graph = GraphState()
+    graph.create_node(position=(0.5, 0.5, 0.0), stamp_seconds=1.0)
+    graph.create_node(position=(4.5, 0.5, 0.0), stamp_seconds=1.0)
+    edge_builder = EdgeBuilder(edge_radius=10.0, max_neighbors_per_node=4)
+
+    loose_edges = edge_builder.build_edges(
+        graph,
+        grid,
+        distance_to_mask(obstacle, grid.resolution),
+        distance_to_mask(unknown, grid.resolution),
+        min_clearance=0.5,
+    )
+    strict_edges = edge_builder.build_edges(
+        graph,
+        grid,
+        distance_to_mask(obstacle, grid.resolution),
+        distance_to_mask(unknown, grid.resolution),
+        min_clearance=1.1,
+    )
+
+    assert len(loose_edges) == 1
+    assert strict_edges == []
+
+
+def test_graph_builder_prunes_nodes_disconnected_from_current_component():
+    """验证断开 component 不会发布给 planner 和目标评分"""
+    free = np.zeros((5, 12), dtype=bool)
+    free[:, :4] = True
+    free[:, 8:] = True
+    obstacle = np.zeros((5, 12), dtype=bool)
+    unknown = ~free
+    grid = ClassifiedGrid(
+        width=12,
+        height=5,
+        resolution=1.0,
+        origin_x=0.0,
+        origin_y=0.0,
+        frame_id="map",
+        free=free,
+        obstacle=obstacle,
+        unknown=unknown,
+    )
+    builder = SparseGraphBuilder(
+        GraphBuilderConfig(
+            sample_stride=2,
+            min_node_separation=0.1,
+            min_obstacle_clearance=0.0,
+            edge_radius=3.0,
+            prune_disconnected_nodes=True,
+        )
+    )
+
+    result = builder.update(grid, robot_position=(0.5, 0.5, 0.0), stamp_seconds=1.0)
+
+    assert result.diagnostics.connected_components == 1
+    assert result.diagnostics.node_count > 0
+    assert all(node.position[0] < 4.0 for node in result.graph.nodes.values())

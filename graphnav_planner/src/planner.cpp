@@ -34,7 +34,7 @@ void Planner::update_graph(graphnav_msgs::msg::NavigationGraph::ConstSharedPtr g
   {
     latest_frontier_.reset();
     latest_frontier_time_.reset();
-    RCLCPP_WARN(logger_, "收到空导航图, 跳过 planner 更新");
+    RCLCPP_WARN_ONCE(logger_, "收到空导航图, 跳过 planner 更新");
     return;
   }
   auto trav_class_it = std::find(graph->trav_classes.begin(), graph->trav_classes.end(), trav_class_);
@@ -118,7 +118,7 @@ std::vector<Eigen::Vector3d> Planner::plan_to_goal(Eigen::Vector3d& goal, double
 {
   if (!unexplored_space_map_)
   {
-    RCLCPP_WARN(logger_, "planner 暂无有效导航图, 跳过路径规划");
+    RCLCPP_DEBUG(logger_, "planner 暂无有效导航图, 跳过路径规划");
     return {};
   }
   unexplored_space_map_->compute_distance_from(goal.x(), goal.y());
@@ -132,6 +132,7 @@ std::vector<Eigen::Vector3d> Planner::plan_to_goal(Eigen::Vector3d& goal, double
 
   std::vector<graaf::vertex_id_t> local_scored_frontiers;
   bool is_scored_graph = true;
+  bool has_direct_goal_edge = false;
 
   for (const auto& [id, node] : graph_.get_vertices())
   {
@@ -216,13 +217,14 @@ std::vector<Eigen::Vector3d> Planner::plan_to_goal(Eigen::Vector3d& goal, double
     {
       double goal_cost = goal_dist_cost_factor_ * node_goal_dist;
       graph_.add_edge(id, virtual_goal, goal_cost);
+      has_direct_goal_edge = true;
     }
   }
   
 
   // 平滑周期内优先使用上一次目标附近的 frontier
   bool use_local_frontiers = false;
-  if (!local_scored_frontiers.empty())
+  if (!has_direct_goal_edge && !local_scored_frontiers.empty())
   {
     if (latest_frontier_time_ && (current_time - *latest_frontier_time_).seconds() < path_smoothness_period_)
     {
@@ -239,7 +241,7 @@ std::vector<Eigen::Vector3d> Planner::plan_to_goal(Eigen::Vector3d& goal, double
     }
   }  
   
-  if (!use_local_frontiers)
+  if (!has_direct_goal_edge && !use_local_frontiers)
   {
     for (auto& [id, score_pair] : frontier_scores_)
     {
@@ -257,25 +259,19 @@ std::vector<Eigen::Vector3d> Planner::plan_to_goal(Eigen::Vector3d& goal, double
     size_t idx = 0;
     for (const auto& node_id : path->vertices)
     {
+      // virtual goal 只参与图搜索, 默认不进入可执行路径
+      if (node_id == virtual_goal && !append_virtual_goal_to_path_)
+      {
+        idx++;
+        continue;
+      }
       const auto& node = graph_.get_vertex(node_id);
       const auto& pos = node.pose.position;
       path_points.push_back(Eigen::Vector3d(pos.x, pos.y, pos.z));
       if (idx == path->vertices.size() - 2 && trav_class_idx_ < node.trav_properties.size() &&
           node.trav_properties[trav_class_idx_].is_frontier)
       {
-        // if second to last, add frontier point as well
-        if (!node.trav_properties[trav_class_idx_].frontier_points.empty())
-        {
-          Eigen::Vector3d mean_frontier(0.0, 0.0, 0.0);
-          double n_frontier_points = node.trav_properties[trav_class_idx_].frontier_points.size();
-          for (const auto& frontier_point : node.trav_properties[trav_class_idx_].frontier_points)
-          {
-            mean_frontier += Eigen::Vector3d(frontier_point.x, frontier_point.y, frontier_point.z);
-          }
-          mean_frontier /= n_frontier_points;
-          path_points.push_back(mean_frontier);
-        }
-
+        // frontier_points 只作为探索方向, 可执行路径停在安全 graph node 上
         latest_frontier_ = Eigen::Vector3d(node.pose.position.x, node.pose.position.y, node.pose.position.z);
         has_frontier_in_path = true;
       }
@@ -284,7 +280,10 @@ std::vector<Eigen::Vector3d> Planner::plan_to_goal(Eigen::Vector3d& goal, double
   }
   if (!has_frontier_in_path)
   {
-    latest_frontier_.reset();
+    if (!latest_frontier_time_ || (current_time - *latest_frontier_time_).seconds() >= path_smoothness_period_)
+    {
+      latest_frontier_.reset();
+    }
     RCLCPP_DEBUG(logger_, "Path does not end at a frontier node");
   }
 

@@ -106,10 +106,12 @@ class WildOS_Nav(TFLookupSubscriber):
             "pixel_level_seg": False,
             "mask_threshold": 0.09,
             "detection_debug_interval": 20,
+            "target_log_period_sec": 2.0,
             "obj_frontier_score": 0.9,
             "obj_trav_score": 0.9,
             "target_min_score": 0.2,
             "target_ray_length": 8.0,
+            "target_ray_match_radius": 2.0,
             "reached_mask_fraction": 0.01,
             "reached_min_pixel_count": 1200,
             "reached_confirm_frames": 2
@@ -168,16 +170,25 @@ class WildOS_Nav(TFLookupSubscriber):
         self.removed_frontier_positions = np.zeros((0, 3), dtype=np.float32)
         self.object_target_min_score = 0.0
         self.object_target_ray_length = 8.0
+        self.object_target_ray_match_radius = 2.0
         self.object_detection_debug_interval = 20
+        self.object_target_log_period_sec = 2.0
+        self._last_object_target_log_time = None
+        self._last_object_target_log_signature = None
         self._object_missing_log_count = 0
         self._object_reached_confirm_count = 0
         self._object_reached_last_state = False
         if self.object_search_mode:
             self.object_target_min_score = float(config.object_search_config.get("target_min_score", 0.2))
             self.object_target_ray_length = float(config.object_search_config.get("target_ray_length", 8.0))
+            self.object_target_ray_match_radius = float(config.object_search_config.get("target_ray_match_radius", 2.0))
             self.object_detection_debug_interval = max(
                 int(config.object_search_config.get("detection_debug_interval", 20)),
                 1,
+            )
+            self.object_target_log_period_sec = max(
+                float(config.object_search_config.get("target_log_period_sec", 2.0)),
+                0.0,
             )
             self.object_reached_mask_fraction = float(config.object_search_config.get("reached_mask_fraction", 0.01))
             self.object_reached_min_pixel_count = int(config.object_search_config.get("reached_min_pixel_count", 1200))
@@ -542,13 +553,15 @@ class WildOS_Nav(TFLookupSubscriber):
             })
 
         if self.object_search_mode:
+            if object_detected:
+                object_detection_rays = self.build_object_detection_rays(binary_mask, all_cam_data)
             object_target_candidate = self.select_object_target_candidate(
                 geofrontiers,
                 nav_data,
-                object_detected
+                object_detected,
+                object_detection_rays,
+                navgraph_msg,
             )
-            if object_detected:
-                object_detection_rays = self.build_object_detection_rays(binary_mask, all_cam_data)
 
         # 发布评分后的 navgraph
         robot_pos = np.array([
@@ -601,7 +614,14 @@ class WildOS_Nav(TFLookupSubscriber):
             )
         )
 
-    def select_object_target_candidate(self, geofrontiers, nav_data, object_detected):
+    def select_object_target_candidate(
+        self,
+        geofrontiers,
+        nav_data,
+        object_detected,
+        detection_rays=None,
+        navgraph_msg=None,
+    ):
         """从目标增强后的 frontier scores 中选择当前目标导航点候选"""
         if not object_detected:
             return None
@@ -629,15 +649,64 @@ class WildOS_Nav(TFLookupSubscriber):
                         "heading_bin": heading_bin,
                         "camera_idx": cam_idx,
                         "camera_name": CAMERA_MAPPING[cam_idx],
+                        "source": "frontier_score",
                     }
 
+        ray_candidate = self._select_object_ray_candidate(detection_rays, navgraph_msg)
+        if ray_candidate is not None:
+            best_candidate = ray_candidate
+
         if best_candidate is not None:
-            self.get_logger().info(
-                "目标导航点候选已更新, "
-                f"camera={best_candidate['camera_name']}, "
-                f"score={best_candidate['score']:.2f}, "
-                f"heading_bin={best_candidate['heading_bin']}"
-            )
+            self._log_object_target_candidate(best_candidate)
+        return best_candidate
+
+    def _select_object_ray_candidate(self, detection_rays, navgraph_msg):
+        """目标不落在 frontier 上时, 沿检测射线选择前方可达 graph node"""
+        if not detection_rays or navgraph_msg is None or not navgraph_msg.nodes:
+            return None
+
+        best_candidate = None
+        match_radius = max(0.1, self.object_target_ray_match_radius)
+        for ray in detection_rays:
+            start = np.asarray(ray["start"], dtype=np.float64)
+            end = np.asarray(ray["end"], dtype=np.float64)
+            direction = end - start
+            ray_length = float(np.linalg.norm(direction))
+            if ray_length < 1e-6:
+                continue
+            direction /= ray_length
+
+            for node in navgraph_msg.nodes:
+                point = np.array(
+                    [
+                        node.pose.position.x,
+                        node.pose.position.y,
+                        node.pose.position.z,
+                    ],
+                    dtype=np.float64,
+                )
+                offset = point - start
+                projection = float(np.dot(offset, direction))
+                if projection <= 0.0 or projection > ray_length:
+                    continue
+                closest = start + projection * direction
+                lateral_distance = float(np.linalg.norm(point[:2] - closest[:2]))
+                if lateral_distance > match_radius:
+                    continue
+
+                progress_score = projection / ray_length
+                lateral_score = max(0.0, 1.0 - lateral_distance / match_radius)
+                score = 0.6 * progress_score + 0.4 * lateral_score
+                if best_candidate is None or score > best_candidate["score"]:
+                    best_candidate = {
+                        "node": node,
+                        "uuid": self.uuid_to_str(node.uuid),
+                        "score": score,
+                        "heading_bin": -1,
+                        "camera_idx": ray.get("camera_idx", -1),
+                        "camera_name": ray.get("camera_name", "unknown"),
+                        "source": "detection_ray",
+                    }
         return best_candidate
 
     def _log_object_missing(self, text_sim_spatial=None) -> None:
@@ -647,6 +716,34 @@ class WildOS_Nav(TFLookupSubscriber):
             self.get_logger().warn(f"当前帧未检测到目标, 跳过 object mask 发布{summary}")
         elif self._object_missing_log_count % self.object_detection_debug_interval == 0:
             self.get_logger().info(f"连续未检测到目标帧数={self._object_missing_log_count}{summary}")
+
+    def _log_object_target_candidate(self, candidate) -> None:
+        """节流目标候选日志, 同一候选只按固定周期打印"""
+        now = self.get_clock().now()
+        signature = (
+            candidate.get("uuid", ""),
+            candidate.get("camera_name", ""),
+            candidate.get("source", "unknown"),
+        )
+        if self.object_target_log_period_sec <= 0.0:
+            should_log = True
+        else:
+            should_log = signature != self._last_object_target_log_signature
+            if not should_log and self._last_object_target_log_time is not None:
+                age = (now - self._last_object_target_log_time).nanoseconds * 1e-9
+                should_log = age >= self.object_target_log_period_sec
+        if not should_log:
+            return
+
+        self._last_object_target_log_signature = signature
+        self._last_object_target_log_time = now
+        self.get_logger().info(
+            "目标导航点候选已更新, "
+            f"camera={candidate['camera_name']}, "
+            f"score={candidate['score']:.2f}, "
+            f"heading_bin={candidate['heading_bin']}, "
+            f"source={candidate.get('source', 'unknown')}"
+        )
 
     def _object_detection_debug_summary(self, text_sim_spatial) -> str:
         """汇总每路相机的目标相似度, 用于判断远距离目标是否低于阈值"""
@@ -728,6 +825,7 @@ class WildOS_Nav(TFLookupSubscriber):
             end = start + self.object_target_ray_length * ray_world
             rays.append({
                 "camera_name": CAMERA_MAPPING[cam_idx],
+                "camera_idx": cam_idx,
                 "pixel_count": int(len(xs)),
                 "start": start,
                 "end": end,

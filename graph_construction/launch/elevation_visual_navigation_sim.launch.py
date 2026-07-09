@@ -8,7 +8,7 @@ from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, Text
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 
-from graph_construction.topic_profiles import load_topic_profile
+from graph_construction.topic_profiles import load_topic_profile, profile_key_description
 
 
 def generate_launch_description():
@@ -75,7 +75,7 @@ def generate_launch_description():
                 description="Point cloud axis conversion mode, empty uses topic profile",
             ),
             _profile_arg("global_frame", "global_frame_3d"),
-            _profile_arg("pointcloud_input_topic", "lidar_topic"),
+            _profile_arg("pointcloud_input_topic", "pointcloud_input_topic"),
             _profile_arg("pointcloud_output_topic", "aligned_lidar_topic"),
             _profile_arg("pointcloud_output_frame", "pointcloud_output_frame_3d"),
             _profile_arg("elevation_grid_map_topic", "elevation_grid_map_topic"),
@@ -94,7 +94,7 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "publish_lidar_static_tf",
                 default_value="false",
-                description="Publish a fallback static transform for point cloud frame",
+                description="Publish a fallback static transform for the elevation point cloud frame",
             ),
             _profile_arg("lidar_parent_frame", "lidar_parent_frame"),
             _profile_arg("lidar_frame", "lidar_frame"),
@@ -122,6 +122,7 @@ def generate_launch_description():
             _profile_arg("visual_frontiers_range", "visual_frontiers_range"),
             _profile_arg("visual_frontier_threshold", "visual_frontier_threshold"),
             _profile_arg("object_search_detection_debug_interval", "object_search_detection_debug_interval"),
+            _profile_arg("object_search_target_log_period_sec", "object_search_target_log_period_sec"),
             _profile_arg("object_search_goal_publish_rate", "object_search_goal_publish_rate"),
             _profile_arg("object_search_target_timeout_sec", "object_search_target_timeout_sec"),
             _profile_arg("object_search_latch_target_after_first_detection", "object_search_latch_target_after_first_detection"),
@@ -130,10 +131,32 @@ def generate_launch_description():
             _profile_arg("object_search_memory_goal_distance", "object_search_memory_goal_distance"),
             _profile_arg("object_search_target_reached_radius", "object_search_target_reached_radius"),
             _profile_arg("object_search_object_reached_timeout_sec", "object_search_object_reached_timeout_sec"),
+            _profile_arg("object_search_reached_latch_timeout_sec", "object_search_reached_latch_timeout_sec"),
+            _profile_arg(
+                "object_search_object_reached_require_target_distance",
+                "object_search_object_reached_require_target_distance",
+            ),
+            _profile_arg(
+                "object_search_object_reached_max_target_distance",
+                "object_search_object_reached_max_target_distance",
+            ),
             _profile_arg("object_search_reached_mask_fraction", "object_search_reached_mask_fraction"),
             _profile_arg("object_search_reached_min_pixel_count", "object_search_reached_min_pixel_count"),
             _profile_arg("object_search_reached_confirm_frames", "object_search_reached_confirm_frames"),
             _profile_arg("object_search_goal_viz_topic", "object_search_goal_viz_topic"),
+            _profile_arg("object_search_selected_frontier_topic", "object_search_selected_frontier_topic"),
+            _profile_arg("object_search_status_topic", "object_search_status_topic"),
+            _profile_arg("object_search_enable_graph_frontier_selection", "object_search_enable_graph_frontier_selection"),
+            _profile_arg("object_search_frontier_min_dwell_sec", "object_search_frontier_min_dwell_sec"),
+            _profile_arg("object_search_frontier_switch_min_score_margin", "object_search_frontier_switch_min_score_margin"),
+            _profile_arg("object_search_frontier_progress_timeout_sec", "object_search_frontier_progress_timeout_sec"),
+            _profile_arg("object_search_frontier_progress_min_delta", "object_search_frontier_progress_min_delta"),
+            _profile_arg("object_search_frontier_reached_radius", "object_search_frontier_reached_radius"),
+            _profile_arg("object_search_frontier_same_position_radius", "object_search_frontier_same_position_radius"),
+            _profile_arg("object_search_deadend_blacklist_timeout_sec", "object_search_deadend_blacklist_timeout_sec"),
+            _profile_arg("object_search_frontier_score_weight", "object_search_frontier_score_weight"),
+            _profile_arg("object_search_frontier_distance_weight", "object_search_frontier_distance_weight"),
+            _profile_arg("object_search_frontier_switch_penalty", "object_search_frontier_switch_penalty"),
             _profile_arg("planner_odom_topic", "planner_odom_topic"),
             _profile_arg("goal_pose_topic", "goal_pose_topic"),
             _profile_arg("tracking_goal_pose_topic", "tracking_goal_pose_topic"),
@@ -221,6 +244,12 @@ def _launch_setup(context):
                 profile,
                 "object_search_detection_debug_interval",
                 "object_search_detection_debug_interval",
+            ),
+            "object_search_config.target_log_period_sec": _value(
+                context,
+                profile,
+                "object_search_target_log_period_sec",
+                "object_search_target_log_period_sec",
             ),
             "object_search_config.reached_mask_fraction": _value(
                 context,
@@ -327,7 +356,7 @@ def _launch_setup(context):
         output="screen",
         parameters=[
             {"use_sim_time": use_sim_time},
-            {"input_topic": _value(context, profile, "pointcloud_input_topic", "lidar_topic")},
+            {"input_topic": _value(context, profile, "pointcloud_input_topic", "pointcloud_input_topic")},
             {"output_topic": aligned_lidar_topic},
             {"output_frame": pointcloud_output_frame},
             {"axis_mode": pointcloud_axis_mode},
@@ -361,10 +390,29 @@ def _launch_setup(context):
             {"use_sim_time": use_sim_time},
             {"output_goal_topic": goal_pose_topic},
             {"goal_viz_topic": _value(context, profile, "object_search_goal_viz_topic", "object_search_goal_viz_topic")},
+            {
+                "selected_frontier_topic": _value(
+                    context,
+                    profile,
+                    "object_search_selected_frontier_topic",
+                    "object_search_selected_frontier_topic",
+                )
+            },
+            {"status_topic": _value(context, profile, "object_search_status_topic", "object_search_status_topic")},
+            {"nav_graph_topic": scored_nav_graph_topic},
             {"object_target_pose_topic": _value(context, profile, "object_target_pose_topic", "object_target_pose_topic")},
             {"object_reached_topic": _value(context, profile, "object_reached_topic", "object_reached_topic")},
             {"odom_topic": odom_output_topic},
             {"frame_id": global_frame},
+            {"traversability_class": "default"},
+            {
+                "enable_graph_frontier_selection": _bool_value(
+                    context,
+                    profile,
+                    "object_search_enable_graph_frontier_selection",
+                    "object_search_enable_graph_frontier_selection",
+                )
+            },
             {
                 "publish_rate": _float_value(
                     context,
@@ -443,6 +491,110 @@ def _launch_setup(context):
                     profile,
                     "object_search_object_reached_timeout_sec",
                     "object_search_object_reached_timeout_sec",
+                )
+            },
+            {
+                "reached_latch_timeout_sec": _float_value(
+                    context,
+                    profile,
+                    "object_search_reached_latch_timeout_sec",
+                    "object_search_reached_latch_timeout_sec",
+                )
+            },
+            {
+                "object_reached_require_target_distance": _bool_value(
+                    context,
+                    profile,
+                    "object_search_object_reached_require_target_distance",
+                    "object_search_object_reached_require_target_distance",
+                )
+            },
+            {
+                "object_reached_max_target_distance": _float_value(
+                    context,
+                    profile,
+                    "object_search_object_reached_max_target_distance",
+                    "object_search_object_reached_max_target_distance",
+                )
+            },
+            {
+                "frontier_min_dwell_sec": _float_value(
+                    context,
+                    profile,
+                    "object_search_frontier_min_dwell_sec",
+                    "object_search_frontier_min_dwell_sec",
+                )
+            },
+            {
+                "frontier_switch_min_score_margin": _float_value(
+                    context,
+                    profile,
+                    "object_search_frontier_switch_min_score_margin",
+                    "object_search_frontier_switch_min_score_margin",
+                )
+            },
+            {
+                "frontier_progress_timeout_sec": _float_value(
+                    context,
+                    profile,
+                    "object_search_frontier_progress_timeout_sec",
+                    "object_search_frontier_progress_timeout_sec",
+                )
+            },
+            {
+                "frontier_progress_min_delta": _float_value(
+                    context,
+                    profile,
+                    "object_search_frontier_progress_min_delta",
+                    "object_search_frontier_progress_min_delta",
+                )
+            },
+            {
+                "frontier_reached_radius": _float_value(
+                    context,
+                    profile,
+                    "object_search_frontier_reached_radius",
+                    "object_search_frontier_reached_radius",
+                )
+            },
+            {
+                "frontier_same_position_radius": _float_value(
+                    context,
+                    profile,
+                    "object_search_frontier_same_position_radius",
+                    "object_search_frontier_same_position_radius",
+                )
+            },
+            {
+                "deadend_blacklist_timeout_sec": _float_value(
+                    context,
+                    profile,
+                    "object_search_deadend_blacklist_timeout_sec",
+                    "object_search_deadend_blacklist_timeout_sec",
+                )
+            },
+            {
+                "frontier_score_weight": _float_value(
+                    context,
+                    profile,
+                    "object_search_frontier_score_weight",
+                    "object_search_frontier_score_weight",
+                )
+            },
+            {
+                "frontier_distance_weight": _float_value(
+                    context,
+                    profile,
+                    "object_search_frontier_distance_weight",
+                    "object_search_frontier_distance_weight",
+                )
+            },
+            {
+                "frontier_switch_penalty": _float_value(
+                    context,
+                    profile,
+                    "object_search_frontier_switch_penalty",
+                    "object_search_frontier_switch_penalty",
                 )
             },
         ],
@@ -587,7 +739,11 @@ def _camera_static_transforms(convention):
 
 
 def _profile_arg(name, profile_key):
-    return DeclareLaunchArgument(name, default_value="", description=f"Override topic profile key '{profile_key}'")
+    return DeclareLaunchArgument(
+        name,
+        default_value="",
+        description=f"{profile_key_description(profile_key)}, 留空使用 topic profile",
+    )
 
 
 def _config_override_args(overrides):

@@ -1,14 +1,25 @@
 object_search_goal_mux:
   ros__parameters:
-    output_goal_topic: /goal_pose
+    # 输入输出 topic, 平台差异优先由 topic_profiles.yaml 覆盖
+    output_goal_topic: /spot1/graphnav_goal_pose
     goal_viz_topic: /spot1/object_search_goal_viz
+    selected_frontier_topic: /spot1/object_search_selected_frontier
+    status_topic: /spot1/object_search_status
+    nav_graph_topic: /spot1/scored_nav_graph
     object_target_pose_topic: /spot1/object_search_target_pose
     object_reached_topic: /spot1/object_search_reached
     odom_topic: /spot1/odom_for_scoring
     frame_id: map
+    traversability_class: default
+
+    # 初始探索 goal, 仅在 scored graph 暂不可用时使用
     initial_goal_mode: heading
     initial_goal_distance: 30.0
     initial_goal_heading_deg: 0.0
+    initial_goal_latch_timeout_sec: 20.0
+    initial_goal_reached_radius: 3.0
+
+    # 目标 frontier 和目标记忆, 目标短暂丢失时避免立刻回到初始 goal
     publish_rate: 5.0
     target_timeout_sec: 3.0
     latch_target_after_first_detection: false
@@ -17,4 +28,20 @@ object_search_goal_mux:
     memory_goal_distance: 10.0
     target_reached_radius: 1.5
     object_reached_timeout_sec: 2.0
+    reached_latch_timeout_sec: 60.0
+    object_reached_require_target_distance: false
+    object_reached_max_target_distance: 2.0
     require_subscriber: true
+
+    # 稳定 frontier selector, 目标未出现时从 scored graph 选择稳定探索 frontier
+    enable_graph_frontier_selection: true
+    frontier_min_dwell_sec: 8.0
+    frontier_switch_min_score_margin: 0.15
+    frontier_progress_timeout_sec: 12.0
+    frontier_progress_min_delta: 0.25
+    frontier_reached_radius: 1.5
+    frontier_same_position_radius: 1.2
+    deadend_blacklist_timeout_sec: 20.0
+    frontier_score_weight: 1.0
+    frontier_distance_weight: 0.06
+    frontier_switch_penalty: 0.2

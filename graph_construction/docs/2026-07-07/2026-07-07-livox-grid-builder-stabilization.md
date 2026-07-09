@@ -2,7 +2,7 @@
 
 ## 背景
 
-Unity 2D 使用本仓库 `livox_grid_builder` 时, 机器人转动会导致 OccupancyGrid 和路线明显跳变。临时切换同事 `/combined_grid` 后, 地图和路线稳定性明显改善
+Unity 2D 使用本仓库 `livox_grid_builder` 时, 机器人转动会导致 OccupancyGrid 和路线明显跳变.临时切换同事 `/combined_grid` 后, 地图和路线稳定性明显改善
 
 本次将 `/combined_grid` 中可复用的稳定化策略移植到本仓库 `livox_grid_builder`
 
@@ -39,6 +39,9 @@ Unity 2D 使用本仓库 `livox_grid_builder` 时, 机器人转动会导致 Occu
 - `force_odd_grid_size`
 - `robot_clear_radius`
 - `obstacle_detection_mode`
+- `height_diff_mark_rays_free`
+- `height_diff_fill_unobserved_as_free`
+- `height_diff_unknown_border_width`
 - `height_diff_obstacle_threshold`
 - `high_obstacle_min_height`
 
@@ -49,19 +52,24 @@ Unity 2D 使用本仓库 `livox_grid_builder` 时, 机器人转动会导致 Occu
 
 Unity profile 的自研 builder 调试参数:
 
+- `lidar_topic: /mapokk`
+- `grid_frame: odom_3D`
 - `grid_origin_mode: rolling`
 - `grid_resolution: "0.1"`
-- `grid_local_width: "20.0"`
-- `grid_local_height: "20.0"`
-- `grid_min_obstacle_height: "0.0"`
+- `grid_local_width: "14.0"`
+- `grid_local_height: "14.0"`
+- `grid_min_obstacle_height: "-0.2"`
 - `grid_max_obstacle_height: "1.8"`
-- `grid_obstacle_inflation_radius: "0.2"`
+- `grid_obstacle_inflation_radius: "0.25"`
 - `grid_origin_snap_to_resolution: "true"`
 - `grid_force_odd_grid_size: "true"`
 - `grid_robot_clear_radius: "0.2"`
 - `grid_obstacle_detection_mode: height_diff`
-- `grid_height_diff_obstacle_threshold: "0.05"`
-- `grid_high_obstacle_min_height: "0.3"`
+- `grid_height_diff_mark_rays_free: "true"`
+- `grid_height_diff_fill_unobserved_as_free: "true"`
+- `grid_height_diff_unknown_border_width: "1.2"`
+- `grid_height_diff_obstacle_threshold: "0.04"`
+- `grid_high_obstacle_min_height: "0.12"`
 
 当前 Unity 默认已切回本仓库自研 `livox_grid_builder`
 
@@ -82,7 +90,7 @@ Unity profile 的自研 builder 调试参数:
 预期 builder 日志:
 
 ```text
-Livox 栅格构建已启动, ..., origin_mode=rolling, resolution=0.100, size=20.0x20.0, mode=height_diff, snap=True, force_odd=True, robot_clear=0.20, height_range=(0.00,1.80), inflation=0.20
+Livox 栅格构建已启动, lidar=/mapokk, ..., grid_frame=odom_3D, origin_mode=rolling, resolution=0.100, size=14.0x14.0, mode=height_diff, snap=True, force_odd=True, robot_clear=0.20, height_range=(-0.20,1.80), height_rays=True, height_fill_free=True, height_unknown_border=1.20, inflation=0.25
 ```
 
 检查输出:

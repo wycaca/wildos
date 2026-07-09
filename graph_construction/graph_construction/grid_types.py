@@ -159,14 +159,25 @@ class ClassifiedGrid:
         end_xy: Tuple[float, float],
     ) -> bool:
         """检查 world-space 线段是否始终位于已知 free cell"""
-        start = self.world_to_grid(start_xy[0], start_xy[1])
-        end = self.world_to_grid(end_xy[0], end_xy[1])
-        if start is None or end is None:
+        line_cells = list(self.world_line_cells(start_xy, end_xy))
+        if not line_cells:
             return False
-        for ix, iy in bresenham_line(start[0], start[1], end[0], end[1]):
+        for ix, iy in line_cells:
             if self.is_obstacle_index(ix, iy) or self.is_unknown_index(ix, iy):
                 return False
         return True
+
+    def world_line_cells(
+        self,
+        start_xy: Tuple[float, float],
+        end_xy: Tuple[float, float],
+    ) -> Iterable[GridIndex]:
+        """生成 world-space 线段经过的 grid cell, 越界时返回空序列"""
+        start = self.world_to_grid(start_xy[0], start_xy[1])
+        end = self.world_to_grid(end_xy[0], end_xy[1])
+        if start is None or end is None:
+            return ()
+        return bresenham_line(start[0], start[1], end[0], end[1])
 
     def _world_to_map_axes(self, x: float, y: float) -> Tuple[float, float]:
         """把 world XY 转到 GridMap 本地轴坐标"""

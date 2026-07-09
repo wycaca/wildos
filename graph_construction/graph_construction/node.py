@@ -61,6 +61,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "edge_radius": 8.0,
     "max_edge_neighbors": 4,
     "current_node_max_edge_neighbors": 12,
+    "prune_disconnected_nodes": False,
     "frontier_assign_radius": 5.0,
     "frontier_min_points": 4,
     "frontier_min_span": 0.6,

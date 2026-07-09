@@ -6,3 +6,8 @@ test/*
 external_references/*
 !external_references/
 !external_references/COLCON_IGNORE
+
+.codex
+.agents
+.venv
+.pytest_cache

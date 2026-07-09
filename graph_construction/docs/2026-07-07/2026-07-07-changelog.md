@@ -34,7 +34,7 @@
 - `graphnav_planner` 新增 `append_virtual_goal_to_path` 和 `append_frontier_point_to_path`, 默认关闭
 - 2D 和 3D launch 中 planner 默认只输出真实 graph node 路径, 不再把虚拟 goal 或未知 frontier 平均点追加到执行路径
 - `graphnav_planner` 增加零长度 heading 保护, 避免 goal 与节点重合时产生 NaN orientation
-- Unity profile 将 `lidar_assume_input_in_grid_frame` 调整为 `true`, 避免 Unity 世界坐标点云被 `livox_frame -> map` TF 二次旋转
+- Unity profile 曾将 `lidar_assume_input_in_grid_frame` 调整为 `true`, 后续现场确认自研地图仍随狗转向旋转, 当前已改回 `false`
 - Unity profile 新增 `grid_odom_topic=/spot1/odom_for_scoring`, 2D grid builder 不再直接用 `/unity/odom` 的 `odom_3D` frame 作为局部 grid 中心
 - Unity profile 的自研 builder 调试链路改为 `grid_origin_mode=rolling`, 并启用 resolution 对齐, 奇数 grid 和中心清空
 - Unity 2D `odom_pose_source_2d` 改为 `tf`, 让 `/spot1/odom_for_scoring` 优先使用 TF 中的 map 位姿
@@ -69,7 +69,7 @@
 - Unity 当前路径输出为 `/corrected_path`, 如果 `/spot1/object_search_target_pose` 没有更新, 下游路径不会及时切向目标
 - launch 覆盖参数为了兼容 `{}` topic 模板会以 YAML 字符串形式传入, WildOS 使用数值参数前必须显式转换类型
 - `frontier_points` 是未知边界表达, 不是默认可执行路径点, 执行路径应优先停在 graph node 上
-- Unity `/livox/lidar` 当前按点坐标已经在 `map` 中处理, 不能再按狗本体上的 `livox_frame` TF 二次转换
+- Unity `/livox/lidar` 不能默认假设点坐标已经在 `map` 中, 当前自研 builder 使用 `livox_frame -> map` TF 转换点云
 - 2D grid 中心必须和点云使用同一坐标系, Unity 当前应使用 `/spot1/odom_for_scoring` 的 `map` frame odom
 - Unity 2D 自研 builder 当前参考 `/combined_grid` 使用 rolling local map, 但 origin 必须按 resolution 对齐, cell 数应稳定, graph frame 和 odom frame 必须一致
 - 原论文强调 sparse navigation graph 的空间记忆, 当前实现需要避免坐标系二次旋转, 原点亚像素漂移和每帧路线切换破坏探索连续性

@@ -29,9 +29,10 @@ class GraphBuilderConfig:
     min_node_separation: float = 1.0
     max_free_radius: float = 4.0
     min_obstacle_clearance: float = 0.5
-    edge_radius: float = 8.0
-    max_edge_neighbors: int = 4
-    current_node_max_edge_neighbors: int = 12
+    edge_radius: float = 3.0
+    max_edge_neighbors: int = 6
+    current_node_max_edge_neighbors: int = 10
+    prune_disconnected_nodes: bool = False
     frontier_assign_radius: float = 5.0
     frontier_min_points: int = 4
     frontier_min_span: float = 0.6
@@ -199,7 +200,17 @@ class SparseGraphBuilder:
 
         # current node 确定后重建边, 便于优先保留机器人附近连接
         stage_start = perf_counter()
-        self.graph.set_edges(self.edge_builder.build_edges(self.graph, grid))
+        self.graph.set_edges(
+            self.edge_builder.build_edges(
+                self.graph,
+                grid,
+                sdf_obstacle,
+                sdf_unknown,
+                self.config.min_obstacle_clearance,
+            )
+        )
+        if self.config.prune_disconnected_nodes:
+            self._prune_disconnected_nodes()
         stage_timings_ms["build_edges"] = _elapsed_ms(stage_start)
         stage_timings_ms["total"] = _elapsed_ms(total_start)
         diagnostics = _build_graph_update_diagnostics(
@@ -343,6 +354,32 @@ class SparseGraphBuilder:
             ):
                 return node
         return None
+
+    def _prune_disconnected_nodes(self) -> None:
+        """只保留 current node 所在连通分量, 避免断开的旧点参与目标评分"""
+        current_id = self.graph.current_node_id
+        if current_id is None or current_id not in self.graph.nodes:
+            return
+
+        adjacency = {node_id: set() for node_id in self.graph.nodes}
+        for edge in self.graph.edges.values():
+            if edge.from_id not in adjacency or edge.to_id not in adjacency:
+                continue
+            adjacency[edge.from_id].add(edge.to_id)
+            adjacency[edge.to_id].add(edge.from_id)
+
+        reachable = set()
+        stack = [current_id]
+        while stack:
+            node_id = stack.pop()
+            if node_id in reachable:
+                continue
+            reachable.add(node_id)
+            stack.extend(adjacency.get(node_id, set()) - reachable)
+
+        for node_id in list(self.graph.nodes.keys()):
+            if node_id not in reachable:
+                self.graph.remove_node(node_id)
 
 
 GraphBuilder = SparseGraphBuilder

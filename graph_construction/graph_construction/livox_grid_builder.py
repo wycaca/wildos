@@ -49,6 +49,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "force_odd_grid_size": False,
     "robot_clear_radius": 0.0,
     "obstacle_detection_mode": "ray_height",
+    "height_diff_mark_rays_free": False,
+    "height_diff_fill_unobserved_as_free": False,
+    "height_diff_unknown_border_width": 0.0,
     "height_diff_obstacle_threshold": 0.05,
     "high_obstacle_min_height": 0.3,
     "fixed_origin_x": None,
@@ -85,6 +88,9 @@ class LivoxGridBuilderConfig:
     force_odd_grid_size: bool = False
     robot_clear_radius: float = 0.0
     obstacle_detection_mode: str = "ray_height"
+    height_diff_mark_rays_free: bool = False
+    height_diff_fill_unobserved_as_free: bool = False
+    height_diff_unknown_border_width: float = 0.0
     height_diff_obstacle_threshold: float = 0.05
     high_obstacle_min_height: float = 0.3
     fixed_origin_x: Optional[float] = None
@@ -123,6 +129,7 @@ class LivoxGridBuilder(Node):
         self._logged_fixed_origin = False
         self._logged_robot_outside_fixed_grid = False
         self._logged_cached_tf_fallback = False
+        self._logged_robot_tf_fallback = False
         self._last_cloud_transform: Optional[TransformStamped] = None
         self._cloud_observations: Deque[CloudObservation] = deque()
         self._last_processed_cloud_key: Optional[Tuple[int, int, str, int]] = None
@@ -145,6 +152,9 @@ class LivoxGridBuilder(Node):
             f"mode={self.config.obstacle_detection_mode}, snap={self.config.origin_snap_to_resolution}, "
             f"force_odd={self.config.force_odd_grid_size}, robot_clear={self.config.robot_clear_radius:.2f}, "
             f"height_range=({self.config.min_obstacle_height:.2f},{self.config.max_obstacle_height:.2f}), "
+            f"height_rays={self.config.height_diff_mark_rays_free}, "
+            f"height_fill_free={self.config.height_diff_fill_unobserved_as_free}, "
+            f"height_unknown_border={self.config.height_diff_unknown_border_width:.2f}, "
             f"inflation={self.config.obstacle_inflation_radius:.2f}, "
             f"assume_input_in_grid_frame={self.config.assume_input_in_grid_frame}"
         )
@@ -197,7 +207,7 @@ class LivoxGridBuilder(Node):
         if transform is None and not self.config.assume_input_in_grid_frame:
             return
 
-        robot = _odom_position(self.latest_odom)
+        robot = self._get_robot_position_in_grid_frame(self.latest_odom)
         sensor_origin = self._sensor_origin(robot, transform)
         points: List[Point3D] = []
         for raw_point in _iter_cloud_xyz(self.latest_cloud):
@@ -279,6 +289,31 @@ class LivoxGridBuilder(Node):
                 self._logged_missing_tf = True
             return None
 
+    def _get_robot_position_in_grid_frame(self, odom: Odometry) -> Point3D:
+        """利用 TF 获取 grid_frame 下的机器人实时位置, 避免坐标系错位"""
+        if not odom.child_frame_id:
+            return _odom_position(odom)
+        try:
+            # 优先使用 odom child frame 在 grid frame 下的位置
+            transform = self.tf_buffer.lookup_transform(
+                self.config.grid_frame,
+                odom.child_frame_id,
+                Time(),
+                timeout=Duration(seconds=float(self.config.tf_timeout_sec)),
+            )
+            translation = transform.transform.translation
+            return (float(translation.x), float(translation.y), float(translation.z))
+        except Exception as exc:
+            # TF 偶尔失败时降级使用原始 odom 位置
+            if not self._logged_robot_tf_fallback:
+                self.get_logger().warn(
+                    f"无法获取 {odom.child_frame_id} 到 {self.config.grid_frame} 的 TF, "
+                    f"降级使用原始 Odom 位置. error={exc}"
+                )
+                self._logged_robot_tf_fallback = True
+            position = odom.pose.pose.position
+            return (float(position.x), float(position.y), float(position.z))
+
     @staticmethod
     def _is_past_extrapolation(error: Exception) -> bool:
         msg = str(error)
@@ -295,7 +330,7 @@ class LivoxGridBuilder(Node):
         """
         width = self._grid_cell_count(self.config.local_width)
         height = self._grid_cell_count(self.config.local_height)
-        robot = _odom_position(odom)
+        robot = self._get_robot_position_in_grid_frame(self.latest_odom)
         origin_x, origin_y = self._grid_origin(robot, width, height)
         if self.config.obstacle_detection_mode == "height_diff":
             grid = self._build_height_diff_grid(origin_x, origin_y, width, height, robot)
@@ -347,11 +382,23 @@ class LivoxGridBuilder(Node):
         robot: Point3D,
     ) -> np.ndarray:
         """用 cell 内高度差生成稳定局部 costmap"""
-        grid = np.full((height, width), int(self.config.unknown_value), dtype=np.int16)
+        initial_value = (
+            int(self.config.free_value)
+            if self.config.height_diff_fill_unobserved_as_free
+            else int(self.config.unknown_value)
+        )
+        grid = np.full((height, width), initial_value, dtype=np.int16)
         max_z = np.full((height, width), -np.inf, dtype=np.float32)
         min_z = np.full((height, width), np.inf, dtype=np.float32)
 
         for observation in self._cloud_observations:
+            origin_index = _world_to_grid(
+                observation.sensor_origin[0],
+                observation.sensor_origin[1],
+                origin_x,
+                origin_y,
+                self.config.resolution,
+            )
             min_z_dynamic = observation.robot_position[2] + self.config.min_obstacle_height
             max_z_dynamic = observation.robot_position[2] + self.config.max_obstacle_height
             for point in observation.points:
@@ -360,18 +407,40 @@ class LivoxGridBuilder(Node):
                 ix, iy = _world_to_grid(point[0], point[1], origin_x, origin_y, self.config.resolution)
                 if not (0 <= ix < width and 0 <= iy < height):
                     continue
+                if self.config.height_diff_mark_rays_free:
+                    self._mark_ray_free(grid, origin_index, (ix, iy))
                 max_z[iy, ix] = max(max_z[iy, ix], point[2])
                 min_z[iy, ix] = min(min_z[iy, ix], point[2])
 
         observed = np.isfinite(max_z)
-        grid[observed] = int(self.config.free_value)
+        if not self.config.height_diff_fill_unobserved_as_free:
+            grid[observed] = int(self.config.free_value)
         height_span = max_z - min_z
         wall_mask = observed & (height_span > self.config.height_diff_obstacle_threshold)
         high_mask = observed & (max_z > robot[2] + self.config.high_obstacle_min_height)
         obstacle_indices = np.argwhere(wall_mask | high_mask)
         for iy, ix in obstacle_indices:
             self._mark_obstacle(grid, (int(ix), int(iy)))
+        self._mark_unknown_border(grid)
         return grid
+
+    def _mark_unknown_border(self, grid: np.ndarray) -> None:
+        """在 fill-free 模式下保留内部 unknown 边界, 给 WildOS 提供 frontier"""
+        border_width = float(self.config.height_diff_unknown_border_width)
+        if not self.config.height_diff_fill_unobserved_as_free or border_width <= 0.0:
+            return
+        border_cells = int(ceil(border_width / self.config.resolution))
+        if border_cells <= 0:
+            return
+        max_safe_border = max(0, min(grid.shape) // 2 - 1)
+        border_cells = min(border_cells, max_safe_border)
+        if border_cells <= 0:
+            return
+        unknown_value = int(self.config.unknown_value)
+        grid[:border_cells, :] = unknown_value
+        grid[-border_cells:, :] = unknown_value
+        grid[:, :border_cells] = unknown_value
+        grid[:, -border_cells:] = unknown_value
 
     def _grid_origin(self, robot: Point3D, width: int, height: int) -> Tuple[float, float]:
         """按配置选择 rolling 或 fixed grid 原点"""
@@ -410,6 +479,10 @@ class LivoxGridBuilder(Node):
         origin_x = robot[0] - map_width * 0.5
         origin_y = robot[1] - map_height * 0.5
         if self.config.origin_snap_to_resolution:
+            center_x = (width // 2) * self.config.resolution
+            center_y = (height // 2) * self.config.resolution
+            origin_x = robot[0] - center_x
+            origin_y = robot[1] - center_y
             origin_x = floor(origin_x / self.config.resolution) * self.config.resolution
             origin_y = floor(origin_y / self.config.resolution) * self.config.resolution
         return origin_x, origin_y

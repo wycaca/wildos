@@ -263,6 +263,8 @@ public:
   double frontier_dist_cost_factor_ = 2.0;
   double goal_dist_cost_factor_ = 1.0;
   double frontier_score_factor_ = 10.0;
+  bool append_virtual_goal_to_path_ = false;
+  bool append_frontier_point_to_path_ = false;
   double min_local_frontier_score_ = 0.4;
   double local_frontier_radius_ = 7.0;
   double path_smoothness_period_ = 10.0; // seconds
