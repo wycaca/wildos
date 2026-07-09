@@ -27,6 +27,10 @@ max_edge_neighbors: 6
 current_node_max_edge_neighbors: 10
 # true 时参考社区实现, 只用当前可见障碍证伪历史边
 validate_historical_edges: true
+# 脚下点云缺失时创建机器人锚点, 只连接当前可见段无障碍的近邻
+ensure_robot_anchor_node: true
+robot_anchor_edge_radius: 0.0
+robot_anchor_max_edges: 6
 prune_disconnected_nodes: false
 
 # frontier 生成和记忆参数, 影响视觉评分候选数量和稳定性

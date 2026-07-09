@@ -123,6 +123,49 @@ class EdgeBuilder:
 
         return list(selected_edges.values())
 
+    def build_robot_anchor_edges(
+        self,
+        graph: GraphState,
+        anchor_id: int,
+        grid: ClassifiedGrid,
+        sdf_obstacle: np.ndarray | None = None,
+        min_clearance: float = 0.0,
+        edge_radius: float | None = None,
+        max_edges: int | None = None,
+    ) -> List[InternalEdge]:
+        """为机器人锚点连接当前可见段未碰障碍的近邻节点"""
+        anchor = graph.nodes.get(anchor_id)
+        if anchor is None:
+            return []
+
+        radius = self.edge_radius if edge_radius is None or edge_radius <= 0.0 else float(edge_radius)
+        limit = max(1, int(max_edges if max_edges is not None else self.current_node_max_neighbors))
+        candidates: List[Tuple[float, InternalEdge]] = []
+        for node in graph.nodes.values():
+            if node.node_id == anchor_id or node.is_robot_anchor:
+                continue
+            dx = anchor.position[0] - node.position[0]
+            dy = anchor.position[1] - node.position[1]
+            distance = hypot(dx, dy)
+            if distance > radius:
+                continue
+            if not _historical_edge_has_no_local_contradiction(
+                grid,
+                (anchor.position[0], anchor.position[1]),
+                (node.position[0], node.position[1]),
+                sdf_obstacle,
+                min_clearance,
+            ):
+                continue
+            candidates.append(
+                (
+                    distance,
+                    InternalEdge(from_id=anchor_id, to_id=node.node_id, cost=distance),
+                )
+            )
+
+        return [edge for _, edge in sorted(candidates, key=lambda item: item[0])[:limit]]
+
     def _neighbor_limit(self, graph: GraphState, node_id: int) -> int:
         """当前节点允许更多近邻边, 其他节点保持稀疏"""
         if graph.current_node_id == node_id:

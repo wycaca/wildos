@@ -206,6 +206,47 @@ def test_historical_edge_is_removed_when_visible_segment_hits_obstacle():
     assert merged_edges == []
 
 
+def test_graph_builder_adds_robot_anchor_when_robot_cell_is_unknown():
+    """验证脚下点云缺失时用机器人锚点接回近邻 graph"""
+    free = np.ones((5, 5), dtype=bool)
+    obstacle = np.zeros((5, 5), dtype=bool)
+    unknown = np.zeros((5, 5), dtype=bool)
+    free[2, 2] = False
+    unknown[2, 2] = True
+    grid = ClassifiedGrid(
+        width=5,
+        height=5,
+        resolution=1.0,
+        origin_x=0.0,
+        origin_y=0.0,
+        frame_id="map",
+        free=free,
+        obstacle=obstacle,
+        unknown=unknown,
+    )
+    builder = SparseGraphBuilder(
+        GraphBuilderConfig(
+            sample_stride=2,
+            min_node_separation=0.1,
+            min_obstacle_clearance=0.0,
+            edge_radius=3.0,
+            ensure_robot_anchor_node=True,
+            robot_anchor_edge_radius=3.0,
+            robot_anchor_max_edges=4,
+        )
+    )
+
+    result = builder.update(grid, robot_position=(2.5, 2.5, 0.0), stamp_seconds=1.0)
+    current_id = result.graph.current_node_id
+    assert current_id is not None
+    assert result.graph.nodes[current_id].is_robot_anchor
+    assert result.diagnostics.current_node_status == "robot_anchor"
+    assert any(
+        edge.from_id == current_id or edge.to_id == current_id
+        for edge in result.graph.edges.values()
+    )
+
+
 def test_graph_builder_prunes_nodes_disconnected_from_current_component():
     """验证断开 component 不会发布给 planner 和目标评分"""
     free = np.zeros((5, 12), dtype=bool)

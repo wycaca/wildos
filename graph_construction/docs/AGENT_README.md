@@ -223,6 +223,7 @@ graph_construction/configs/topic_profiles.yaml
 - elevation GridMap 小洞会在 graph adapter 中补 free 分类和 elevation 数值, 不直接改 `/elevation_mapping_node/elevation_map_raw`
 - graph construction 默认不剪枝 disconnected components, 避免 current node 短时误判时清空大部分图
 - graph construction 默认开启 `validate_historical_edges`, 节点和历史边跨帧保留, 只用当前可见障碍证伪历史边
+- graph construction 默认开启 `ensure_robot_anchor_node`, 脚下点云缺失时用机器人锚点接回近邻 graph
 - graphnav planner 默认 launch 权重: `goal_dist_cost_factor=1.0`, `frontier_score_factor=20.0`, 目标到达和目标连边按 3D 距离判断
 - object search 默认目标 mask 阈值: Isaac/robot 为 `0.09`, Unity 当前为 `0.10`
 - WildOS visual frontier 默认: Isaac/robot 为 `frontiers_range=9.0`, `frontier_threshold=0.60`, Unity 当前为 `frontiers_range=11.0`, `frontier_threshold=0.55`
@@ -440,6 +441,7 @@ export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 - 目标搜索路径慢时先看 WildOS 未检测日志中的每路相机最高相似度, 再看 `/spot1/object_search_target_pose`, profile 配置的 `goal_pose_topic`, `/corrected_path` 或 profile 配置的 `path_topic`
 - 路径贴墙或穿障碍时, 优先检查 `append_virtual_goal_to_path=false`, graph edge corridor clearance, `min_obstacle_clearance` 和 `grid_obstacle_inflation_radius`
 - elevation 地面小洞导致 graph node 掉到地图下方时, 优先检查 `grid_map_fill_hole_max_cells`, `grid_map_fill_elevation_holes` 和 `grid_map_fill_elevation_radius_cells`
+- 目标已找到但脚下点云缺失导致无路径时, 优先检查 `current_node_status=robot_anchor`, `ensure_robot_anchor_node`, `robot_anchor_edge_radius` 和 anchor 是否连上近邻节点
 - 点云和 2D grid 错位或随狗转向旋转时, 优先检查 `livox_grid_builder` 日志中的 `lidar`, `grid_frame`, `assume_input_in_grid_frame` 和 odom frame, Unity 自研 builder 当前应为 `lidar=/mapokk`, `grid_frame=odom_3D`, `assume_input_in_grid_frame=True`, odom 输入为 `/unity/odom`
 - Unity 2D 默认使用本仓库 `livox_grid_builder`, 应看到本仓库 `livox_grid_builder` 进程启动
 - Unity 2D 临时回切 `/combined_grid` 对照测试时, 启动命令需要显式加 `launch_livox_grid_builder:=false traversability_grid_topic:=/combined_grid`

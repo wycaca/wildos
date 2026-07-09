@@ -34,6 +34,9 @@ class GraphBuilderConfig:
     current_node_max_edge_neighbors: int = 10
     # 参考社区实现, 只用当前可见障碍证伪历史边
     validate_historical_edges: bool = True
+    ensure_robot_anchor_node: bool = True
+    robot_anchor_edge_radius: float = 0.0
+    robot_anchor_max_edges: int = 6
     prune_disconnected_nodes: bool = False
     frontier_assign_radius: float = 5.0
     frontier_min_points: int = 4
@@ -102,6 +105,7 @@ class SparseGraphBuilder:
             observation_count=config.deadend_observation_count,
             suppression_radius=config.removed_frontier_suppression_radius,
         )
+        self.robot_anchor_node_id: int | None = None
 
     def update(
         self,
@@ -197,6 +201,7 @@ class SparseGraphBuilder:
             robot_position,
             robot_ground_position,
             robot_ground_projected,
+            stamp_seconds,
         )
         stage_timings_ms["current_node"] = _elapsed_ms(stage_start)
 
@@ -216,6 +221,21 @@ class SparseGraphBuilder:
                 grid,
                 sdf_obstacle,
                 self.config.min_obstacle_clearance,
+            )
+        if (
+            self.robot_anchor_node_id is not None
+            and self.graph.current_node_id == self.robot_anchor_node_id
+        ):
+            next_edges.extend(
+                self.edge_builder.build_robot_anchor_edges(
+                    self.graph,
+                    self.robot_anchor_node_id,
+                    grid,
+                    sdf_obstacle,
+                    self.config.min_obstacle_clearance,
+                    self.config.robot_anchor_edge_radius or self.config.edge_radius,
+                    self.config.robot_anchor_max_edges,
+                )
             )
         self.graph.set_edges(next_edges)
         if self.config.prune_disconnected_nodes:
@@ -247,6 +267,8 @@ class SparseGraphBuilder:
     ) -> None:
         """根据最新局部地图刷新已有节点的半径和有效性"""
         for node_id, node in list(self.graph.nodes.items()):
+            if node.is_robot_anchor:
+                continue
             grid_index = grid.world_to_grid(node.position[0], node.position[1])
             if grid_index is None:
                 continue
@@ -317,10 +339,19 @@ class SparseGraphBuilder:
         robot_position: Tuple[float, float, float],
         robot_ground_position: Tuple[float, float, float],
         robot_ground_projected: bool,
+        stamp_seconds: float,
     ) -> str:
         """把机器人当前位置映射到 NavigationGraph.current_node_idx"""
         best_node = self._nearest_collision_free_node(grid, robot_ground_position)
         current_node_status = "reachable" if best_node is not None else "missing"
+        if best_node is None:
+            best_node = self._ensure_robot_anchor_node(
+                grid,
+                robot_ground_position,
+                stamp_seconds,
+            )
+            if best_node is not None:
+                current_node_status = "robot_anchor"
         if best_node is None:
             best_node = self.graph.nearest_node(robot_ground_position)
             if best_node is not None:
@@ -333,6 +364,44 @@ class SparseGraphBuilder:
         if robot_ground_projected:
             self.graph.append_trajectory_point(robot_ground_position, self.config.trajectory_min_separation)
         return current_node_status
+
+    def _ensure_robot_anchor_node(
+        self,
+        grid: ClassifiedGrid,
+        position: Tuple[float, float, float],
+        stamp_seconds: float,
+    ):
+        """脚下局部 unknown 时创建机器人锚点, 让起点接回安全近邻图"""
+        if not self.config.ensure_robot_anchor_node:
+            return None
+
+        grid_index = grid.world_to_grid(position[0], position[1])
+        if grid_index is None:
+            return None
+        ix, iy = grid_index
+        if grid.is_obstacle_index(ix, iy):
+            return None
+
+        anchor = None
+        if self.robot_anchor_node_id is not None:
+            anchor = self.graph.nodes.get(self.robot_anchor_node_id)
+        if anchor is None:
+            anchor = self.graph.create_node(
+                position=position,
+                stamp_seconds=stamp_seconds,
+                is_robot_anchor=True,
+            )
+            self.robot_anchor_node_id = anchor.node_id
+        else:
+            anchor.position = position
+            anchor.last_seen_time = stamp_seconds
+            anchor.is_robot_anchor = True
+
+        anchor.free_radius = max(anchor.free_radius, self.config.min_obstacle_clearance)
+        anchor.explored_radius = max(anchor.explored_radius, grid.resolution)
+        anchor.frontier_points.clear()
+        anchor.is_frontier = False
+        return anchor
 
     def _node_height_is_near_robot(
         self,

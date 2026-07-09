@@ -30,6 +30,7 @@ class InternalNode:
     is_frontier: bool = False
     last_seen_time: float = 0.0
     failed_frontier_count: int = 0
+    is_robot_anchor: bool = False
 
     def distance_xy(self, position: Point3) -> float:
         """计算 XY 平面距离, 忽略高度差以匹配当前地面机器人规划假设"""
@@ -68,7 +69,12 @@ class GraphState:
     trajectory_points: List[Point3] = field(default_factory=list)
     next_node_id: int = 0
 
-    def create_node(self, position: Point3, stamp_seconds: float) -> InternalNode:
+    def create_node(
+        self,
+        position: Point3,
+        stamp_seconds: float,
+        is_robot_anchor: bool = False,
+    ) -> InternalNode:
         """创建节点, 使用 node id 生成稳定 UUID
 
         UUID 必须稳定, 因为 WildOS 视觉评分会按 frontier UUID 缓存 score
@@ -82,6 +88,7 @@ class GraphState:
             uuid_bytes=node_uuid.bytes,
             position=position,
             last_seen_time=stamp_seconds,
+            is_robot_anchor=is_robot_anchor,
         )
         self.nodes[node_id] = node
         return node

@@ -73,7 +73,11 @@ class FrontierDetector:
             node.is_frontier = False
 
         candidate_cells = self._select_frontier_candidates(grid, frontier_cells)
-        node_index = _NodeSpatialIndex(graph.nodes.values(), self.frontier_assign_radius)
+        assignable_nodes = [
+            node for node in graph.nodes.values()
+            if not node.is_robot_anchor
+        ]
+        node_index = _NodeSpatialIndex(assignable_nodes, self.frontier_assign_radius)
         assigned_point_count = 0
 
         for ix, iy in candidate_cells:
@@ -100,6 +104,10 @@ class FrontierDetector:
 
         # frontier_min_points 和 frontier_min_span 共同过滤孤立噪声边界
         for node in graph.nodes.values():
+            if node.is_robot_anchor:
+                node.is_frontier = False
+                node.frontier_points.clear()
+                continue
             node.is_frontier = (
                 len(node.frontier_points) >= self.frontier_min_points
                 and self._frontier_span(node.frontier_points) >= self.frontier_min_span
