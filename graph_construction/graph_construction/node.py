@@ -48,6 +48,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "grid_map_min_free_component_cells": 25,
     "grid_map_fill_hole_max_cells": 90,
     "grid_map_fill_hole_min_free_neighbor_ratio": 0.65,
+    "grid_map_fill_elevation_holes": True,
+    "grid_map_fill_elevation_radius_cells": 5,
     "grid_map_majority_fill_iterations": 1,
     "grid_map_majority_fill_min_neighbors": 6,
     "grid_map_max_node_odom_z_delta": 1.5,
@@ -61,6 +63,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "edge_radius": 8.0,
     "max_edge_neighbors": 4,
     "current_node_max_edge_neighbors": 12,
+    "validate_historical_edges": True,
     "prune_disconnected_nodes": False,
     "frontier_assign_radius": 5.0,
     "frontier_min_points": 4,
@@ -251,6 +254,8 @@ class GraphConstructionNode(Node):
                 transpose=self.config["grid_map_transpose"],
                 flip_x=self.config["grid_map_flip_x"],
                 flip_y=self.config["grid_map_flip_y"],
+                fill_elevation_holes=self.config["grid_map_fill_elevation_holes"],
+                fill_elevation_radius_cells=self.config["grid_map_fill_elevation_radius_cells"],
             )
 
         return classify_occupancy_grid(

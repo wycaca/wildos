@@ -60,6 +60,8 @@ def classify_grid_map(
     transpose: bool,
     flip_x: bool,
     flip_y: bool,
+    fill_elevation_holes: bool = True,
+    fill_elevation_radius_cells: int = 5,
 ) -> ClassifiedGrid:
     """把 elevation GridMap layer 转成 graph 分类格式"""
     layers = {name: data for name, data in zip(msg.layers, msg.data)}
@@ -103,6 +105,13 @@ def classify_grid_map(
         majority_fill_iterations=majority_fill_iterations,
         majority_fill_min_neighbors=majority_fill_min_neighbors,
     )
+    elevation_filled_count = 0
+    if elevation is not None and fill_elevation_holes:
+        elevation, elevation_filled_count = fill_elevation_for_free_cells(
+            elevation,
+            free,
+            max_radius_cells=fill_elevation_radius_cells,
+        )
     rows, cols = trav.shape
     grid_map_yaw = yaw_from_quaternion(msg.info.pose.orientation)
     length_x = float(rows) * float(msg.info.resolution)
@@ -128,6 +137,7 @@ def classify_grid_map(
             "free": int(np.count_nonzero(free)),
             "obstacle": int(np.count_nonzero(obstacle)),
             "unknown": int(np.count_nonzero(unknown)),
+            "elevation_filled": elevation_filled_count,
         },
         grid_map_center_x=float(msg.info.pose.position.x),
         grid_map_center_y=float(msg.info.pose.position.y),
@@ -227,6 +237,37 @@ def orient_grid_map_array(
     if flip_y:
         oriented = np.flip(oriented, axis=0)
     return oriented
+
+
+def fill_elevation_for_free_cells(
+    elevation: np.ndarray,
+    free: np.ndarray,
+    max_radius_cells: int,
+) -> Tuple[np.ndarray, int]:
+    """为已判定 free 的小洞补邻近 elevation"""
+    radius = max(0, int(max_radius_cells))
+    if radius <= 0:
+        return elevation, 0
+
+    processed = elevation.copy()
+    finite_source = np.isfinite(elevation)
+    holes = free & ~finite_source
+    filled_count = 0
+    height, width = processed.shape
+
+    for iy, ix in np.argwhere(holes):
+        y0 = max(0, int(iy) - radius)
+        y1 = min(height, int(iy) + radius + 1)
+        x0 = max(0, int(ix) - radius)
+        x1 = min(width, int(ix) + radius + 1)
+        local_values = elevation[y0:y1, x0:x1]
+        local_finite = finite_source[y0:y1, x0:x1]
+        if not np.any(local_finite):
+            continue
+        processed[iy, ix] = float(np.median(local_values[local_finite]))
+        filled_count += 1
+
+    return processed, filled_count
 
 
 def _majority_fill_free(

@@ -62,6 +62,9 @@ class ObjectSearchGoalMux(Node):
         self.declare_parameter("frontier_score_weight", 1.0)
         self.declare_parameter("frontier_distance_weight", 0.06)
         self.declare_parameter("frontier_switch_penalty", 0.2)
+        self.declare_parameter("frontier_forward_weight", 0.8)
+        self.declare_parameter("frontier_min_forward_dot", 0.0)
+        self.declare_parameter("frontier_forward_fallback_to_any", True)
 
         self.output_goal_topic = self._param_str("output_goal_topic")
         self.goal_viz_topic = self._param_str("goal_viz_topic")
@@ -129,6 +132,14 @@ class ObjectSearchGoalMux(Node):
         self.frontier_score_weight = self._param_float("frontier_score_weight")
         self.frontier_distance_weight = max(self._param_float("frontier_distance_weight"), 0.0)
         self.frontier_switch_penalty = max(self._param_float("frontier_switch_penalty"), 0.0)
+        self.frontier_forward_weight = self._param_float("frontier_forward_weight")
+        self.frontier_min_forward_dot = max(
+            min(self._param_float("frontier_min_forward_dot"), 1.0),
+            -1.0,
+        )
+        self.frontier_forward_fallback_to_any = self._param_bool(
+            "frontier_forward_fallback_to_any"
+        )
 
         if self.output_goal_topic == self.object_target_pose_topic:
             raise ValueError(
@@ -176,6 +187,9 @@ class ObjectSearchGoalMux(Node):
                 score_weight=self.frontier_score_weight,
                 distance_weight=self.frontier_distance_weight,
                 switch_penalty=self.frontier_switch_penalty,
+                forward_weight=self.frontier_forward_weight,
+                min_forward_dot=self.frontier_min_forward_dot,
+                forward_fallback_to_any=self.frontier_forward_fallback_to_any,
             ),
             logger=self.get_logger(),
         )
@@ -450,10 +464,18 @@ class ObjectSearchGoalMux(Node):
             now_sec=_time_seconds(now),
             stamp=now.to_msg(),
             target_pose=target_pose,
+            heading_yaw=self._frontier_search_heading_yaw(target_pose),
         )
         if selected is None:
             return None
         return self._retime_pose(selected.pose, now)
+
+    def _frontier_search_heading_yaw(self, target_pose: PoseStamped | None) -> float | None:
+        """目标未知时用 odom 朝向约束几何搜索方向"""
+        if target_pose is not None or self.latest_odom is None:
+            return None
+        yaw = _yaw_from_quaternion(self.latest_odom.pose.pose.orientation)
+        return yaw + math.radians(self.initial_goal_heading_deg)
 
     def _clear_selected_frontier(self) -> None:
         self.frontier_selector.clear()

@@ -104,6 +104,40 @@ def test_grid_map_coordinate_round_trip_with_yaw():
     _assert_round_trip(grid)
 
 
+def test_grid_map_postprocess_fills_elevation_for_small_free_hole():
+    trav = np.ones((5, 5), dtype=np.float32)
+    elevation = np.ones((5, 5), dtype=np.float32) * 1.2
+    elevation[2, 2] = np.nan
+    msg = _grid_map_message(trav, elevation=elevation)
+
+    grid = classify_grid_map(
+        msg,
+        traversability_layer="traversability",
+        elevation_layer="elevation",
+        free_threshold=0.5,
+        obstacle_threshold=0.1,
+        normalize_traversability=False,
+        normalize_low_quantile=0.05,
+        normalize_high_quantile=0.95,
+        z_offset=0.08,
+        enable_postprocess=True,
+        min_free_component_cells=1,
+        fill_hole_max_cells=4,
+        fill_hole_min_free_neighbor_ratio=0.5,
+        majority_fill_iterations=0,
+        majority_fill_min_neighbors=1,
+        transpose=False,
+        flip_x=False,
+        flip_y=False,
+        fill_elevation_holes=True,
+        fill_elevation_radius_cells=1,
+    )
+
+    assert grid.free[2, 2]
+    assert np.isclose(grid.elevation[2, 2], 1.2)
+    assert grid.stats["elevation_filled"] == 1
+
+
 def _assert_round_trip(grid):
     for iy in range(grid.height):
         for ix in range(grid.width):
@@ -114,6 +148,7 @@ def _assert_round_trip(grid):
 def _grid_map_message(
     layer: np.ndarray,
     *,
+    elevation: np.ndarray | None = None,
     center_x: float = 0.0,
     center_y: float = 0.0,
     resolution: float = 1.0,
@@ -122,12 +157,13 @@ def _grid_map_message(
     inner_start_index: int = 0,
     data_offset: int = 0,
 ):
+    elevation_layer = layer * 0.0 if elevation is None else elevation
     return SimpleNamespace(
         header=SimpleNamespace(frame_id="odom"),
         layers=["traversability", "elevation"],
         data=[
             _multi_array(layer, data_offset=data_offset),
-            _multi_array(layer * 0.0, data_offset=data_offset),
+            _multi_array(elevation_layer, data_offset=data_offset),
         ],
         outer_start_index=outer_start_index,
         inner_start_index=inner_start_index,

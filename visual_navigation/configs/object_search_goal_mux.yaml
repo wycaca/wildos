@@ -45,3 +45,6 @@ object_search_goal_mux:
     frontier_score_weight: 1.0
     frontier_distance_weight: 0.06
     frontier_switch_penalty: 0.2
+    frontier_forward_weight: 0.8
+    frontier_min_forward_dot: 0.0
+    frontier_forward_fallback_to_any: true

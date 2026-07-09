@@ -179,6 +179,39 @@ class ClassifiedGrid:
             return ()
         return bresenham_line(start[0], start[1], end[0], end[1])
 
+    def world_line_cells_clipped(
+        self,
+        start_xy: Tuple[float, float],
+        end_xy: Tuple[float, float],
+    ) -> Iterable[GridIndex]:
+        """生成线段在当前 grid 可见范围内经过的 cell"""
+        start = self._world_to_grid_float(start_xy[0], start_xy[1])
+        end = self._world_to_grid_float(end_xy[0], end_xy[1])
+        clipped = _clip_float_segment_to_bounds(start, end, self.width, self.height)
+        if clipped is None:
+            return ()
+
+        (x0, y0), (x1, y1) = clipped
+        ix0 = _clamp_cell_index(x0, self.width)
+        iy0 = _clamp_cell_index(y0, self.height)
+        ix1 = _clamp_cell_index(x1, self.width)
+        iy1 = _clamp_cell_index(y1, self.height)
+        return bresenham_line(ix0, iy0, ix1, iy1)
+
+    def _world_to_grid_float(self, x: float, y: float) -> Tuple[float, float]:
+        """把 world XY 转成连续 grid 坐标, 允许越界"""
+        if self.grid_map_convention:
+            local_x, local_y = self._world_to_map_axes(x, y)
+            length_x = self.grid_map_length_x or self.height * self.resolution
+            length_y = self.grid_map_length_y or self.width * self.resolution
+            fy = (length_x * 0.5 - local_x) / self.resolution
+            fx = (length_y * 0.5 - local_y) / self.resolution
+            return fx, fy
+        return (
+            (x - self.origin_x) / self.resolution,
+            (y - self.origin_y) / self.resolution,
+        )
+
     def _world_to_map_axes(self, x: float, y: float) -> Tuple[float, float]:
         """把 world XY 转到 GridMap 本地轴坐标"""
         center_x = self.grid_map_center_x if self.grid_map_center_x is not None else self.origin_x
@@ -245,6 +278,56 @@ def distance_to_mask(mask: np.ndarray, resolution: float) -> np.ndarray:
             heappush(queue, (next_distance, nx, ny))
 
     return distances
+
+
+def _clip_float_segment_to_bounds(
+    start: Tuple[float, float],
+    end: Tuple[float, float],
+    width: int,
+    height: int,
+) -> Optional[Tuple[Tuple[float, float], Tuple[float, float]]]:
+    """把连续 grid 线段裁剪到当前 map bounds"""
+    if width <= 0 or height <= 0:
+        return None
+
+    x0, y0 = start
+    x1, y1 = end
+    dx = x1 - x0
+    dy = y1 - y0
+    max_x = float(np.nextafter(float(width), -np.inf))
+    max_y = float(np.nextafter(float(height), -np.inf))
+    t_min = 0.0
+    t_max = 1.0
+
+    for p, q in (
+        (-dx, x0),
+        (dx, max_x - x0),
+        (-dy, y0),
+        (dy, max_y - y0),
+    ):
+        if abs(p) < 1e-12:
+            if q < 0.0:
+                return None
+            continue
+        ratio = q / p
+        if p < 0.0:
+            if ratio > t_max:
+                return None
+            t_min = max(t_min, ratio)
+        else:
+            if ratio < t_min:
+                return None
+            t_max = min(t_max, ratio)
+
+    return (
+        (x0 + t_min * dx, y0 + t_min * dy),
+        (x0 + t_max * dx, y0 + t_max * dy),
+    )
+
+
+def _clamp_cell_index(value: float, size: int) -> int:
+    """把连续 grid 坐标收敛到合法 cell index"""
+    return min(max(int(floor(value)), 0), max(0, size - 1))
 
 
 def bresenham_line(x0: int, y0: int, x1: int, y1: int) -> Iterable[GridIndex]:

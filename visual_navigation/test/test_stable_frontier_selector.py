@@ -104,3 +104,47 @@ def test_selector_inherits_nearby_frontier_when_uuid_changes():
     assert first.uuid == "001" * 16
     assert selected.uuid == "003" * 16
     assert selector.selected.uuid == "003" * 16
+
+
+def test_selector_prefers_frontier_in_search_heading():
+    selector = make_selector(
+        min_forward_dot=0.0,
+        forward_weight=0.8,
+    )
+    graph = make_graph([
+        make_frontier(1, -2.0, 0.0, 1.0),
+        make_frontier(2, 4.0, 0.0, 0.2),
+    ])
+
+    selected = selector.select(
+        graph,
+        (0.0, 0.0),
+        0.0,
+        graph.header.stamp,
+        heading_yaw=0.0,
+    )
+
+    assert selected.uuid == "002" * 16
+    assert selected.heading_alignment > 0.0
+
+
+def test_selector_falls_back_when_no_frontier_is_in_front():
+    selector = make_selector(
+        min_forward_dot=0.0,
+        forward_fallback_to_any=True,
+    )
+    graph = make_graph([
+        make_frontier(1, -2.0, 0.0, 0.6),
+        make_frontier(2, -4.0, 1.0, 0.8),
+    ])
+
+    selected = selector.select(
+        graph,
+        (0.0, 0.0),
+        0.0,
+        graph.header.stamp,
+        heading_yaw=0.0,
+    )
+
+    assert selected is not None
+    assert selected.heading_alignment < 0.0

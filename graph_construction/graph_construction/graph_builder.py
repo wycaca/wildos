@@ -32,6 +32,8 @@ class GraphBuilderConfig:
     edge_radius: float = 3.0
     max_edge_neighbors: int = 6
     current_node_max_edge_neighbors: int = 10
+    # 参考社区实现, 只用当前可见障碍证伪历史边
+    validate_historical_edges: bool = True
     prune_disconnected_nodes: bool = False
     frontier_assign_radius: float = 5.0
     frontier_min_points: int = 4
@@ -200,15 +202,22 @@ class SparseGraphBuilder:
 
         # current node 确定后重建边, 便于优先保留机器人附近连接
         stage_start = perf_counter()
-        self.graph.set_edges(
-            self.edge_builder.build_edges(
+        next_edges = self.edge_builder.build_edges(
+            self.graph,
+            grid,
+            sdf_obstacle,
+            sdf_unknown,
+            self.config.min_obstacle_clearance,
+        )
+        if self.config.validate_historical_edges:
+            next_edges = self.edge_builder.merge_historical_edges(
                 self.graph,
+                next_edges,
                 grid,
                 sdf_obstacle,
-                sdf_unknown,
                 self.config.min_obstacle_clearance,
             )
-        )
+        self.graph.set_edges(next_edges)
         if self.config.prune_disconnected_nodes:
             self._prune_disconnected_nodes()
         stage_timings_ms["build_edges"] = _elapsed_ms(stage_start)

@@ -157,6 +157,12 @@ def generate_launch_description():
             _profile_arg("object_search_frontier_score_weight", "object_search_frontier_score_weight"),
             _profile_arg("object_search_frontier_distance_weight", "object_search_frontier_distance_weight"),
             _profile_arg("object_search_frontier_switch_penalty", "object_search_frontier_switch_penalty"),
+            _profile_arg("object_search_frontier_forward_weight", "object_search_frontier_forward_weight"),
+            _profile_arg("object_search_frontier_min_forward_dot", "object_search_frontier_min_forward_dot"),
+            _profile_arg(
+                "object_search_frontier_forward_fallback_to_any",
+                "object_search_frontier_forward_fallback_to_any",
+            ),
             _profile_arg("planner_odom_topic", "planner_odom_topic"),
             _profile_arg("goal_pose_topic", "goal_pose_topic"),
             _profile_arg("tracking_goal_pose_topic", "tracking_goal_pose_topic"),
@@ -595,6 +601,30 @@ def _launch_setup(context):
                     profile,
                     "object_search_frontier_switch_penalty",
                     "object_search_frontier_switch_penalty",
+                )
+            },
+            {
+                "frontier_forward_weight": _float_value(
+                    context,
+                    profile,
+                    "object_search_frontier_forward_weight",
+                    "object_search_frontier_forward_weight",
+                )
+            },
+            {
+                "frontier_min_forward_dot": _float_value(
+                    context,
+                    profile,
+                    "object_search_frontier_min_forward_dot",
+                    "object_search_frontier_min_forward_dot",
+                )
+            },
+            {
+                "frontier_forward_fallback_to_any": _bool_value(
+                    context,
+                    profile,
+                    "object_search_frontier_forward_fallback_to_any",
+                    "object_search_frontier_forward_fallback_to_any",
                 )
             },
         ],

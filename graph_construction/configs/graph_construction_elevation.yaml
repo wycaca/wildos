@@ -27,6 +27,9 @@ grid_map_enable_postprocess: true
 grid_map_min_free_component_cells: 25
 grid_map_fill_hole_max_cells: 90
 grid_map_fill_hole_min_free_neighbor_ratio: 0.65
+# 只为已判定 free 的小洞补 elevation, 避免 graph node 掉到 z_offset
+grid_map_fill_elevation_holes: true
+grid_map_fill_elevation_radius_cells: 5
 grid_map_majority_fill_iterations: 1
 grid_map_majority_fill_min_neighbors: 6
 grid_map_max_node_odom_z_delta: 0.6
@@ -43,6 +46,8 @@ min_obstacle_clearance: 0.3
 edge_radius: 6.0
 max_edge_neighbors: 4
 current_node_max_edge_neighbors: 12
+# true 时参考社区实现, 只用当前可见障碍证伪历史边
+validate_historical_edges: true
 prune_disconnected_nodes: false
 
 # frontier 生成和记忆参数, 影响视觉评分候选数量和稳定性

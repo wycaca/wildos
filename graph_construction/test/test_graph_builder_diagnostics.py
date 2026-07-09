@@ -2,7 +2,7 @@ import numpy as np
 
 from graph_construction.graph_builder import GraphBuilderConfig, SparseGraphBuilder
 from graph_construction.edge_builder import EdgeBuilder
-from graph_construction.graph_memory import GraphState
+from graph_construction.graph_memory import GraphState, InternalEdge
 from graph_construction.grid_types import ClassifiedGrid
 from graph_construction.grid_types import distance_to_mask
 
@@ -128,6 +128,82 @@ def test_edge_builder_rejects_edges_without_corridor_clearance():
 
     assert len(loose_edges) == 1
     assert strict_edges == []
+
+
+def test_historical_edge_is_kept_when_current_grid_becomes_unknown():
+    """验证当前局部图变 unknown 时不会误删历史边"""
+    free = np.zeros((3, 5), dtype=bool)
+    obstacle = np.zeros((3, 5), dtype=bool)
+    unknown = np.ones((3, 5), dtype=bool)
+    grid = ClassifiedGrid(
+        width=5,
+        height=3,
+        resolution=1.0,
+        origin_x=0.0,
+        origin_y=0.0,
+        frame_id="map",
+        free=free,
+        obstacle=obstacle,
+        unknown=unknown,
+    )
+    graph = GraphState()
+    graph.create_node(position=(0.5, 1.5, 0.0), stamp_seconds=1.0)
+    graph.create_node(position=(4.5, 1.5, 0.0), stamp_seconds=1.0)
+    graph.set_edges([InternalEdge(from_id=0, to_id=1, cost=4.0)])
+    edge_builder = EdgeBuilder(edge_radius=10.0, max_neighbors_per_node=4)
+
+    current_edges = edge_builder.build_edges(
+        graph,
+        grid,
+        distance_to_mask(obstacle, grid.resolution),
+        distance_to_mask(unknown, grid.resolution),
+        min_clearance=0.5,
+    )
+    merged_edges = edge_builder.merge_historical_edges(
+        graph,
+        current_edges,
+        grid,
+        distance_to_mask(obstacle, grid.resolution),
+        min_clearance=0.5,
+    )
+
+    assert current_edges == []
+    assert {(edge.from_id, edge.to_id) for edge in merged_edges} == {(0, 1)}
+
+
+def test_historical_edge_is_removed_when_visible_segment_hits_obstacle():
+    """验证跨边界历史边只要可见段碰到障碍就会删除"""
+    free = np.ones((5, 5), dtype=bool)
+    obstacle = np.zeros((5, 5), dtype=bool)
+    unknown = np.zeros((5, 5), dtype=bool)
+    obstacle[2, 2] = True
+    free[2, 2] = False
+    grid = ClassifiedGrid(
+        width=5,
+        height=5,
+        resolution=1.0,
+        origin_x=0.0,
+        origin_y=0.0,
+        frame_id="map",
+        free=free,
+        obstacle=obstacle,
+        unknown=unknown,
+    )
+    graph = GraphState()
+    graph.create_node(position=(4.5, 2.5, 0.0), stamp_seconds=1.0)
+    graph.create_node(position=(-10.0, 2.5, 0.0), stamp_seconds=1.0)
+    graph.set_edges([InternalEdge(from_id=0, to_id=1, cost=14.5)])
+    edge_builder = EdgeBuilder(edge_radius=20.0, max_neighbors_per_node=4)
+
+    merged_edges = edge_builder.merge_historical_edges(
+        graph,
+        [],
+        grid,
+        distance_to_mask(obstacle, grid.resolution),
+        min_clearance=0.0,
+    )
+
+    assert merged_edges == []
 
 
 def test_graph_builder_prunes_nodes_disconnected_from_current_component():

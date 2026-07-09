@@ -21,6 +21,9 @@ class StableFrontierSelectorConfig:
     score_weight: float = 1.0
     distance_weight: float = 0.06
     switch_penalty: float = 0.2
+    forward_weight: float = 0.8
+    min_forward_dot: float = 0.0
+    forward_fallback_to_any: bool = True
 
 
 @dataclass
@@ -31,6 +34,7 @@ class FrontierCandidate:
     distance: float
     utility: float
     source: str
+    heading_alignment: float = 0.0
 
 
 class StableFrontierSelector:
@@ -66,6 +70,7 @@ class StableFrontierSelector:
         now_sec: float,
         stamp,
         target_pose: PoseStamped | None = None,
+        heading_yaw: float | None = None,
     ) -> FrontierCandidate | None:
         """从当前图中选择一个稳定 frontier, 只在明确更优或失败时切换"""
         if not graph.nodes:
@@ -78,6 +83,7 @@ class StableFrontierSelector:
             reference_xy,
             stamp,
             target_pose,
+            heading_yaw,
         )
         if not candidates:
             self.clear()
@@ -93,6 +99,7 @@ class StableFrontierSelector:
         reference_xy: tuple[float, float],
         stamp,
         target_pose: PoseStamped | None = None,
+        heading_yaw: float | None = None,
     ) -> list[FrontierCandidate]:
         """把 graph frontier node 转成 selector 候选, 不修改 graph 消息"""
         trav_idx = self._traversability_index(graph)
@@ -112,13 +119,17 @@ class StableFrontierSelector:
                 continue
 
             score = self._frontier_score(node, target_pose)
+            dx = node.pose.position.x - ref_x
+            dy = node.pose.position.y - ref_y
             distance = math.hypot(
-                node.pose.position.x - ref_x,
-                node.pose.position.y - ref_y,
+                dx,
+                dy,
             )
+            heading_alignment = _heading_alignment(dx, dy, heading_yaw)
             utility = (
                 self.config.score_weight * score
                 - self.config.distance_weight * distance
+                + self.config.forward_weight * heading_alignment
             )
             if self.selected is not None and uuid != self.selected.uuid:
                 utility -= self.config.switch_penalty
@@ -144,9 +155,29 @@ class StableFrontierSelector:
                     distance=distance,
                     utility=utility,
                     source="graph_frontier",
+                    heading_alignment=heading_alignment,
                 )
             )
-        return candidates
+        return self._filter_forward_candidates(candidates, heading_yaw)
+
+    def _filter_forward_candidates(
+        self,
+        candidates: list[FrontierCandidate],
+        heading_yaw: float | None,
+    ) -> list[FrontierCandidate]:
+        """目标未知时优先保留 odom 朝向前方 frontier"""
+        if heading_yaw is None:
+            return candidates
+        forward_candidates = [
+            candidate
+            for candidate in candidates
+            if candidate.heading_alignment >= self.config.min_forward_dot
+        ]
+        if forward_candidates:
+            return forward_candidates
+        if self.config.forward_fallback_to_any:
+            return candidates
+        return []
 
     def _choose_frontier_candidate(
         self,
@@ -225,7 +256,7 @@ class StableFrontierSelector:
             self.logger.info(
                 f"选择搜索 frontier, reason={reason}, uuid={candidate.uuid}, "
                 f"score={candidate.score:.2f}, distance={candidate.distance:.2f}, "
-                f"utility={candidate.utility:.2f}"
+                f"front_dot={candidate.heading_alignment:.2f}, utility={candidate.utility:.2f}"
             )
 
     def _update_frontier_progress(
@@ -337,6 +368,18 @@ class StableFrontierSelector:
 
 def _yaw_to_quaternion(yaw: float) -> Quaternion:
     return Quaternion(z=math.sin(yaw * 0.5), w=math.cos(yaw * 0.5))
+
+
+def _heading_alignment(dx: float, dy: float, heading_yaw: float | None) -> float:
+    """计算候选方向和 odom 朝向的点积, 无 heading 时不加偏置"""
+    if heading_yaw is None:
+        return 0.0
+    distance = math.hypot(dx, dy)
+    if distance < 1e-6:
+        return 1.0
+    heading_x = math.cos(heading_yaw)
+    heading_y = math.sin(heading_yaw)
+    return (dx * heading_x + dy * heading_y) / distance
 
 
 def _uuid_to_str(uuid) -> str:

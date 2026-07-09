@@ -118,6 +118,9 @@ profiles:
     object_search_frontier_score_weight: "1.0"
     object_search_frontier_distance_weight: "0.06"
     object_search_frontier_switch_penalty: "0.2"
+    object_search_frontier_forward_weight: "0.8"
+    object_search_frontier_min_forward_dot: "0.0"
+    object_search_frontier_forward_fallback_to_any: "true"
 
     # planner 输出和三相机 topic
     goal_pose_topic: /goal_pose
@@ -240,6 +243,9 @@ profiles:
     object_search_frontier_score_weight: "1.0"
     object_search_frontier_distance_weight: "0.06"
     object_search_frontier_switch_penalty: "0.2"
+    object_search_frontier_forward_weight: "0.8"
+    object_search_frontier_min_forward_dot: "0.0"
+    object_search_frontier_forward_fallback_to_any: "true"
 
     # planner 输出和三相机 topic, Unity 避开 nav_slam/astar 订阅的公共 /goal_pose
     goal_pose_topic: /spot1/graphnav_goal_pose
@@ -362,6 +368,9 @@ profiles:
     object_search_frontier_score_weight: "1.0"
     object_search_frontier_distance_weight: "0.06"
     object_search_frontier_switch_penalty: "0.2"
+    object_search_frontier_forward_weight: "0.8"
+    object_search_frontier_min_forward_dot: "0.0"
+    object_search_frontier_forward_fallback_to_any: "true"
 
     # planner 输出和三相机 topic
     goal_pose_topic: /goal_pose

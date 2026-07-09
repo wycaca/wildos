@@ -220,14 +220,16 @@ graph_construction/configs/topic_profiles.yaml
 - object search 默认 goal mux 发布频率: `5.0Hz`
 - object search 默认目标候选日志间隔: `2.0s`
 - elevation graph/path 默认 z offset: `0.08m`, RViz graph marker 额外抬高 `0.25m`
+- elevation GridMap 小洞会在 graph adapter 中补 free 分类和 elevation 数值, 不直接改 `/elevation_mapping_node/elevation_map_raw`
 - graph construction 默认不剪枝 disconnected components, 避免 current node 短时误判时清空大部分图
+- graph construction 默认开启 `validate_historical_edges`, 节点和历史边跨帧保留, 只用当前可见障碍证伪历史边
 - graphnav planner 默认 launch 权重: `goal_dist_cost_factor=1.0`, `frontier_score_factor=20.0`, 目标到达和目标连边按 3D 距离判断
 - object search 默认目标 mask 阈值: Isaac/robot 为 `0.09`, Unity 当前为 `0.10`
 - WildOS visual frontier 默认: Isaac/robot 为 `frontiers_range=9.0`, `frontier_threshold=0.60`, Unity 当前为 `frontiers_range=11.0`, `frontier_threshold=0.55`
 - object search 默认未检测诊断间隔: `20` 个 WildOS 同步处理帧
 - object search 默认 `target_timeout_sec=3.0`, `latch_target_after_first_detection=false`, `latch_target_timeout_sec=3.0`
 - object search 默认目标记忆: `memory_timeout_sec=10.0`, `memory_goal_distance=10.0`, `target_reached_radius=1.5`
-- object search 默认 graph frontier selection 开启, `frontier_min_dwell_sec=8.0`, `frontier_switch_min_score_margin=0.15`, `frontier_progress_timeout_sec=12.0`, `frontier_same_position_radius=1.2`, `deadend_blacklist_timeout_sec=20.0`
+- object search 默认 graph frontier selection 开启, 无目标时按 odom 朝向筛选前方 frontier, `frontier_min_dwell_sec=8.0`, `frontier_switch_min_score_margin=0.15`, `frontier_progress_timeout_sec=12.0`, `frontier_same_position_radius=1.2`, `deadend_blacklist_timeout_sec=20.0`
 - object search 默认近距离确认: `reached_mask_fraction=0.01`, `reached_min_pixel_count=1200`, `reached_confirm_frames=2`
 - 默认 path follower 跟踪点输出: `/spot1/tracking_goal_pose`
 - 默认三相机图像: `/unitree_go2/{}_cam/color_image`, 其中 `{}` 为 `front`, `left`, `right`
@@ -409,7 +411,7 @@ export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 - `camera_image_flip_x` 仅作为图像水平轴补偿开关保留, Unity 当前默认关闭
 - 目标不在视野时的 object search 设计见 `2026-07-06-object-search-exploration-design.md`
 - `object_search_goal_mux` 已扩展为 stable frontier selector, 默认订阅 `/spot1/scored_nav_graph` 并发布稳定 graph frontier goal
-- 目标未出现时优先进入 `GEOMETRIC_EXPLORE`, 从 scored graph 选择稳定 frontier, 不再持续追随机器人 yaw 生成远处 goal
+- 目标未出现时优先进入 `GEOMETRIC_EXPLORE`, 从 scored graph 选择 odom 前方稳定 frontier, 不再持续追随机器人 yaw 生成远处 goal
 - 如果 graph construction 重建 frontier UUID, `object_search_goal_mux` 会用 `frontier_same_position_radius` 继承近邻 frontier, 避免 selected frontier 每帧换号
 - 目标丢失后优先进入 `TARGET_MEMORY_GUIDED_FRONTIER`, 复用最近目标方向上的稳定 graph frontier, 不把固定方向外推成自由空间 goal
 - `TARGET_REACHED_VIEWPOINT` 表示目标近距离可见或已到达目标 frontier 对应观察点, 不等于物体精确抵达
@@ -437,11 +439,12 @@ export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 - 三相机视觉输入和 `front`, `left`, `right` 语义保持
 - 目标搜索路径慢时先看 WildOS 未检测日志中的每路相机最高相似度, 再看 `/spot1/object_search_target_pose`, profile 配置的 `goal_pose_topic`, `/corrected_path` 或 profile 配置的 `path_topic`
 - 路径贴墙或穿障碍时, 优先检查 `append_virtual_goal_to_path=false`, graph edge corridor clearance, `min_obstacle_clearance` 和 `grid_obstacle_inflation_radius`
+- elevation 地面小洞导致 graph node 掉到地图下方时, 优先检查 `grid_map_fill_hole_max_cells`, `grid_map_fill_elevation_holes` 和 `grid_map_fill_elevation_radius_cells`
 - 点云和 2D grid 错位或随狗转向旋转时, 优先检查 `livox_grid_builder` 日志中的 `lidar`, `grid_frame`, `assume_input_in_grid_frame` 和 odom frame, Unity 自研 builder 当前应为 `lidar=/mapokk`, `grid_frame=odom_3D`, `assume_input_in_grid_frame=True`, odom 输入为 `/unity/odom`
 - Unity 2D 默认使用本仓库 `livox_grid_builder`, 应看到本仓库 `livox_grid_builder` 进程启动
 - Unity 2D 临时回切 `/combined_grid` 对照测试时, 启动命令需要显式加 `launch_livox_grid_builder:=false traversability_grid_topic:=/combined_grid`
 - Unity 2D 自研 builder 地图随狗旋转, 路线乱跳或没有视觉边界点时, 优先检查 `lidar=/mapokk`, `grid_frame=odom_3D`, `assume_input_in_grid_frame=True`, `origin_mode=rolling`, `snap=True`, `mode=height_diff`, `height_rays=True`, `height_fill_free=True`, `height_unknown_border=1.20`, `height_range=(-0.20,1.80)`, `inflation=0.25` 是否生效
-- 路线每帧剧烈变化时, 优先检查 `/spot1/object_search_status`, `/spot1/object_search_selected_frontier`, `object_search_frontier_min_dwell_sec`, `object_search_frontier_switch_min_score_margin`, `graphnav_planner.path_smoothness_period` 和 `path_switch_hysteresis_sec`
+- 路线每帧剧烈变化或无目标时回头, 优先检查 `validate_historical_edges=true`, `object_search_frontier_min_forward_dot`, `object_search_frontier_forward_weight`, `/spot1/object_search_status`, `/spot1/object_search_selected_frontier`, `object_search_frontier_min_dwell_sec`, `object_search_frontier_switch_min_score_margin`, `graphnav_planner.path_smoothness_period` 和 `path_switch_hysteresis_sec`
 - 未看到目标时, `object_search_goal_mux` 应优先保持 selected frontier, 只有 scored graph 暂不可用时才回退到初始搜索 goal
 - 运行时同步, QoS, TF buffer 和 stamp 差异诊断
 
@@ -459,7 +462,7 @@ export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 
 - `graphnav_builder` 的 ROS 适配和纯算法层分离
 - GridMap rolling buffer 和坐标约定测试
-- frontier reachability 和 historical edge validation 的诊断化
+- frontier reachability 和 historical edge validation, 旧边只检查当前局部地图可见段
 - `wildos_sync_tuner.py` 和 `objmask_sync_tuner.py` 的同步调参思路
 - `goal_pose_to_nav2.py` 的 look-ahead goal 限频和 stale cancel 策略
 
