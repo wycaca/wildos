@@ -1,5 +1,4 @@
-# ROS topic 和 frame, 3D 默认直接消费 elevation GridMap
-robot_namespace: spot1
+# Elevation GridMap 主线, topic 和 frame 由 topic profile 覆盖
 global_frame: odom
 odom_topic: /spot1/odom_for_scoring
 grid_input_type: grid_map
@@ -7,59 +6,18 @@ grid_map_topic: /elevation_mapping_node/elevation_map_raw
 nav_graph_topic: /spot1/nav_graph
 viz_topic: /spot1/graph_construction_viz
 
-# 发布和诊断频率, 用于定位慢帧和运行状态
-trav_class: default
-publish_rate_hz: 2.0
-diagnostics_log_period_sec: 5.0
-slow_update_warning_ms: 200.0
-
-# GridMap layer 和后处理参数, frame 或 rolling buffer 异常时优先检查本组
-grid_map_traversability_layer: traversability
-grid_map_elevation_layer: elevation
+# GridMap 分类和小洞修复
 grid_map_free_threshold: 0.2
 grid_map_obstacle_threshold: 0.05
-grid_map_normalize_traversability: true
-grid_map_normalize_low_quantile: 0.05
-grid_map_normalize_high_quantile: 0.95
-# graph 数据保持贴近 elevation, RViz 显示抬高放在 GraphVisualizer
-grid_map_z_offset: 0.08
-grid_map_enable_postprocess: true
 grid_map_min_free_component_cells: 25
 grid_map_fill_hole_max_cells: 90
 grid_map_fill_hole_min_free_neighbor_ratio: 0.65
-# 只为已判定 free 的小洞补 elevation, 避免 graph node 掉到 z_offset
-grid_map_fill_elevation_holes: true
 grid_map_fill_elevation_radius_cells: 5
-grid_map_majority_fill_iterations: 1
-grid_map_majority_fill_min_neighbors: 6
-grid_map_max_node_odom_z_delta: 0.6
-grid_map_max_surface_step: 0.35
-grid_map_transpose: false
-grid_map_flip_x: false
-grid_map_flip_y: false
 
-# 稀疏 graph 采样和连边参数, 3D 默认比 2D 稍密
+# 仅保留偏离 GraphBuilderConfig 稳定默认值的调优项
 sample_stride: 6
-min_node_separation: 1.0
-max_free_radius: 4.0
 min_obstacle_clearance: 0.3
 edge_radius: 6.0
 max_edge_neighbors: 4
 current_node_max_edge_neighbors: 12
-# true 时参考社区实现, 只用当前可见障碍证伪历史边
-validate_historical_edges: true
-# 脚下点云缺失时创建机器人锚点, 只连接当前可见段无障碍的近邻
-ensure_robot_anchor_node: true
-robot_anchor_edge_radius: 0.0
-robot_anchor_max_edges: 6
-prune_disconnected_nodes: false
-
-# frontier 生成和记忆参数, 影响视觉评分候选数量和稳定性
-frontier_assign_radius: 5.0
-frontier_min_points: 4
-frontier_min_span: 0.6
-frontier_border_margin: 0.8
 frontier_candidate_spacing: 0.5
-deadend_observation_count: 3
-removed_frontier_suppression_radius: 0.0
-trajectory_min_separation: 0.25

@@ -39,12 +39,14 @@ launch:
           value: 1.0
         - name: frontier_score_factor
           value: 20.0
-        - name: min_local_frontier_score
-          value: 0.4
-        - name: local_frontier_radius
+        - name: frontier_continuity_radius
           value: 10.0
-        - name: path_smoothness_period
-          value: 0.0
+        - name: frontier_progress_timeout
+          value: 12.0
+        - name: frontier_switch_margin
+          value: 2.0
+        - name: revisit_cost_factor
+          value: 1.0
         - name: trav_class
           value: "default"
         - name: goal_radius

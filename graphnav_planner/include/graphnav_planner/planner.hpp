@@ -255,19 +255,31 @@ private:
   size_t trav_class_idx_ = 0;
   std::optional<UnexploredSpaceMap> unexplored_space_map_;
   std::optional<Eigen::Vector3d> latest_frontier_;
-  std::optional<rclcpp::Time> latest_frontier_time_;
+  std::optional<std::string> latest_frontier_uuid_;
+  std::optional<rclcpp::Time> latest_frontier_progress_time_;
+  double latest_frontier_best_distance_ = std::numeric_limits<double>::max();
+  std::optional<Eigen::Vector3d> stalled_frontier_;
+  std::optional<rclcpp::Time> stalled_frontier_until_;
+  std::optional<std::string> last_current_node_uuid_;
+  std::unordered_map<std::string, size_t> traversed_edge_counts_;
 
   std::unordered_map<graaf::vertex_id_t, std::pair<graphnav_msgs::msg::Node, std::pair<double, double>>> frontier_scores_;
+
+  void update_traversal_memory(const graphnav_msgs::msg::NavigationGraph& graph);
+  void reset_frontier_branch();
+  static std::string stable_edge_key(
+    const graphnav_msgs::msg::UUID& from_uuid,
+    const graphnav_msgs::msg::UUID& to_uuid);
 
 public:
   double frontier_dist_cost_factor_ = 2.0;
   double goal_dist_cost_factor_ = 1.0;
   double frontier_score_factor_ = 10.0;
   bool append_virtual_goal_to_path_ = false;
-  bool append_frontier_point_to_path_ = false;
-  double min_local_frontier_score_ = 0.4;
-  double local_frontier_radius_ = 7.0;
-  double path_smoothness_period_ = 10.0; // seconds
+  double frontier_continuity_radius_ = 7.0;
+  double frontier_progress_timeout_ = 12.0;
+  double frontier_switch_margin_ = 2.0;
+  double revisit_cost_factor_ = 1.0;
 
   visualization_msgs::msg::MarkerArray get_score_visualization(const rclcpp::Time& stamp, std::string frame_id, bool with_id_text = false) const;
 

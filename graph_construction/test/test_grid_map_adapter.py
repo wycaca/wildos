@@ -7,15 +7,20 @@ from types import SimpleNamespace
 
 import numpy as np
 
-sys.modules.setdefault("grid_map_msgs", types.ModuleType("grid_map_msgs"))
-sys.modules.setdefault("grid_map_msgs.msg", types.ModuleType("grid_map_msgs.msg"))
-sys.modules["grid_map_msgs.msg"].GridMap = object
-sys.modules.setdefault("nav_msgs", types.ModuleType("nav_msgs"))
-sys.modules.setdefault("nav_msgs.msg", types.ModuleType("nav_msgs.msg"))
-sys.modules["nav_msgs.msg"].OccupancyGrid = object
-sys.modules.setdefault("std_msgs", types.ModuleType("std_msgs"))
-sys.modules.setdefault("std_msgs.msg", types.ModuleType("std_msgs.msg"))
-sys.modules["std_msgs.msg"].Float32MultiArray = object
+try:
+    from grid_map_msgs.msg import GridMap
+    from nav_msgs.msg import OccupancyGrid
+    from std_msgs.msg import Float32MultiArray
+except ImportError:
+    sys.modules.setdefault("grid_map_msgs", types.ModuleType("grid_map_msgs"))
+    sys.modules.setdefault("grid_map_msgs.msg", types.ModuleType("grid_map_msgs.msg"))
+    sys.modules["grid_map_msgs.msg"].GridMap = object
+    sys.modules.setdefault("nav_msgs", types.ModuleType("nav_msgs"))
+    sys.modules.setdefault("nav_msgs.msg", types.ModuleType("nav_msgs.msg"))
+    sys.modules["nav_msgs.msg"].OccupancyGrid = object
+    sys.modules.setdefault("std_msgs", types.ModuleType("std_msgs"))
+    sys.modules.setdefault("std_msgs.msg", types.ModuleType("std_msgs.msg"))
+    sys.modules["std_msgs.msg"].Float32MultiArray = object
 
 from graph_construction.grid_adapter import classify_grid_map, decode_grid_map_layer
 

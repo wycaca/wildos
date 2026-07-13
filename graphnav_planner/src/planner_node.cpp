@@ -9,6 +9,7 @@
 #include <graphnav_msgs/msg/navigation_graph.hpp>
 #include <std_msgs/msg/header.hpp>
 #include <optional>
+#include <stdexcept>
 #include "graphnav_planner/planner.hpp"
 
 namespace graphnav_planner
@@ -27,25 +28,27 @@ public:
     this->declare_parameter("goal_dist_cost_factor", 1.0);
     this->declare_parameter("frontier_score_factor", 10.0);
     this->declare_parameter("append_virtual_goal_to_path", false);
-    this->declare_parameter("append_frontier_point_to_path", false);
-    this->declare_parameter("min_local_frontier_score", 0.4);
-    this->declare_parameter("local_frontier_radius", 7.0);
-    this->declare_parameter("path_smoothness_period", 10.0);
-    this->declare_parameter("path_switch_hysteresis_sec", 6.0);
-    this->declare_parameter("path_switch_min_endpoint_delta", 3.0);
-    this->declare_parameter("path_switch_min_goal_delta", 5.0);
+    this->declare_parameter("frontier_continuity_radius", 7.0);
+    this->declare_parameter("frontier_progress_timeout", 12.0);
+    this->declare_parameter("frontier_switch_margin", 2.0);
+    this->declare_parameter("revisit_cost_factor", 1.0);
 
-    planner_.frontier_dist_cost_factor_ = this->get_parameter("frontier_dist_cost_factor").as_double();
-    planner_.goal_dist_cost_factor_ = this->get_parameter("goal_dist_cost_factor").as_double();
-    planner_.frontier_score_factor_ = this->get_parameter("frontier_score_factor").as_double();
+    const auto nonnegative_parameter = [this](const std::string& name) {
+      const double value = this->get_parameter(name).as_double();
+      if (value < 0.0)
+      {
+        throw std::invalid_argument(name + " must be nonnegative");
+      }
+      return value;
+    };
+    planner_.frontier_dist_cost_factor_ = nonnegative_parameter("frontier_dist_cost_factor");
+    planner_.goal_dist_cost_factor_ = nonnegative_parameter("goal_dist_cost_factor");
+    planner_.frontier_score_factor_ = nonnegative_parameter("frontier_score_factor");
     planner_.append_virtual_goal_to_path_ = this->get_parameter("append_virtual_goal_to_path").as_bool();
-    planner_.append_frontier_point_to_path_ = this->get_parameter("append_frontier_point_to_path").as_bool();
-    planner_.min_local_frontier_score_ = this->get_parameter("min_local_frontier_score").as_double();
-    planner_.local_frontier_radius_ = this->get_parameter("local_frontier_radius").as_double();
-    planner_.path_smoothness_period_ = this->get_parameter("path_smoothness_period").as_double();
-    path_switch_hysteresis_sec_ = this->get_parameter("path_switch_hysteresis_sec").as_double();
-    path_switch_min_endpoint_delta_ = this->get_parameter("path_switch_min_endpoint_delta").as_double();
-    path_switch_min_goal_delta_ = this->get_parameter("path_switch_min_goal_delta").as_double();
+    planner_.frontier_continuity_radius_ = nonnegative_parameter("frontier_continuity_radius");
+    planner_.frontier_progress_timeout_ = nonnegative_parameter("frontier_progress_timeout");
+    planner_.frontier_switch_margin_ = nonnegative_parameter("frontier_switch_margin");
+    planner_.revisit_cost_factor_ = nonnegative_parameter("revisit_cost_factor");
 
     this->declare_parameter("trav_class", "default");
     planner_.set_trav_class(this->get_parameter("trav_class").as_string());
@@ -104,7 +107,7 @@ private:
                                     robot_in_graph_frame.pose.position.z);
           if ((goal_vec - robot_vec).norm() < goal_radius_)
           {
-            publish_hold_path(robot_in_graph_frame, goal_vec, this->get_clock()->now());
+            publish_hold_path(robot_in_graph_frame);
             goal_pose_.reset();
             return;
           }
@@ -154,15 +157,7 @@ private:
           path_msg.poses[i].pose.orientation = goal_in_graph_frame.pose.orientation;
         }
       }
-      auto now = this->get_clock()->now();
-      if (should_keep_previous_path(path_msg, goal_vec, now))
-      {
-        nav_msgs::msg::Path stable_path = retime_path(last_path_msg_, *latest_graph_header_);
-        path_pub_->publish(stable_path);
-        return;
-      }
       path_pub_->publish(path_msg);
-      remember_path(path_msg, goal_vec, now);
       if (grid_map_debug_pub_->get_subscription_count() > 0)
       {
         grid_map_msgs::msg::GridMap grid_map_msg = planner_.get_unexplored_debug_map();
@@ -198,69 +193,7 @@ private:
     }
   }
 
-  bool should_keep_previous_path(const nav_msgs::msg::Path& new_path,
-                                 const Eigen::Vector3d& goal,
-                                 const rclcpp::Time& now)
-  {
-    if (!has_last_path_ || path_switch_hysteresis_sec_ <= 0.0)
-    {
-      return false;
-    }
-    if (!last_path_time_ || !last_path_goal_)
-    {
-      return false;
-    }
-    if ((now - *last_path_time_).seconds() > path_switch_hysteresis_sec_)
-    {
-      return false;
-    }
-    if ((goal - *last_path_goal_).norm() > path_switch_min_goal_delta_)
-    {
-      return false;
-    }
-    if (last_path_msg_.poses.empty())
-    {
-      return false;
-    }
-    if (new_path.poses.empty())
-    {
-      return !robot_is_near_path_end(last_path_msg_);
-    }
-    Eigen::Vector3d old_end = pose_position(last_path_msg_.poses.back());
-    Eigen::Vector3d new_end = pose_position(new_path.poses.back());
-    if ((old_end - new_end).norm() < path_switch_min_endpoint_delta_)
-    {
-      return false;
-    }
-    return !robot_is_near_path_end(last_path_msg_);
-  }
-
-  bool robot_is_near_path_end(const nav_msgs::msg::Path& path) const
-  {
-    if (!odom_ || path.poses.empty())
-    {
-      return false;
-    }
-    Eigen::Vector3d end = pose_position(path.poses.back());
-    Eigen::Vector3d robot(odom_->pose.pose.position.x, odom_->pose.pose.position.y, odom_->pose.pose.position.z);
-    return (end - robot).norm() <= goal_radius_;
-  }
-
-  void remember_path(const nav_msgs::msg::Path& path, const Eigen::Vector3d& goal, const rclcpp::Time& now)
-  {
-    if (path.poses.empty())
-    {
-      return;
-    }
-    last_path_msg_ = path;
-    last_path_time_ = now;
-    last_path_goal_ = goal;
-    has_last_path_ = true;
-  }
-
-  void publish_hold_path(const geometry_msgs::msg::PoseStamped& robot_pose,
-                         const Eigen::Vector3d& goal,
-                         const rclcpp::Time& now)
+  void publish_hold_path(const geometry_msgs::msg::PoseStamped& robot_pose)
   {
     // 目标已在到达半径内时发布单点 path, 让外部 path follower 立即进入停止条件
     nav_msgs::msg::Path path_msg;
@@ -269,23 +202,6 @@ private:
     hold_pose.header = path_msg.header;
     path_msg.poses.push_back(hold_pose);
     path_pub_->publish(path_msg);
-    remember_path(path_msg, goal, now);
-  }
-
-  nav_msgs::msg::Path retime_path(const nav_msgs::msg::Path& path, const std_msgs::msg::Header& header) const
-  {
-    nav_msgs::msg::Path retimed = path;
-    retimed.header = header;
-    for (auto& pose : retimed.poses)
-    {
-      pose.header = header;
-    }
-    return retimed;
-  }
-
-  static Eigen::Vector3d pose_position(const geometry_msgs::msg::PoseStamped& pose)
-  {
-    return Eigen::Vector3d(pose.pose.position.x, pose.pose.position.y, pose.pose.position.z);
   }
 
   rclcpp::Subscription<graphnav_msgs::msg::NavigationGraph>::SharedPtr graph_sub_;
@@ -302,13 +218,6 @@ private:
   nav_msgs::msg::Odometry::ConstSharedPtr odom_;
   std::optional<std_msgs::msg::Header> latest_graph_header_;
   double goal_radius_;
-  double path_switch_hysteresis_sec_;
-  double path_switch_min_endpoint_delta_;
-  double path_switch_min_goal_delta_;
-  nav_msgs::msg::Path last_path_msg_;
-  std::optional<rclcpp::Time> last_path_time_;
-  std::optional<Eigen::Vector3d> last_path_goal_;
-  bool has_last_path_ = false;
 
   Planner planner_;
 };

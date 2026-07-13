@@ -34,14 +34,12 @@ class FrontierDetector:
         frontier_min_points: int,
         frontier_min_span: float,
         frontier_border_margin: float,
-        removed_frontier_suppression_radius: float,
         frontier_candidate_spacing: float = 0.0,
     ) -> None:
         self.frontier_assign_radius = frontier_assign_radius
         self.frontier_min_points = frontier_min_points
         self.frontier_min_span = frontier_min_span
         self.frontier_border_margin = frontier_border_margin
-        self.removed_frontier_suppression_radius = removed_frontier_suppression_radius
         self.frontier_candidate_spacing = frontier_candidate_spacing
 
     def detect_frontier_cells(self, grid: ClassifiedGrid) -> List[GridIndex]:
@@ -63,14 +61,17 @@ class FrontierDetector:
         grid: ClassifiedGrid,
         frontier_cells: Sequence[GridIndex],
     ) -> FrontierAssignmentStats:
-        """将 frontier cells 聚合到附近的 graph node 上
+        """增量验证历史 frontier, 再把新边界分配给稳定 owner
 
-        每次重新分配前先清空旧 frontier_points
-        这样已被探索过的 frontier 会自然消失, deadend_recovery 会记录这些消失的点
+        滚动局部地图只能否定当前可见范围内的历史 frontier
+        窗口外 frontier 必须保留, 否则机器人移动一个局部地图宽度后会丢失探索记忆
+        当前可见的历史点需要重新满足 free/unknown 边界和 owner 可达条件
+        新边界使用世界坐标键去重, 已保留的 owner 不会被每帧最近邻结果替换
         """
-        for node in graph.nodes.values():
-            node.frontier_points.clear()
-            node.is_frontier = False
+        preserved_owner_ids, assigned_frontier_keys = self._validate_historical_frontiers(
+            graph,
+            grid,
+        )
 
         candidate_cells = self._select_frontier_candidates(grid, frontier_cells)
         assignable_nodes = [
@@ -82,7 +83,8 @@ class FrontierDetector:
 
         for ix, iy in candidate_cells:
             frontier_point = grid.grid_to_world(ix, iy)
-            if self._near_removed_frontier(graph, frontier_point):
+            frontier_key = self._frontier_key(frontier_point, grid.resolution)
+            if frontier_key in assigned_frontier_keys:
                 continue
             owner_candidates = node_index.candidate_ids(frontier_point)
             owner = graph.nearest_node(
@@ -100,17 +102,22 @@ class FrontierDetector:
             ):
                 continue
             owner.frontier_points.append(frontier_point)
+            assigned_frontier_keys.add(frontier_key)
             assigned_point_count += 1
 
-        # frontier_min_points 和 frontier_min_span 共同过滤孤立噪声边界
+        # 历史 owner 已经通过往帧观测确认, 不因当前窗口只剩少量可见点而失忆
+        # 新 owner 仍使用数量和跨度过滤当前帧产生的孤立噪声
         for node in graph.nodes.values():
             if node.is_robot_anchor:
                 node.is_frontier = False
                 node.frontier_points.clear()
                 continue
-            node.is_frontier = (
+            is_supported = (
                 len(node.frontier_points) >= self.frontier_min_points
                 and self._frontier_span(node.frontier_points) >= self.frontier_min_span
+            )
+            node.is_frontier = bool(node.frontier_points) and (
+                node.node_id in preserved_owner_ids or is_supported
             )
             if not node.is_frontier:
                 node.frontier_points.clear()
@@ -119,6 +126,70 @@ class FrontierDetector:
             raw_cell_count=len(frontier_cells),
             candidate_cell_count=len(candidate_cells),
             assigned_point_count=assigned_point_count,
+        )
+
+    def _validate_historical_frontiers(
+        self,
+        graph: GraphState,
+        grid: ClassifiedGrid,
+    ) -> Tuple[set[int], set[Tuple[int, int]]]:
+        """保留窗口外历史点, 并重新验证当前可见历史点
+
+        frontier point 在本实现中位于 free cell, 且其 8 邻域必须接触 unknown
+        可见点若已成为普通 known free、unknown、obstacle 或无法从 owner 安全到达则删除
+        世界坐标键同时消除不同 owner 上重复保存的同一物理边界
+        """
+        preserved_owner_ids: set[int] = set()
+        assigned_frontier_keys: set[Tuple[int, int]] = set()
+
+        for node in graph.nodes.values():
+            if node.is_robot_anchor:
+                node.frontier_points.clear()
+                node.is_frontier = False
+                continue
+
+            preserved_points: List[Point3] = []
+            for point in node.frontier_points:
+                frontier_key = self._frontier_key(point, grid.resolution)
+                if frontier_key in assigned_frontier_keys:
+                    continue
+
+                grid_index = grid.world_to_grid(point[0], point[1])
+                if grid_index is None:
+                    preserved_points.append(point)
+                    assigned_frontier_keys.add(frontier_key)
+                    continue
+
+                ix, iy = grid_index
+                if not grid.is_free_index(ix, iy):
+                    continue
+                if self._near_grid_border(grid, ix, iy):
+                    continue
+                if not self._touches_unknown(grid, ix, iy):
+                    continue
+                if not grid.is_world_collision_free(
+                    (node.position[0], node.position[1]),
+                    (point[0], point[1]),
+                ):
+                    continue
+
+                preserved_points.append(point)
+                assigned_frontier_keys.add(frontier_key)
+
+            node.frontier_points = preserved_points
+            node.is_frontier = bool(preserved_points)
+            if preserved_points:
+                preserved_owner_ids.add(node.node_id)
+
+        return preserved_owner_ids, assigned_frontier_keys
+
+    @staticmethod
+    def _frontier_key(point: Point3, resolution: float) -> Tuple[int, int]:
+        """将 world frontier 量化为稳定键, 避免滚动窗口重复分配"""
+        key_resolution = max(float(resolution), 1e-6)
+        return (
+            int(round(point[0] / key_resolution)),
+            int(round(point[1] / key_resolution)),
         )
 
     def _select_frontier_candidates(
@@ -159,15 +230,6 @@ class FrontierDetector:
                     continue
                 if grid.is_unknown_index(ix + dx, iy + dy):
                     return True
-        return False
-
-    def _near_removed_frontier(self, graph: GraphState, frontier_point: Point3) -> bool:
-        """抑制最近刚消失的 frontier, 降低死路附近反复探索的概率"""
-        if self.removed_frontier_suppression_radius <= 0.0:
-            return False
-        for removed in graph.removed_frontiers:
-            if hypot(removed[0] - frontier_point[0], removed[1] - frontier_point[1]) <= self.removed_frontier_suppression_radius:
-                return True
         return False
 
     def _frontier_span(self, points: Sequence[Point3]) -> float:

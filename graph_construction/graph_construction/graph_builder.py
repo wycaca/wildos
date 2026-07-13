@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 from math import hypot
 import math
 from time import perf_counter
 from typing import Dict, Tuple
 
-from graph_construction.deadend_recovery import DeadendRecovery
+import numpy as np
+
 from graph_construction.edge_builder import EdgeBuilder
 from graph_construction.frontier_detector import FrontierDetector
 from graph_construction.graph_memory import GraphState
@@ -20,8 +22,6 @@ class GraphBuilderConfig:
     这些参数对应论文中的局部地图半径, 节点采样间距, free radius, edge radius 等概念
     """
 
-    # 限制相对于局部地面的最大高度差
-    grid_map_max_node_odom_z_delta: float = 0.4
     # 过滤局部高程尖峰和帘状面噪声
     grid_map_max_surface_step: float = 0.35
 
@@ -32,20 +32,11 @@ class GraphBuilderConfig:
     edge_radius: float = 3.0
     max_edge_neighbors: int = 6
     current_node_max_edge_neighbors: int = 10
-    # 参考社区实现, 只用当前可见障碍证伪历史边
-    validate_historical_edges: bool = True
-    ensure_robot_anchor_node: bool = True
-    robot_anchor_edge_radius: float = 0.0
-    robot_anchor_max_edges: int = 6
-    prune_disconnected_nodes: bool = False
     frontier_assign_radius: float = 5.0
     frontier_min_points: int = 4
     frontier_min_span: float = 0.6
     frontier_border_margin: float = 0.8
     frontier_candidate_spacing: float = 0.0
-    deadend_observation_count: int = 3
-    removed_frontier_suppression_radius: float = 1.0
-    trajectory_min_separation: float = 0.25
 
 
 @dataclass
@@ -93,17 +84,12 @@ class SparseGraphBuilder:
             frontier_min_points=config.frontier_min_points,
             frontier_min_span=config.frontier_min_span,
             frontier_border_margin=config.frontier_border_margin,
-            removed_frontier_suppression_radius=config.removed_frontier_suppression_radius,
             frontier_candidate_spacing=config.frontier_candidate_spacing,
         )
         self.edge_builder = EdgeBuilder(
             edge_radius=config.edge_radius,
             max_neighbors_per_node=config.max_edge_neighbors,
             current_node_max_neighbors=config.current_node_max_edge_neighbors,
-        )
-        self.deadend_recovery = DeadendRecovery(
-            observation_count=config.deadend_observation_count,
-            suppression_radius=config.removed_frontier_suppression_radius,
         )
         self.robot_anchor_node_id: int | None = None
 
@@ -168,8 +154,10 @@ class SparseGraphBuilder:
         stage_start = perf_counter()
         self._sanitize_grid_surface(grid)
 
-        robot_ground_position, robot_ground_projected = grid.project_to_elevation_with_status(robot_position)
-        robot_height_reference = robot_ground_position if robot_ground_projected else None
+        robot_ground_position, robot_ground_projected = (
+            grid.project_to_elevation_with_status(robot_position)
+        )
+        reachable_free = self._reachable_free_mask(grid, robot_ground_position)
         stage_timings_ms["prepare_grid"] = _elapsed_ms(stage_start)
 
         # 距离场用于节点 clearance 和 frontier 生命周期判断
@@ -180,19 +168,28 @@ class SparseGraphBuilder:
 
         # 先刷新旧节点, 再采样和建边
         stage_start = perf_counter()
-        self._update_existing_nodes(grid, sdf_obstacle, sdf_unknown, stamp_seconds, robot_height_reference)
+        self._update_existing_nodes(grid, sdf_obstacle, sdf_unknown, stamp_seconds)
         stage_timings_ms["update_nodes"] = _elapsed_ms(stage_start)
 
         # 在当前观测到的 free 区域补充稀疏节点
         stage_start = perf_counter()
-        self._sample_new_nodes(grid, sdf_obstacle, sdf_unknown, stamp_seconds, robot_height_reference)
+        self._sample_new_nodes(
+            grid,
+            sdf_obstacle,
+            sdf_unknown,
+            stamp_seconds,
+            reachable_free,
+        )
         stage_timings_ms["sample_nodes"] = _elapsed_ms(stage_start)
 
         # frontier cell 需要绑定到附近可用图节点
         stage_start = perf_counter()
         frontier_cells = self.frontier_detector.detect_frontier_cells(grid)
-        frontier_assignment = self.frontier_detector.assign_frontiers(self.graph, grid, frontier_cells)
-        self.deadend_recovery.update(self.graph)
+        frontier_assignment = self.frontier_detector.assign_frontiers(
+            self.graph,
+            grid,
+            frontier_cells,
+        )
         stage_timings_ms["update_frontiers"] = _elapsed_ms(stage_start)
 
         stage_start = perf_counter()
@@ -214,14 +211,14 @@ class SparseGraphBuilder:
             sdf_unknown,
             self.config.min_obstacle_clearance,
         )
-        if self.config.validate_historical_edges:
-            next_edges = self.edge_builder.merge_historical_edges(
-                self.graph,
-                next_edges,
-                grid,
-                sdf_obstacle,
-                self.config.min_obstacle_clearance,
-            )
+        # 持久边是主线语义, 当前窗口只能用可见障碍证伪历史边
+        next_edges = self.edge_builder.merge_historical_edges(
+            self.graph,
+            next_edges,
+            grid,
+            sdf_obstacle,
+            self.config.min_obstacle_clearance,
+        )
         if (
             self.robot_anchor_node_id is not None
             and self.graph.current_node_id == self.robot_anchor_node_id
@@ -233,13 +230,11 @@ class SparseGraphBuilder:
                     grid,
                     sdf_obstacle,
                     self.config.min_obstacle_clearance,
-                    self.config.robot_anchor_edge_radius or self.config.edge_radius,
-                    self.config.robot_anchor_max_edges,
+                    self.config.edge_radius,
+                    self.config.current_node_max_edge_neighbors,
                 )
             )
         self.graph.set_edges(next_edges)
-        if self.config.prune_disconnected_nodes:
-            self._prune_disconnected_nodes()
         stage_timings_ms["build_edges"] = _elapsed_ms(stage_start)
         stage_timings_ms["total"] = _elapsed_ms(total_start)
         diagnostics = _build_graph_update_diagnostics(
@@ -263,9 +258,8 @@ class SparseGraphBuilder:
         sdf_obstacle,
         sdf_unknown,
         stamp_seconds: float,
-        robot_height_reference: Tuple[float, float, float] | None,
     ) -> None:
-        """根据最新局部地图刷新已有节点的半径和有效性"""
+        """用可靠局部观测刷新历史节点, unknown 和窗口外区域不否定记忆"""
         for node_id, node in list(self.graph.nodes.items()):
             if node.is_robot_anchor:
                 continue
@@ -274,12 +268,10 @@ class SparseGraphBuilder:
                 continue
 
             ix, iy = grid_index
-            if not grid.is_free_index(ix, iy):
+            if grid.is_obstacle_index(ix, iy):
                 self.graph.remove_node(node_id)
                 continue
-
-            if not self._node_height_is_near_robot(grid, node.position, robot_height_reference):
-                self.graph.remove_node(node_id)
+            if not grid.is_free_index(ix, iy):
                 continue
 
             free_radius = min(
@@ -288,13 +280,17 @@ class SparseGraphBuilder:
                 self.config.max_free_radius,
             )
 
-            # clearance 过小的节点不应继续作为路径图节点, 否则 planner 会走到障碍附近
-            if free_radius < self.config.min_obstacle_clearance:
+            # min_obstacle_clearance 是新节点和新边的部署安全阈值
+            # 历史节点只在自由圆完全消失时删除, 避免局部地图噪声擦除已走过路线
+            if free_radius <= 0.0:
                 self.graph.remove_node(node_id)
                 continue
 
             node.free_radius = free_radius
             node.explored_radius = max(node.explored_radius, float(sdf_unknown[iy, ix]))
+            surface_z = grid.elevation_at_world(node.position[0], node.position[1])
+            if surface_z is not None:
+                node.position = (node.position[0], node.position[1], surface_z)
             node.last_seen_time = stamp_seconds
 
     def _sample_new_nodes(
@@ -303,26 +299,29 @@ class SparseGraphBuilder:
         sdf_obstacle,
         sdf_unknown,
         stamp_seconds: float,
-        robot_height_reference: Tuple[float, float, float] | None,
+        reachable_free: np.ndarray,
     ) -> None:
-        """在 free 区域按固定 stride 采样新节点
+        """在机器人当前可达的 free 分量中按固定 stride 采样新节点
 
-        使用规则采样是为了第一版输出稳定, 便于和 RViz 结果对齐调试
-        如果后续需要更接近论文, 可以替换为随机采样 N_samples
+        可达分量约束替代旧的机器人高度差过滤, 避免长坡历史被误删
+        同时防止在墙体另一侧或不连通高层表面生成规划节点
         """
         stride = max(1, int(self.config.sample_stride))
         for iy in range(0, grid.height, stride):
             for ix in range(0, grid.width, stride):
                 if not grid.is_free_index(ix, iy):
                     continue
+                if not reachable_free[iy, ix]:
+                    continue
                 if float(sdf_obstacle[iy, ix]) < self.config.min_obstacle_clearance:
                     continue
 
                 position = grid.grid_to_world(ix, iy)
 
-                if not self._node_height_is_near_robot(grid, position, robot_height_reference):
-                    continue
-                if self.graph.nearest_node(position, max_distance=self.config.min_node_separation) is not None:
+                if self.graph.nearest_node(
+                    position,
+                    max_distance=self.config.min_node_separation,
+                ) is not None:
                     continue
 
                 node = self.graph.create_node(position=position, stamp_seconds=stamp_seconds)
@@ -362,8 +361,80 @@ class SparseGraphBuilder:
             robot_ground_position if robot_ground_projected else None,
         )
         if robot_ground_projected:
-            self.graph.append_trajectory_point(robot_ground_position, self.config.trajectory_min_separation)
+            self.graph.append_trajectory_point(
+                robot_ground_position,
+                0.25,
+            )
         return current_node_status
+
+    def _reachable_free_mask(
+        self,
+        grid: ClassifiedGrid,
+        robot_position: Tuple[float, float, float],
+    ) -> np.ndarray:
+        """计算机器人脚下 free cell 的四连通分量
+
+        脚下 cell 为 unknown 或 obstacle 时返回空 mask, 本帧依靠持久图和 anchor
+        不从其他不连通 free 区域采样新节点
+        """
+        reachable = np.zeros((grid.height, grid.width), dtype=bool)
+        start = grid.world_to_grid(robot_position[0], robot_position[1])
+        if start is None or grid.is_obstacle_index(start[0], start[1]):
+            return reachable
+        if not grid.is_free_index(start[0], start[1]):
+            max_radius_cells = max(
+                int(math.ceil(self.config.edge_radius / max(grid.resolution, 1e-6))),
+                1,
+            )
+            start = self._nearest_free_neighbor(
+                grid,
+                start,
+                max_radius_cells=max_radius_cells,
+            )
+        if start is None:
+            return reachable
+
+        queue = deque([start])
+        reachable[start[1], start[0]] = True
+        while queue:
+            current_x, current_y = queue.popleft()
+            for offset_x, offset_y in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                next_x = current_x + offset_x
+                next_y = current_y + offset_y
+                if not grid.is_free_index(next_x, next_y) or reachable[next_y, next_x]:
+                    continue
+                reachable[next_y, next_x] = True
+                queue.append((next_x, next_y))
+        return reachable
+
+    def _nearest_free_neighbor(
+        self,
+        grid: ClassifiedGrid,
+        start: tuple[int, int],
+        max_radius_cells: int,
+    ) -> tuple[int, int] | None:
+        """在 anchor 可连接范围内选择无明确障碍隔断的最近 free cell"""
+        start_x, start_y = start
+        candidates = []
+        for offset_y in range(-max_radius_cells, max_radius_cells + 1):
+            for offset_x in range(-max_radius_cells, max_radius_cells + 1):
+                next_x = start_x + offset_x
+                next_y = start_y + offset_y
+                if not grid.is_free_index(next_x, next_y):
+                    continue
+                distance_sq = offset_x * offset_x + offset_y * offset_y
+                candidates.append((distance_sq, next_x, next_y))
+        for _, nearest_x, nearest_y in sorted(candidates):
+            line_cells = grid.world_line_cells_clipped(
+                grid.grid_to_world(start_x, start_y)[:2],
+                grid.grid_to_world(nearest_x, nearest_y)[:2],
+            )
+            if all(
+                not grid.is_obstacle_index(cell_x, cell_y)
+                for cell_x, cell_y in line_cells
+            ):
+                return nearest_x, nearest_y
+        return None
 
     def _ensure_robot_anchor_node(
         self,
@@ -372,9 +443,6 @@ class SparseGraphBuilder:
         stamp_seconds: float,
     ):
         """脚下局部 unknown 时创建机器人锚点, 让起点接回安全近邻图"""
-        if not self.config.ensure_robot_anchor_node:
-            return None
-
         grid_index = grid.world_to_grid(position[0], position[1])
         if grid_index is None:
             return None
@@ -385,6 +453,11 @@ class SparseGraphBuilder:
         anchor = None
         if self.robot_anchor_node_id is not None:
             anchor = self.graph.nodes.get(self.robot_anchor_node_id)
+        if anchor is not None and anchor.distance_xy(position) >= self.config.min_node_separation:
+            # 固化旧 anchor 为路线 breadcrumb, 新 anchor 继续跟随机器人
+            anchor.is_robot_anchor = False
+            self.robot_anchor_node_id = None
+            anchor = None
         if anchor is None:
             anchor = self.graph.create_node(
                 position=position,
@@ -403,23 +476,11 @@ class SparseGraphBuilder:
         anchor.is_frontier = False
         return anchor
 
-    def _node_height_is_near_robot(
+    def _nearest_collision_free_node(
         self,
         grid: ClassifiedGrid,
-        node_position: Tuple[float, float, float],
-        robot_position: Tuple[float, float, float] | None = None,
-    ) -> bool:
-        """过滤明显不在机器人局部地面高度附近的 GridMap cell"""
-        if grid.elevation is None or self.config.grid_map_max_node_odom_z_delta <= 0.0:
-            return True
-
-        reference = robot_position if robot_position is not None else self.graph.latest_robot_position
-        if reference is None or not math.isfinite(float(reference[2])):
-            return True
-
-        return abs(float(node_position[2]) - float(reference[2])) <= self.config.grid_map_max_node_odom_z_delta
-
-    def _nearest_collision_free_node(self, grid: ClassifiedGrid, position: Tuple[float, float, float]):
+        position: Tuple[float, float, float],
+    ):
         """优先选择和机器人之间直线无碰撞的最近节点"""
         candidates = sorted(
             self.graph.nodes.values(),
@@ -432,33 +493,6 @@ class SparseGraphBuilder:
             ):
                 return node
         return None
-
-    def _prune_disconnected_nodes(self) -> None:
-        """只保留 current node 所在连通分量, 避免断开的旧点参与目标评分"""
-        current_id = self.graph.current_node_id
-        if current_id is None or current_id not in self.graph.nodes:
-            return
-
-        adjacency = {node_id: set() for node_id in self.graph.nodes}
-        for edge in self.graph.edges.values():
-            if edge.from_id not in adjacency or edge.to_id not in adjacency:
-                continue
-            adjacency[edge.from_id].add(edge.to_id)
-            adjacency[edge.to_id].add(edge.from_id)
-
-        reachable = set()
-        stack = [current_id]
-        while stack:
-            node_id = stack.pop()
-            if node_id in reachable:
-                continue
-            reachable.add(node_id)
-            stack.extend(adjacency.get(node_id, set()) - reachable)
-
-        for node_id in list(self.graph.nodes.keys()):
-            if node_id not in reachable:
-                self.graph.remove_node(node_id)
-
 
 GraphBuilder = SparseGraphBuilder
 
@@ -511,7 +545,10 @@ def _build_graph_update_diagnostics(
     )
 
 
-def _component_sizes(adjacency: Dict[int, set[int]], current_node_id: int | None) -> tuple[list[int], int]:
+def _component_sizes(
+    adjacency: Dict[int, set[int]],
+    current_node_id: int | None,
+) -> tuple[list[int], int]:
     """计算无向图连通分量数量和 current node 所在分量大小"""
     visited = set()
     sizes = []

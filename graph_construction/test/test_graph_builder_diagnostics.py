@@ -171,6 +171,63 @@ def test_historical_edge_is_kept_when_current_grid_becomes_unknown():
     assert {(edge.from_id, edge.to_id) for edge in merged_edges} == {(0, 1)}
 
 
+def test_graph_builder_preserves_historical_nodes_when_grid_becomes_unknown():
+    """unknown 只表示当前不可观测, 不能删除曾确认安全的历史路线"""
+    unknown = np.ones((5, 5), dtype=bool)
+    grid = ClassifiedGrid(
+        width=5,
+        height=5,
+        resolution=1.0,
+        origin_x=0.0,
+        origin_y=0.0,
+        frame_id="map",
+        free=np.zeros((5, 5), dtype=bool),
+        obstacle=np.zeros((5, 5), dtype=bool),
+        unknown=unknown,
+    )
+    builder = SparseGraphBuilder(
+        GraphBuilderConfig(min_obstacle_clearance=0.0, edge_radius=3.0)
+    )
+    first = builder.graph.create_node(position=(1.5, 2.5, 0.0), stamp_seconds=1.0)
+    second = builder.graph.create_node(position=(2.5, 2.5, 0.0), stamp_seconds=1.0)
+    builder.graph.set_edges([InternalEdge(from_id=first.node_id, to_id=second.node_id, cost=1.0)])
+
+    result = builder.update(grid, robot_position=(2.5, 2.5, 0.0), stamp_seconds=2.0)
+
+    assert first.node_id in result.graph.nodes
+    assert second.node_id in result.graph.nodes
+    assert (first.node_id, second.node_id) in result.graph.edges
+
+
+def test_graph_builder_updates_node_height_from_its_own_surface_cell():
+    """长坡历史节点跟随自身地面高度, 不与机器人当前高度直接比较"""
+    elevation = np.full((5, 5), 2.0, dtype=np.float32)
+    grid = ClassifiedGrid(
+        width=5,
+        height=5,
+        resolution=1.0,
+        origin_x=0.0,
+        origin_y=0.0,
+        frame_id="map",
+        free=np.ones((5, 5), dtype=bool),
+        obstacle=np.zeros((5, 5), dtype=bool),
+        unknown=np.zeros((5, 5), dtype=bool),
+        elevation=elevation,
+    )
+    builder = SparseGraphBuilder(
+        GraphBuilderConfig(
+            sample_stride=10,
+            min_node_separation=0.1,
+            min_obstacle_clearance=0.0,
+        )
+    )
+    node = builder.graph.create_node(position=(1.5, 1.5, 0.0), stamp_seconds=1.0)
+
+    result = builder.update(grid, robot_position=(2.5, 2.5, 8.0), stamp_seconds=2.0)
+
+    assert result.graph.nodes[node.node_id].position[2] == 2.0
+
+
 def test_historical_edge_is_removed_when_visible_segment_hits_obstacle():
     """验证跨边界历史边只要可见段碰到障碍就会删除"""
     free = np.ones((5, 5), dtype=bool)
@@ -230,9 +287,7 @@ def test_graph_builder_adds_robot_anchor_when_robot_cell_is_unknown():
             min_node_separation=0.1,
             min_obstacle_clearance=0.0,
             edge_radius=3.0,
-            ensure_robot_anchor_node=True,
-            robot_anchor_edge_radius=3.0,
-            robot_anchor_max_edges=4,
+            current_node_max_edge_neighbors=4,
         )
     )
 
@@ -247,8 +302,75 @@ def test_graph_builder_adds_robot_anchor_when_robot_cell_is_unknown():
     )
 
 
-def test_graph_builder_prunes_nodes_disconnected_from_current_component():
-    """验证断开 component 不会发布给 planner 和目标评分"""
+def test_graph_builder_bootstraps_free_component_across_large_unknown_footprint():
+    """Unity 脚下大洞时从 anchor 连边半径内的最近 free 区域恢复采样"""
+    free = np.ones((11, 11), dtype=bool)
+    obstacle = np.zeros((11, 11), dtype=bool)
+    unknown = np.zeros((11, 11), dtype=bool)
+    free[3:8, 3:8] = False
+    unknown[3:8, 3:8] = True
+    grid = ClassifiedGrid(
+        width=11,
+        height=11,
+        resolution=1.0,
+        origin_x=0.0,
+        origin_y=0.0,
+        frame_id="map",
+        free=free,
+        obstacle=obstacle,
+        unknown=unknown,
+    )
+    builder = SparseGraphBuilder(
+        GraphBuilderConfig(
+            sample_stride=2,
+            min_node_separation=0.1,
+            min_obstacle_clearance=0.0,
+            edge_radius=4.0,
+        )
+    )
+
+    result = builder.update(grid, robot_position=(5.5, 5.5, 0.0), stamp_seconds=1.0)
+
+    assert len(result.graph.nodes) > 1
+    assert len(result.graph.edges) > 0
+
+
+def test_robot_anchor_leaves_persistent_breadcrumbs_in_unknown_ground():
+    """连续脚下缺图时固化旧 anchor, 保留长距离走过的拓扑路线"""
+    grid = ClassifiedGrid(
+        width=8,
+        height=3,
+        resolution=1.0,
+        origin_x=0.0,
+        origin_y=0.0,
+        frame_id="map",
+        free=np.zeros((3, 8), dtype=bool),
+        obstacle=np.zeros((3, 8), dtype=bool),
+        unknown=np.ones((3, 8), dtype=bool),
+    )
+    builder = SparseGraphBuilder(
+        GraphBuilderConfig(
+            min_node_separation=1.0,
+            min_obstacle_clearance=0.0,
+            edge_radius=3.0,
+        )
+    )
+
+    builder.update(grid, robot_position=(1.5, 1.5, 0.0), stamp_seconds=1.0)
+    result = builder.update(grid, robot_position=(3.0, 1.5, 0.0), stamp_seconds=2.0)
+
+    anchors = [node for node in result.graph.nodes.values() if node.is_robot_anchor]
+    breadcrumbs = [node for node in result.graph.nodes.values() if not node.is_robot_anchor]
+    assert len(anchors) == 1
+    assert any(node.position[:2] == (1.5, 1.5) for node in breadcrumbs)
+    assert any(
+        anchors[0].node_id in (edge.from_id, edge.to_id)
+        for edge in result.graph.edges.values()
+    )
+
+
+def test_graph_builder_preserves_nodes_disconnected_from_current_component():
+    """局部断边不能删除持久图中的其他历史 component"""
     free = np.zeros((5, 12), dtype=bool)
     free[:, :4] = True
     free[:, 8:] = True
@@ -271,12 +393,17 @@ def test_graph_builder_prunes_nodes_disconnected_from_current_component():
             min_node_separation=0.1,
             min_obstacle_clearance=0.0,
             edge_radius=3.0,
-            prune_disconnected_nodes=True,
         )
+    )
+    historical = builder.graph.create_node(
+        position=(9.5, 2.5, 0.0),
+        stamp_seconds=0.0,
     )
 
     result = builder.update(grid, robot_position=(0.5, 0.5, 0.0), stamp_seconds=1.0)
 
-    assert result.diagnostics.connected_components == 1
+    assert result.diagnostics.connected_components == 2
     assert result.diagnostics.node_count > 0
-    assert all(node.position[0] < 4.0 for node in result.graph.nodes.values())
+    assert historical.node_id in result.graph.nodes
+    assert any(node.position[0] < 4.0 for node in result.graph.nodes.values())
+    assert any(node.position[0] >= 8.0 for node in result.graph.nodes.values())

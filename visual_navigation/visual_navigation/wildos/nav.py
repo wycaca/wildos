@@ -24,6 +24,7 @@ from visual_navigation.geofrontier_nav.geofrontier_to_image import GeoFrontierTo
 from visual_navigation.wildos.viz import VisualizeGoalAgnosticGeoFrontierScoring
 from explorfm import ExploRFMInference
 from visual_navigation.utils.object_search_utils import localize_query, get_objectmask_msg
+from visual_navigation.object_detection_filter import filter_object_detection_mask
 
 HOME_DIR = Path("/home/ks-server3/han/wildos_ws/src/nebula2-wildos/")
 CAMERA_MAPPING = {
@@ -105,6 +106,10 @@ class WildOS_Nav(TFLookupSubscriber):
             "text_queries": ["blue bucket"],
             "pixel_level_seg": False,
             "mask_threshold": 0.09,
+            "detection_min_peak_score": 0.12,
+            "detection_min_component_pixels": 300,
+            "detection_min_component_fraction": 0.0005,
+            "detection_confirm_frames": 2,
             "detection_debug_interval": 20,
             "target_log_period_sec": 2.0,
             "obj_frontier_score": 0.9,
@@ -176,6 +181,7 @@ class WildOS_Nav(TFLookupSubscriber):
         self._last_object_target_log_time = None
         self._last_object_target_log_signature = None
         self._object_missing_log_count = 0
+        self._object_detection_confirm_count = 0
         self._object_reached_confirm_count = 0
         self._object_reached_last_state = False
         if self.object_search_mode:
@@ -184,6 +190,29 @@ class WildOS_Nav(TFLookupSubscriber):
             self.object_target_ray_match_radius = float(config.object_search_config.get("target_ray_match_radius", 2.0))
             self.object_detection_debug_interval = max(
                 int(config.object_search_config.get("detection_debug_interval", 20)),
+                1,
+            )
+            self.object_detection_min_peak_score = float(
+                config.object_search_config.get(
+                    "detection_min_peak_score",
+                    self.mask_threshold + 0.03,
+                )
+            )
+            self.object_detection_min_component_pixels = max(
+                int(config.object_search_config.get("detection_min_component_pixels", 300)),
+                1,
+            )
+            self.object_detection_min_component_fraction = max(
+                float(
+                    config.object_search_config.get(
+                        "detection_min_component_fraction",
+                        0.0005,
+                    )
+                ),
+                0.0,
+            )
+            self.object_detection_confirm_frames = max(
+                int(config.object_search_config.get("detection_confirm_frames", 2)),
                 1,
             )
             self.object_target_log_period_sec = max(
@@ -505,9 +534,27 @@ class WildOS_Nav(TFLookupSubscriber):
                 pixel_level_seg=self.pixel_level_seg,
                 mask_threshold=self.mask_threshold
             )
+            binary_mask, detection_components = filter_object_detection_mask(
+                text_sim_spatial,
+                binary_mask,
+                min_peak_score=self.object_detection_min_peak_score,
+                min_component_pixels=self.object_detection_min_component_pixels,
+                min_component_fraction=self.object_detection_min_component_fraction,
+            )
+            has_detection_evidence = bool(detection_components)
+            if has_detection_evidence:
+                self._object_detection_confirm_count = min(
+                    self._object_detection_confirm_count + 1,
+                    self.object_detection_confirm_frames,
+                )
+            else:
+                self._object_detection_confirm_count = 0
+            object_detected = (
+                has_detection_evidence
+                and self._object_detection_confirm_count >= self.object_detection_confirm_frames
+            )
 
-            if np.sum(binary_mask) > 0:
-                object_detected = True
+            if object_detected:
                 self._object_missing_log_count = 0
                 self._publish_object_reached(binary_mask)
                 tf_list = [tf_data[f"world_from_cam{i}"] for i in range(self.num_cameras)]
@@ -518,7 +565,11 @@ class WildOS_Nav(TFLookupSubscriber):
                 batch_img_traversability = np.maximum(batch_img_traversability, self.obj_trav_score*binary_mask)
             else:
                 self._publish_object_reached(None)
-                self._log_object_missing(text_sim_spatial)
+                if has_detection_evidence:
+                    self._log_object_detection_pending(detection_components)
+                else:
+                    self._log_object_missing(text_sim_spatial)
+                binary_mask.fill(0)
 
         # 给几何 frontier 评分
         nav_data = []
@@ -716,6 +767,19 @@ class WildOS_Nav(TFLookupSubscriber):
             self.get_logger().warn(f"当前帧未检测到目标, 跳过 object mask 发布{summary}")
         elif self._object_missing_log_count % self.object_detection_debug_interval == 0:
             self.get_logger().info(f"连续未检测到目标帧数={self._object_missing_log_count}{summary}")
+
+    def _log_object_detection_pending(self, detection_components) -> None:
+        """记录尚未达到连续帧门槛的目标证据, 不发布目标点"""
+        if self._object_detection_confirm_count != 1:
+            return
+        summary = ",".join(
+            f"{CAMERA_MAPPING.get(component.camera_idx, component.camera_idx)}"
+            f"/peak={component.peak_score:.3f}/pixels={component.pixel_count}"
+            for component in detection_components
+        )
+        self.get_logger().info(
+            f"目标证据待确认, frame=1/{self.object_detection_confirm_frames}, components={summary}"
+        )
 
     def _log_object_target_candidate(self, candidate) -> None:
         """节流目标候选日志, 同一候选只按固定周期打印"""

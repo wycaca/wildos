@@ -2,7 +2,7 @@
 # - 日常切换优先改 topic_profile, 不要直接改大量单项参数
 # - 平台差异放在 profile, 算法细调优先放到对应节点 config
 # - elevation/2.5D 是论文和社区一致的主地图后端, 2D OccupancyGrid 仅作为 fallback
-# - grid_* 和 object_search_frontier_* 属于调试参数, 只有定位到对应问题时再改
+# - grid_* 属于调试参数, 只有定位到对应问题时再改
 profiles:
   isaac:
     description: Isaac Sim 5.1 Go2 profile
@@ -79,9 +79,11 @@ profiles:
     # object search 基础策略, 常用调参是 mask threshold 和 visual frontier 阈值
     object_search_initial_goal_distance: "30.0"
     object_search_initial_goal_heading_deg: "0.0"
-    object_search_initial_goal_latch_timeout_sec: "20.0"
-    object_search_initial_goal_reached_radius: "3.0"
     object_search_mask_threshold: "0.09"
+    object_search_detection_min_peak_score: "0.12"
+    object_search_detection_min_component_pixels: "300"
+    object_search_detection_min_component_fraction: "0.0005"
+    object_search_detection_confirm_frames: "2"
     visual_frontiers_range: "9.0"
     visual_frontier_threshold: "0.6"
     object_search_detection_debug_interval: "20"
@@ -103,24 +105,7 @@ profiles:
     object_search_reached_min_pixel_count: "1200"
     object_search_reached_confirm_frames: "2"
     object_search_goal_viz_topic: /spot1/object_search_goal_viz
-    object_search_selected_frontier_topic: /spot1/object_search_selected_frontier
     object_search_status_topic: /spot1/object_search_status
-
-    # 稳定 frontier selector, 用于减少目标未出现时的 goal 抖动
-    object_search_enable_graph_frontier_selection: "true"
-    object_search_frontier_min_dwell_sec: "8.0"
-    object_search_frontier_switch_min_score_margin: "0.15"
-    object_search_frontier_progress_timeout_sec: "12.0"
-    object_search_frontier_progress_min_delta: "0.25"
-    object_search_frontier_reached_radius: "1.5"
-    object_search_frontier_same_position_radius: "1.2"
-    object_search_deadend_blacklist_timeout_sec: "20.0"
-    object_search_frontier_score_weight: "1.0"
-    object_search_frontier_distance_weight: "0.06"
-    object_search_frontier_switch_penalty: "0.2"
-    object_search_frontier_forward_weight: "0.8"
-    object_search_frontier_min_forward_dot: "0.0"
-    object_search_frontier_forward_fallback_to_any: "true"
 
     # planner 输出和三相机 topic
     goal_pose_topic: /goal_pose
@@ -204,9 +189,11 @@ profiles:
     # object search 基础策略, Unity 当前略放宽 visual frontier 候选
     object_search_initial_goal_distance: "30.0"
     object_search_initial_goal_heading_deg: "0.0"
-    object_search_initial_goal_latch_timeout_sec: "20.0"
-    object_search_initial_goal_reached_radius: "3.0"
     object_search_mask_threshold: "0.10"
+    object_search_detection_min_peak_score: "0.12"
+    object_search_detection_min_component_pixels: "300"
+    object_search_detection_min_component_fraction: "0.0005"
+    object_search_detection_confirm_frames: "2"
     visual_frontiers_range: "11.0"
     visual_frontier_threshold: "0.55"
     object_search_detection_debug_interval: "20"
@@ -228,24 +215,7 @@ profiles:
     object_search_reached_min_pixel_count: "1200"
     object_search_reached_confirm_frames: "2"
     object_search_goal_viz_topic: /spot1/object_search_goal_viz
-    object_search_selected_frontier_topic: /spot1/object_search_selected_frontier
     object_search_status_topic: /spot1/object_search_status
-
-    # 稳定 frontier selector, 目标未出现时从 scored graph 选择稳定探索 frontier
-    object_search_enable_graph_frontier_selection: "true"
-    object_search_frontier_min_dwell_sec: "8.0"
-    object_search_frontier_switch_min_score_margin: "0.15"
-    object_search_frontier_progress_timeout_sec: "12.0"
-    object_search_frontier_progress_min_delta: "0.25"
-    object_search_frontier_reached_radius: "1.5"
-    object_search_frontier_same_position_radius: "1.2"
-    object_search_deadend_blacklist_timeout_sec: "20.0"
-    object_search_frontier_score_weight: "1.0"
-    object_search_frontier_distance_weight: "0.06"
-    object_search_frontier_switch_penalty: "0.2"
-    object_search_frontier_forward_weight: "0.8"
-    object_search_frontier_min_forward_dot: "0.0"
-    object_search_frontier_forward_fallback_to_any: "true"
 
     # planner 输出和三相机 topic, Unity 避开 nav_slam/astar 订阅的公共 /goal_pose
     goal_pose_topic: /spot1/graphnav_goal_pose
@@ -329,9 +299,11 @@ profiles:
     # object search 基础策略, 真实狗 profile 当前沿用 Isaac 阈值
     object_search_initial_goal_distance: "30.0"
     object_search_initial_goal_heading_deg: "0.0"
-    object_search_initial_goal_latch_timeout_sec: "20.0"
-    object_search_initial_goal_reached_radius: "3.0"
     object_search_mask_threshold: "0.09"
+    object_search_detection_min_peak_score: "0.12"
+    object_search_detection_min_component_pixels: "300"
+    object_search_detection_min_component_fraction: "0.0005"
+    object_search_detection_confirm_frames: "2"
     visual_frontiers_range: "9.0"
     visual_frontier_threshold: "0.6"
     object_search_detection_debug_interval: "20"
@@ -353,24 +325,7 @@ profiles:
     object_search_reached_min_pixel_count: "1200"
     object_search_reached_confirm_frames: "2"
     object_search_goal_viz_topic: /spot1/object_search_goal_viz
-    object_search_selected_frontier_topic: /spot1/object_search_selected_frontier
     object_search_status_topic: /spot1/object_search_status
-
-    # 稳定 frontier selector, 用于减少目标未出现时的 goal 抖动
-    object_search_enable_graph_frontier_selection: "true"
-    object_search_frontier_min_dwell_sec: "8.0"
-    object_search_frontier_switch_min_score_margin: "0.15"
-    object_search_frontier_progress_timeout_sec: "12.0"
-    object_search_frontier_progress_min_delta: "0.25"
-    object_search_frontier_reached_radius: "1.5"
-    object_search_frontier_same_position_radius: "1.2"
-    object_search_deadend_blacklist_timeout_sec: "20.0"
-    object_search_frontier_score_weight: "1.0"
-    object_search_frontier_distance_weight: "0.06"
-    object_search_frontier_switch_penalty: "0.2"
-    object_search_frontier_forward_weight: "0.8"
-    object_search_frontier_min_forward_dot: "0.0"
-    object_search_frontier_forward_fallback_to_any: "true"
 
     # planner 输出和三相机 topic
     goal_pose_topic: /goal_pose

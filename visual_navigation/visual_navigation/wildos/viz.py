@@ -573,11 +573,13 @@ class VisualizeGoalAgnosticGeoFrontierScoring(VisualizeGeoFrontierScoring):
             rgb_img = cv2.resize(rgb_img, (0,0), fx=self.fig_resize_factor, fy=self.fig_resize_factor)
             img_grid[(0, plt_idx)] = (rgb_img, f"Image {self.camera_mapping[i]}")
 
+            has_object_mask = False
             if "object_mask" in nav_data[i] and nav_data[i]["object_mask"] is not None:
                 obj_mask = nav_data[i]["object_mask"].astype(np.float32)
                 obj_mask = cv2.resize(obj_mask, (0,0), fx=self.fig_resize_factor, fy=self.fig_resize_factor)
-                mask_overlay = show_mask(rgb_img, obj_mask)
-                img_grid[(0, plt_idx)] = (mask_overlay, f"Image {self.camera_mapping[i]} + Obj Mask")
+                if np.any(obj_mask > 0):
+                    rgb_img = show_mask(rgb_img, obj_mask)
+                    has_object_mask = True
 
             # overlay frontiers on the image
             frontier_map = nav_data[i]["img_frontiers"].astype(np.float32)
@@ -626,7 +628,10 @@ class VisualizeGoalAgnosticGeoFrontierScoring(VisualizeGeoFrontierScoring):
                 draw_point(rgb_img, (y,x), graph_color, radius=7)
                 # draw_point(path_overlay, path[-1], (255,255,255), radius=2)  # goal point
                 # draw_text(path_overlay, (y,x), f"{score[heading_bin]:.2f}", color=(255,255,255))
-            img_grid[(0, plt_idx)] = (rgb_img, f"Image {self.camera_mapping[i]} + graph")
+            image_title = f"Image {self.camera_mapping[i]} + graph"
+            if has_object_mask:
+                image_title += " + Obj Mask"
+            img_grid[(0, plt_idx)] = (rgb_img, image_title)
             img_grid[(3, plt_idx)] = (path_overlay, "Frontier Nodes")
 
 

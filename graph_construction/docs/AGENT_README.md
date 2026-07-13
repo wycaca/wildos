@@ -11,7 +11,7 @@
 - 从局部几何地图生成稀疏 `NavigationGraph`
 - 用 graph memory 保留历史节点, frontier, edge 和机器人当前位置
 - 用三相机视觉模型给 graph frontier 做语义评分
-- 在没有目标检测时选择稳定的前向探索 frontier
+- 在没有目标检测时使用固定粗目标引导 planner 选择连续探索分支
 - 在看到目标后选择安全的目标导航点, 并通过 graph planner 输出路径
 - 在目标到达或视觉近距离确认后锁存停止状态, 避免继续规划旧路径
 
@@ -34,9 +34,8 @@ PointCloud2
   -> graph_construction, GridMap path
   -> /spot1/nav_graph
   -> visual_navigation WildOS scoring
-  -> /spot1/scored_nav_graph
-  -> object_search_goal_mux
-  -> graphnav_planner
+     -> /spot1/scored_nav_graph -> graphnav_planner
+     -> /spot1/object_search_target_pose -> object_search_goal_mux -> graphnav_planner goal
   -> path output
 ```
 
@@ -115,7 +114,7 @@ Unity 的重要约束:
 
 ```text
 node.py
-  ROS 参数, topic, QoS, timer, TF, 发布和诊断
+  ROS 配置, topic, QoS, timer, 发布和首帧状态日志
 
 grid_adapter.py
   OccupancyGrid / GridMap 解码为 ClassifiedGrid
@@ -159,15 +158,42 @@ grid_map_to_occupancy.py
 - topic, frame, 参数和发布集中在 `node.py`
 - GridMap rolling buffer, row / column 映射和 frame 约定必须用测试或运行数据确认
 
+## Graph Construction 参数约定
+
+Graph Construction 参数按职责分为三层:
+
+- `topic_profiles.yaml` 只保存平台相关 topic, frame, namespace 和通信环境
+- `node.py` 的 `DEFAULT_CONFIG` 只保存 ROS 适配和地图解码的稳定默认值
+- `GraphBuilderConfig` 是纯算法参数的唯一默认值来源
+- `graph_construction_elevation.yaml` 和 `graph_construction.yaml` 只保存后端差异及偏离算法默认值的调优项
+- 配置文件缺失, 未知字段或非法阈值会在启动时直接报错, 不允许静默回退
+
+不要把同一个默认值同时复制到 Python 和 YAML, 需要调参时只在对应后端 YAML 中覆盖
+
+当前不开放以下历史调试开关:
+
+- GridMap 转置和轴翻转, 当前 rolling buffer 解码已有测试覆盖
+- 关闭 GridMap 后处理, 当前主线始终执行拓扑清理
+- graph `trav_class`, 当前消息固定使用 `default`
+- historical edge validation 和 robot anchor, 当前主线固定开启
+- disconnected graph pruning, 持久路线不允许按当前连通分量删除
+- node 周期耗时日志参数, 原调用长期关闭且算法层诊断仍由定向测试覆盖
+- `robot_namespace` 和 `debug_grid_topic`, Graph Construction 节点从未消费这两个字段
+
 ## Graph 行为
 
 当前 graph 默认行为:
 
 - elevation path 直接消费 `/elevation_mapping_node/elevation_map_raw`
 - 小型 elevation NaN 洞会在 graph adapter 内为 free cell 补 elevation, 不修改原始 GridMap topic
-- 历史 edge 默认保留, 只用当前可见障碍证伪
-- `prune_disconnected_nodes` 默认关闭, 避免 current node 短时误判时清空大部分 graph
-- 脚下点云缺失时启用 robot anchor current node, 让 planner 能从机器人当前位置接回近邻 graph
+- 历史节点落入 unknown 或移出当前滚动窗口时继续保留, 只有可靠可见障碍才直接删除节点
+- 历史节点重新进入 free 区域时使用自身 cell 的 elevation 更新高度, 不与机器人当前高度比较
+- 低于新边 clearance 阈值的历史节点继续保留, 该阈值不再删除路线记忆
+- 历史 edge 固定保留, 只用当前可见障碍证伪
+- 历史 frontier 在滚动窗口外继续保留, 重新进入窗口后才按当前 free/unknown 边界验证
+- frontier owner 使用世界坐标键稳定继承, 不再每帧清空后重新分配
+- disconnected component 始终保留, current node 短时断边不会清空其他历史路线
+- 脚下点云缺失时启用 robot anchor current node, anchor 移动超过节点间距后固化旧位置为 breadcrumb
 - graph 数据 z 保持贴近 elevation surface, RViz marker 额外抬高显示
 - graph edge 要求 line 和 clearance 都安全, 避免路径贴墙或穿障碍
 
@@ -178,18 +204,19 @@ grid_map_to_occupancy.py
 ```text
 front / left / right camera
   -> visual_navigation.wildos.nav
-  -> /spot1/scored_nav_graph
-  -> /spot1/object_search_target_pose
-  -> visual_navigation.object_search_goal_mux
+  -> /spot1/scored_nav_graph -> graphnav_planner
+  -> /spot1/object_search_target_pose -> visual_navigation.object_search_goal_mux
   -> graphnav_planner goal topic
 ```
 
 当前策略:
 
-- 没有目标时, `StableFrontierSelector` 从 scored graph 选择稳定 frontier
-- 无目标搜索默认优先 odom 前方 frontier, 前方没有候选时才回退到任意 frontier
-- graph frontier UUID 抖动时, selector 用位置半径继承近邻 frontier
-- 目标出现时, 优先发布目标方向上的安全 graph frontier
+- 目标检测必须同时满足相似度峰值, 连通区域面积和连续帧确认, 单像素弱响应不会发布目标点
+- 模型可视化第一行会同时叠加 graph 和确认后的 object mask, 不再用 graph 图覆盖 mask
+- `object_search_goal_mux` 不再订阅 scored graph 或选择 frontier
+- 未检测到目标时, mux 根据首帧 odom 计算一次固定粗目标, 后续移动和转向不会重算
+- 目标出现时, mux 直接切换到确认后的目标 pose, 短时丢失使用目标记忆
+- frontier 选择、分支连续性、无进展屏蔽和回头代价统一由 `graphnav_planner` 负责
 - Unity 已启用 target latch, 支持短时遮挡后继续朝目标方向规划
 - 目标到达或近距离视觉确认后, `object_search_goal_mux` 进入 reached latch 并持续发布当前位置 hold goal
 - `graphnav_planner` 到达 goal 半径内时发布当前位置单点 path, 让下游停止
@@ -202,6 +229,10 @@ front / left / right camera
 - 输入 goal pose topic, 不同 profile 可不同
 - 使用 graph edge 做搜索, virtual goal 只参与搜索
 - 默认不把 virtual goal 或 unknown frontier point 追加进可执行 path
+- 使用 frontier UUID 和空间邻域保持同一探索分支
+- 当前分支持续无进展后临时屏蔽该邻域, 无其他候选时允许回退
+- 按稳定 UUID edge 记录实际经过次数, 重复边增加代价但不会被禁止
+- `frontier_switch_margin` 控制新分支必须明显更优才允许主动切换
 - 输出 profile 配置的 path topic
 - `path_follower_node` 输出 `/spot1/tracking_goal_pose`
 
@@ -223,8 +254,6 @@ visual_navigation/
                   ExploRFM 推理, frontier scoring, object target selection
   visual_navigation/object_search_goal_mux.py
                   object search goal 状态机和 planner goal 输出
-  visual_navigation/stable_frontier_selector.py
-                  稳定 frontier 选择器
   visual_navigation/utils/
                   TF, odom adapter, goal navigator, scoring 和 buffer 工具
 
@@ -259,13 +288,13 @@ external_references/
 
 ```text
 graph_construction/configs/topic_profiles.yaml
-  profile 级 topic, frame, RMW, goal, path 和 object search 默认参数
+  profile 级 topic, frame, RMW, goal, path 和目标检测默认参数
 
 graph_construction/configs/graph_construction_elevation.yaml
-  elevation/2.5D GridMap graph construction 默认参数
+  elevation/2.5D GridMap 后端差异和调优覆盖
 
 graph_construction/configs/graph_construction.yaml
-  2D OccupancyGrid fallback graph construction 默认参数
+  2D OccupancyGrid fallback 后端差异和调优覆盖
 
 graph_construction/configs/elevation_mapping_sim.yaml
   elevation_mapping_cupy 仿真配置

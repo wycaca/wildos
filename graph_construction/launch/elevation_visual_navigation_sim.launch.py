@@ -143,26 +143,18 @@ def generate_launch_description():
             _profile_arg("object_search_reached_mask_fraction", "object_search_reached_mask_fraction"),
             _profile_arg("object_search_reached_min_pixel_count", "object_search_reached_min_pixel_count"),
             _profile_arg("object_search_reached_confirm_frames", "object_search_reached_confirm_frames"),
-            _profile_arg("object_search_goal_viz_topic", "object_search_goal_viz_topic"),
-            _profile_arg("object_search_selected_frontier_topic", "object_search_selected_frontier_topic"),
-            _profile_arg("object_search_status_topic", "object_search_status_topic"),
-            _profile_arg("object_search_enable_graph_frontier_selection", "object_search_enable_graph_frontier_selection"),
-            _profile_arg("object_search_frontier_min_dwell_sec", "object_search_frontier_min_dwell_sec"),
-            _profile_arg("object_search_frontier_switch_min_score_margin", "object_search_frontier_switch_min_score_margin"),
-            _profile_arg("object_search_frontier_progress_timeout_sec", "object_search_frontier_progress_timeout_sec"),
-            _profile_arg("object_search_frontier_progress_min_delta", "object_search_frontier_progress_min_delta"),
-            _profile_arg("object_search_frontier_reached_radius", "object_search_frontier_reached_radius"),
-            _profile_arg("object_search_frontier_same_position_radius", "object_search_frontier_same_position_radius"),
-            _profile_arg("object_search_deadend_blacklist_timeout_sec", "object_search_deadend_blacklist_timeout_sec"),
-            _profile_arg("object_search_frontier_score_weight", "object_search_frontier_score_weight"),
-            _profile_arg("object_search_frontier_distance_weight", "object_search_frontier_distance_weight"),
-            _profile_arg("object_search_frontier_switch_penalty", "object_search_frontier_switch_penalty"),
-            _profile_arg("object_search_frontier_forward_weight", "object_search_frontier_forward_weight"),
-            _profile_arg("object_search_frontier_min_forward_dot", "object_search_frontier_min_forward_dot"),
+            _profile_arg("object_search_detection_min_peak_score", "object_search_detection_min_peak_score"),
             _profile_arg(
-                "object_search_frontier_forward_fallback_to_any",
-                "object_search_frontier_forward_fallback_to_any",
+                "object_search_detection_min_component_pixels",
+                "object_search_detection_min_component_pixels",
             ),
+            _profile_arg(
+                "object_search_detection_min_component_fraction",
+                "object_search_detection_min_component_fraction",
+            ),
+            _profile_arg("object_search_detection_confirm_frames", "object_search_detection_confirm_frames"),
+            _profile_arg("object_search_goal_viz_topic", "object_search_goal_viz_topic"),
+            _profile_arg("object_search_status_topic", "object_search_status_topic"),
             _profile_arg("planner_odom_topic", "planner_odom_topic"),
             _profile_arg("goal_pose_topic", "goal_pose_topic"),
             _profile_arg("tracking_goal_pose_topic", "tracking_goal_pose_topic"),
@@ -202,7 +194,6 @@ def _launch_setup(context):
 
     graph_overrides = _config_override_args(
         {
-            "robot_namespace": ns,
             "global_frame": global_frame,
             "odom_topic": odom_output_topic,
             "grid_map_topic": _value(context, profile, "elevation_grid_map_topic", "elevation_grid_map_topic"),
@@ -250,6 +241,30 @@ def _launch_setup(context):
                 profile,
                 "object_search_detection_debug_interval",
                 "object_search_detection_debug_interval",
+            ),
+            "object_search_config.detection_min_peak_score": _value(
+                context,
+                profile,
+                "object_search_detection_min_peak_score",
+                "object_search_detection_min_peak_score",
+            ),
+            "object_search_config.detection_min_component_pixels": _value(
+                context,
+                profile,
+                "object_search_detection_min_component_pixels",
+                "object_search_detection_min_component_pixels",
+            ),
+            "object_search_config.detection_min_component_fraction": _value(
+                context,
+                profile,
+                "object_search_detection_min_component_fraction",
+                "object_search_detection_min_component_fraction",
+            ),
+            "object_search_config.detection_confirm_frames": _value(
+                context,
+                profile,
+                "object_search_detection_confirm_frames",
+                "object_search_detection_confirm_frames",
             ),
             "object_search_config.target_log_period_sec": _value(
                 context,
@@ -396,29 +411,11 @@ def _launch_setup(context):
             {"use_sim_time": use_sim_time},
             {"output_goal_topic": goal_pose_topic},
             {"goal_viz_topic": _value(context, profile, "object_search_goal_viz_topic", "object_search_goal_viz_topic")},
-            {
-                "selected_frontier_topic": _value(
-                    context,
-                    profile,
-                    "object_search_selected_frontier_topic",
-                    "object_search_selected_frontier_topic",
-                )
-            },
             {"status_topic": _value(context, profile, "object_search_status_topic", "object_search_status_topic")},
-            {"nav_graph_topic": scored_nav_graph_topic},
             {"object_target_pose_topic": _value(context, profile, "object_target_pose_topic", "object_target_pose_topic")},
             {"object_reached_topic": _value(context, profile, "object_reached_topic", "object_reached_topic")},
             {"odom_topic": odom_output_topic},
             {"frame_id": global_frame},
-            {"traversability_class": "default"},
-            {
-                "enable_graph_frontier_selection": _bool_value(
-                    context,
-                    profile,
-                    "object_search_enable_graph_frontier_selection",
-                    "object_search_enable_graph_frontier_selection",
-                )
-            },
             {
                 "publish_rate": _float_value(
                     context,
@@ -523,110 +520,6 @@ def _launch_setup(context):
                     "object_search_object_reached_max_target_distance",
                 )
             },
-            {
-                "frontier_min_dwell_sec": _float_value(
-                    context,
-                    profile,
-                    "object_search_frontier_min_dwell_sec",
-                    "object_search_frontier_min_dwell_sec",
-                )
-            },
-            {
-                "frontier_switch_min_score_margin": _float_value(
-                    context,
-                    profile,
-                    "object_search_frontier_switch_min_score_margin",
-                    "object_search_frontier_switch_min_score_margin",
-                )
-            },
-            {
-                "frontier_progress_timeout_sec": _float_value(
-                    context,
-                    profile,
-                    "object_search_frontier_progress_timeout_sec",
-                    "object_search_frontier_progress_timeout_sec",
-                )
-            },
-            {
-                "frontier_progress_min_delta": _float_value(
-                    context,
-                    profile,
-                    "object_search_frontier_progress_min_delta",
-                    "object_search_frontier_progress_min_delta",
-                )
-            },
-            {
-                "frontier_reached_radius": _float_value(
-                    context,
-                    profile,
-                    "object_search_frontier_reached_radius",
-                    "object_search_frontier_reached_radius",
-                )
-            },
-            {
-                "frontier_same_position_radius": _float_value(
-                    context,
-                    profile,
-                    "object_search_frontier_same_position_radius",
-                    "object_search_frontier_same_position_radius",
-                )
-            },
-            {
-                "deadend_blacklist_timeout_sec": _float_value(
-                    context,
-                    profile,
-                    "object_search_deadend_blacklist_timeout_sec",
-                    "object_search_deadend_blacklist_timeout_sec",
-                )
-            },
-            {
-                "frontier_score_weight": _float_value(
-                    context,
-                    profile,
-                    "object_search_frontier_score_weight",
-                    "object_search_frontier_score_weight",
-                )
-            },
-            {
-                "frontier_distance_weight": _float_value(
-                    context,
-                    profile,
-                    "object_search_frontier_distance_weight",
-                    "object_search_frontier_distance_weight",
-                )
-            },
-            {
-                "frontier_switch_penalty": _float_value(
-                    context,
-                    profile,
-                    "object_search_frontier_switch_penalty",
-                    "object_search_frontier_switch_penalty",
-                )
-            },
-            {
-                "frontier_forward_weight": _float_value(
-                    context,
-                    profile,
-                    "object_search_frontier_forward_weight",
-                    "object_search_frontier_forward_weight",
-                )
-            },
-            {
-                "frontier_min_forward_dot": _float_value(
-                    context,
-                    profile,
-                    "object_search_frontier_min_forward_dot",
-                    "object_search_frontier_min_forward_dot",
-                )
-            },
-            {
-                "frontier_forward_fallback_to_any": _bool_value(
-                    context,
-                    profile,
-                    "object_search_frontier_forward_fallback_to_any",
-                    "object_search_frontier_forward_fallback_to_any",
-                )
-            },
         ],
         condition=IfCondition(LaunchConfiguration("do_object_search")),
     )
@@ -678,13 +571,13 @@ def _planner_node(ns, use_sim_time, odom_topic, goal_pose_topic, scored_nav_grap
             {"frontier_dist_cost_factor": 2.0},
             {"goal_dist_cost_factor": 1.0},
             {"frontier_score_factor": 20.0},
-            {"min_local_frontier_score": 0.4},
-            {"local_frontier_radius": 10.0},
-            {"path_smoothness_period": 10.0},
+            {"frontier_continuity_radius": 10.0},
+            {"frontier_progress_timeout": 12.0},
+            {"frontier_switch_margin": 2.0},
+            {"revisit_cost_factor": 1.0},
             {"trav_class": "default"},
             {"goal_radius": 3.0},
             {"append_virtual_goal_to_path": False},
-            {"append_frontier_point_to_path": False},
         ],
         remappings=[
             ("~/nav_graph", scored_nav_graph_topic),

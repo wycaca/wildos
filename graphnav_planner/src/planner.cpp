@@ -1,10 +1,12 @@
 #include <rclcpp/rclcpp.hpp>
 #include <graaflib/graph.h>
 #include <graaflib/algorithm/shortest_path/dijkstra_shortest_path.h>
+#include <graaflib/algorithm/shortest_path/dijkstra_shortest_paths.h>
 #include <algorithm>
 #include <cmath>
 #include <unordered_map>
 #include <map>
+#include <tuple>
 
 #include "graphnav_planner/planner.hpp"
 
@@ -22,6 +24,7 @@ void Planner::set_trav_class(std::string trav_class)
 
 void Planner::update_graph(graphnav_msgs::msg::NavigationGraph::ConstSharedPtr graph)
 {
+  update_traversal_memory(*graph);
   graph_ = graaf::undirected_graph<graphnav_msgs::msg::Node, double>();
   unexplored_space_map_.reset();
   frontier_scores_.clear();
@@ -32,8 +35,7 @@ void Planner::update_graph(graphnav_msgs::msg::NavigationGraph::ConstSharedPtr g
   }
   if (graph->nodes.empty())
   {
-    latest_frontier_.reset();
-    latest_frontier_time_.reset();
+    reset_frontier_branch();
     RCLCPP_WARN_ONCE(logger_, "收到空导航图, 跳过 planner 更新");
     return;
   }
@@ -57,19 +59,85 @@ void Planner::update_graph(graphnav_msgs::msg::NavigationGraph::ConstSharedPtr g
     if (trav_class_idx_ < edge.traversability.size())
     {
       double weight = edge.traversability[trav_class_idx_].traversability_cost;
+      const std::string history_key = stable_edge_key(
+        graph->nodes[edge.from_idx].uuid,
+        graph->nodes[edge.to_idx].uuid);
+      const auto history_it = traversed_edge_counts_.find(history_key);
+      if (history_it != traversed_edge_counts_.end())
+      {
+        // 已走过边保留在图中, 仅增加重复使用代价
+        // 当死路只有原路可退时 Dijkstra 仍会选择该边, 不会形成不可达
+        weight *= 1.0 + revisit_cost_factor_ * static_cast<double>(history_it->second);
+      }
       graph_.add_edge(edge.from_idx, edge.to_idx, weight);
     }
   }
   current_node_idx_ = graph->current_node_idx;
   if (current_node_idx_ >= graph->nodes.size())
   {
-    latest_frontier_.reset();
-    latest_frontier_time_.reset();
+    reset_frontier_branch();
     RCLCPP_WARN(logger_, "current_node_idx 越界, 跳过 planner 更新, current=%lu, nodes=%zu",
                 static_cast<unsigned long>(current_node_idx_), graph->nodes.size());
     return;
   }
   unexplored_space_map_ = compute_unexplored_space_map();
+}
+
+void Planner::update_traversal_memory(const graphnav_msgs::msg::NavigationGraph& graph)
+{
+  if (graph.nodes.empty() || graph.current_node_idx >= graph.nodes.size())
+  {
+    return;
+  }
+
+  const auto& current_node = graph.nodes[graph.current_node_idx];
+  const std::string current_uuid = uuid_to_string(current_node.uuid);
+  if (last_current_node_uuid_ && *last_current_node_uuid_ != current_uuid)
+  {
+    bool nodes_are_adjacent = false;
+    for (const auto& edge : graph.edges)
+    {
+      if (edge.from_idx >= graph.nodes.size() || edge.to_idx >= graph.nodes.size())
+      {
+        continue;
+      }
+      const std::string from_uuid = uuid_to_string(graph.nodes[edge.from_idx].uuid);
+      const std::string to_uuid = uuid_to_string(graph.nodes[edge.to_idx].uuid);
+      if ((from_uuid == *last_current_node_uuid_ && to_uuid == current_uuid) ||
+          (to_uuid == *last_current_node_uuid_ && from_uuid == current_uuid))
+      {
+        nodes_are_adjacent = true;
+        traversed_edge_counts_[stable_edge_key(
+          graph.nodes[edge.from_idx].uuid,
+          graph.nodes[edge.to_idx].uuid)]++;
+        break;
+      }
+    }
+    if (!nodes_are_adjacent)
+    {
+      RCLCPP_DEBUG(
+        logger_,
+        "current node 跨越非相邻 UUID, 本帧不记录 traversal edge");
+    }
+  }
+  last_current_node_uuid_ = current_uuid;
+}
+
+void Planner::reset_frontier_branch()
+{
+  latest_frontier_.reset();
+  latest_frontier_uuid_.reset();
+  latest_frontier_progress_time_.reset();
+  latest_frontier_best_distance_ = std::numeric_limits<double>::max();
+}
+
+std::string Planner::stable_edge_key(
+  const graphnav_msgs::msg::UUID& from_uuid,
+  const graphnav_msgs::msg::UUID& to_uuid)
+{
+  const std::string from = uuid_to_string(from_uuid);
+  const std::string to = uuid_to_string(to_uuid);
+  return from <= to ? from + "|" + to : to + "|" + from;
 }
 
 std::optional<UnexploredSpaceMap> Planner::compute_unexplored_space_map()
@@ -122,17 +190,19 @@ std::vector<Eigen::Vector3d> Planner::plan_to_goal(Eigen::Vector3d& goal, double
     return {};
   }
   unexplored_space_map_->compute_distance_from(goal.x(), goal.y());
-  graphnav_msgs::msg::Node virtual_goal_node;
-  virtual_goal_node.pose.position.x = goal.x();
-  virtual_goal_node.pose.position.y = goal.y();
-  virtual_goal_node.pose.position.z = goal.z();
-  graaf::vertex_id_t virtual_goal = graph_.add_vertex(virtual_goal_node);
-
   frontier_scores_.clear();
 
-  std::vector<graaf::vertex_id_t> local_scored_frontiers;
-  bool is_scored_graph = true;
-  bool has_direct_goal_edge = false;
+  struct FrontierCandidate
+  {
+    graaf::vertex_id_t id;
+    Eigen::Vector3d position;
+    std::string uuid;
+    double frontier_cost;
+    double total_cost;
+  };
+
+  std::vector<std::tuple<graaf::vertex_id_t, double>> goal_radius_edges;
+  std::unordered_map<graaf::vertex_id_t, double> frontier_costs;
 
   for (const auto& [id, node] : graph_.get_vertices())
   {
@@ -157,7 +227,7 @@ std::vector<Eigen::Vector3d> Planner::plan_to_goal(Eigen::Vector3d& goal, double
       Eigen::Vector3d goal_delta = goal - node_pos;
       Eigen::Vector3d heading = goal_delta.norm() > 1e-6 ? goal_delta.normalized() : Eigen::Vector3d::UnitX();
       bool has_frontier_scores = false;
-      double cur_frontier_dist_cost_factor = std::numeric_limits<double>::max();
+      double frontier_dist_cost_factor = frontier_dist_cost_factor_;
       for (const auto& kv: node.properties)
       {
         if (kv.key == "frontier_scores")
@@ -175,116 +245,207 @@ std::vector<Eigen::Vector3d> Planner::plan_to_goal(Eigen::Vector3d& goal, double
           int best_bin = static_cast<int>(std::round(heading_angle / angle_per_bin)) % num_bins;
           frontier_score = std::clamp(static_cast<double>(kv.value[best_bin]), 0.0, 1.0);
           double planner_score = std::max(frontier_score, 1e-3);
-          cur_frontier_dist_cost_factor = 1.0 - frontier_score_factor_ * std::log(planner_score);
-
-          if (latest_frontier_){
-            double distance_to_latest_frontier = (node_pos - *latest_frontier_).norm();
-            if (distance_to_latest_frontier < local_frontier_radius_ && frontier_score > min_local_frontier_score_){
-              local_scored_frontiers.push_back(id);
-            }
-          }
-          
-          // if (frontier_score>0 && frontier_path_distance == std::numeric_limits<double>::max()){
-          //   RCLCPP_INFO(logger_, "Node %s frontier score in best bin %d is %f, setting frontier_dist_cost_factor to %f",
-          //              uuid_to_string(node.uuid).c_str(), best_bin, frontier_score, cur_frontier_dist_cost_factor);
-          // }
+          frontier_dist_cost_factor = 1.0 - frontier_score_factor_ * std::log(planner_score);
+          break;
         }
       }
-      if (!is_scored_graph || !has_frontier_scores)
+      if (!has_frontier_scores)
       {
-        is_scored_graph = false;
         frontier_cost = frontier_path_distance * frontier_dist_cost_factor_;
-        // RCLCPP_WARN(logger_, "Node %ld is a frontier but has no frontier_scores property", id);
-      
-        // add to local frontier based on just distance
-        if (latest_frontier_){
-            double distance_to_latest_frontier = (node_pos - *latest_frontier_).norm();
-            if (distance_to_latest_frontier < local_frontier_radius_){
-              local_scored_frontiers.push_back(id);
-            }
-          }
       }
       else
       {
-        frontier_cost = frontier_path_distance * cur_frontier_dist_cost_factor;
+        frontier_cost = frontier_path_distance * frontier_dist_cost_factor;
       }
       frontier_scores_[id] = std::make_pair(node, std::make_pair(frontier_score, frontier_cost));
+      if (std::isfinite(frontier_cost))
+      {
+        frontier_costs[id] = frontier_cost;
+      }
     }
 
-    // connect nodes to goal if within goal_radius
+    // 真实目标附近节点优先于 frontier, 直接连接 virtual goal
     double node_goal_dist = (node_pos - goal).norm();
     if (node_goal_dist < goal_radius)
     {
       double goal_cost = goal_dist_cost_factor_ * node_goal_dist;
-      graph_.add_edge(id, virtual_goal, goal_cost);
-      has_direct_goal_edge = true;
+      goal_radius_edges.emplace_back(id, goal_cost);
     }
   }
-  
 
-  // 平滑周期内优先使用上一次目标附近的 frontier
-  bool use_local_frontiers = false;
-  if (!has_direct_goal_edge && !local_scored_frontiers.empty())
+  // 先在不含 virtual goal 的持久图上计算真实 graph path cost
+  // 这样多个候选不会通过 virtual goal 互相短接, visited edge 代价也会完整计入排行
+  const auto base_shortest_paths = graaf::algorithm::dijkstra_shortest_paths(graph_, current_node_idx_);
+  goal_radius_edges.erase(
+    std::remove_if(
+      goal_radius_edges.begin(),
+      goal_radius_edges.end(),
+      [&base_shortest_paths](const auto& goal_edge) {
+        return base_shortest_paths.find(std::get<0>(goal_edge)) == base_shortest_paths.end();
+      }),
+    goal_radius_edges.end());
+  std::vector<FrontierCandidate> frontier_candidates;
+  for (const auto& [id, frontier_cost] : frontier_costs)
   {
-    if (latest_frontier_time_ && (current_time - *latest_frontier_time_).seconds() < path_smoothness_period_)
+    const auto path_it = base_shortest_paths.find(id);
+    if (path_it == base_shortest_paths.end())
     {
-      for (auto id: local_scored_frontiers)
+      continue;
+    }
+    const auto& node = graph_.get_vertex(id);
+    frontier_candidates.push_back(FrontierCandidate{
+      id,
+      Eigen::Vector3d(
+        node.pose.position.x,
+        node.pose.position.y,
+        node.pose.position.z),
+      uuid_to_string(node.uuid),
+      frontier_cost,
+      path_it->second.total_weight + frontier_cost,
+    });
+  }
+
+  if (frontier_progress_timeout_ > 0.0 && latest_frontier_ && latest_frontier_progress_time_ &&
+      (current_time - *latest_frontier_progress_time_).seconds() >= frontier_progress_timeout_)
+  {
+    // 当前分支持续无进展时暂时屏蔽其空间邻域
+    // 屏蔽时间复用 progress timeout, 避免再引入一组 blacklist 参数
+    stalled_frontier_ = latest_frontier_;
+    stalled_frontier_until_ = current_time + rclcpp::Duration::from_seconds(frontier_progress_timeout_);
+    reset_frontier_branch();
+  }
+  if (stalled_frontier_until_ &&
+      (current_time - *stalled_frontier_until_).seconds() >= 0.0)
+  {
+    stalled_frontier_.reset();
+    stalled_frontier_until_.reset();
+  }
+
+  std::optional<FrontierCandidate> selected_frontier;
+  if (goal_radius_edges.empty() && !frontier_candidates.empty())
+  {
+    std::vector<const FrontierCandidate*> eligible_candidates;
+    for (const auto& candidate : frontier_candidates)
+    {
+      const bool is_stalled_branch = stalled_frontier_ &&
+        (candidate.position - *stalled_frontier_).norm() <= frontier_continuity_radius_;
+      if (!is_stalled_branch)
       {
-        double frontier_cost = frontier_scores_[id].second.second;
-        graph_.add_edge(virtual_goal, id, frontier_cost);
-        use_local_frontiers = true;
+        eligible_candidates.push_back(&candidate);
       }
     }
-    else
+    // 如果所有 frontier 都位于刚失败的分支, 允许回退到完整候选集
+    // 该回退保证真实死路场景仍可继续规划, 而不是返回空路径
+    if (eligible_candidates.empty())
     {
-      latest_frontier_time_ = current_time;
+      for (const auto& candidate : frontier_candidates)
+      {
+        eligible_candidates.push_back(&candidate);
+      }
     }
-  }  
-  
-  if (!has_direct_goal_edge && !use_local_frontiers)
+
+    const FrontierCandidate* global_best = *std::min_element(
+      eligible_candidates.begin(),
+      eligible_candidates.end(),
+      [](const FrontierCandidate* lhs, const FrontierCandidate* rhs) {
+        return lhs->total_cost < rhs->total_cost;
+      });
+    const FrontierCandidate* continuity_best = nullptr;
+    if (latest_frontier_)
+    {
+      for (const FrontierCandidate* candidate : eligible_candidates)
+      {
+        const bool same_uuid = latest_frontier_uuid_ && candidate->uuid == *latest_frontier_uuid_;
+        const bool same_branch =
+          (candidate->position - *latest_frontier_).norm() <= frontier_continuity_radius_;
+        if (!same_uuid && !same_branch)
+        {
+          continue;
+        }
+        if (continuity_best == nullptr || candidate->total_cost < continuity_best->total_cost)
+        {
+          continuity_best = candidate;
+        }
+      }
+    }
+
+    // 当前分支只要仍接近全局最优就继续保持
+    // 只有新分支总代价至少优于 switch margin 才允许主动切换
+    const FrontierCandidate* chosen = global_best;
+    if (continuity_best != nullptr &&
+        continuity_best->total_cost <= global_best->total_cost + frontier_switch_margin_)
+    {
+      chosen = continuity_best;
+    }
+    selected_frontier = *chosen;
+  }
+
+  if (goal_radius_edges.empty() && !selected_frontier)
   {
-    for (auto& [id, score_pair] : frontier_scores_)
-    {
-      double frontier_cost = score_pair.second.second;
-      graph_.add_edge(virtual_goal, id, frontier_cost);
-    }
-    latest_frontier_time_ = current_time;
+    RCLCPP_DEBUG(logger_, "没有可达 frontier 或 goal radius node, 跳过路径规划");
+    return {};
+  }
+
+  graphnav_msgs::msg::Node virtual_goal_node;
+  virtual_goal_node.pose.position.x = goal.x();
+  virtual_goal_node.pose.position.y = goal.y();
+  virtual_goal_node.pose.position.z = goal.z();
+  graaf::vertex_id_t virtual_goal = graph_.add_vertex(virtual_goal_node);
+  for (const auto& [id, goal_cost] : goal_radius_edges)
+  {
+    graph_.add_edge(id, virtual_goal, goal_cost);
+  }
+  if (selected_frontier)
+  {
+    graph_.add_edge(selected_frontier->id, virtual_goal, selected_frontier->frontier_cost);
   }
 
   auto path = graaf::algorithm::dijkstra_shortest_path(graph_, current_node_idx_, virtual_goal);
   std::vector<Eigen::Vector3d> path_points;
-  bool has_frontier_in_path = false;
   if (path)
   {
-    size_t idx = 0;
     for (const auto& node_id : path->vertices)
     {
       // virtual goal 只参与图搜索, 默认不进入可执行路径
       if (node_id == virtual_goal && !append_virtual_goal_to_path_)
       {
-        idx++;
         continue;
       }
       const auto& node = graph_.get_vertex(node_id);
       const auto& pos = node.pose.position;
       path_points.push_back(Eigen::Vector3d(pos.x, pos.y, pos.z));
-      if (idx == path->vertices.size() - 2 && trav_class_idx_ < node.trav_properties.size() &&
-          node.trav_properties[trav_class_idx_].is_frontier)
-      {
-        // frontier_points 只作为探索方向, 可执行路径停在安全 graph node 上
-        latest_frontier_ = Eigen::Vector3d(node.pose.position.x, node.pose.position.y, node.pose.position.z);
-        has_frontier_in_path = true;
-      }
-      idx++;
     }
   }
-  if (!has_frontier_in_path)
+
+  if (path && selected_frontier)
   {
-    if (!latest_frontier_time_ || (current_time - *latest_frontier_time_).seconds() >= path_smoothness_period_)
+    const auto& current_node = graph_.get_vertex(current_node_idx_);
+    const Eigen::Vector3d current_position(
+      current_node.pose.position.x,
+      current_node.pose.position.y,
+      current_node.pose.position.z);
+    const double current_distance = (selected_frontier->position - current_position).norm();
+    const bool same_uuid = latest_frontier_uuid_ &&
+      selected_frontier->uuid == *latest_frontier_uuid_;
+    const bool same_branch = latest_frontier_ &&
+      (selected_frontier->position - *latest_frontier_).norm() <= frontier_continuity_radius_;
+    if (!same_uuid && !same_branch)
     {
-      latest_frontier_.reset();
+      latest_frontier_best_distance_ = current_distance;
+      latest_frontier_progress_time_ = current_time;
     }
-    RCLCPP_DEBUG(logger_, "Path does not end at a frontier node");
+    else if (current_distance + 0.25 < latest_frontier_best_distance_)
+    {
+      // 使用固定 0.25 m 进展门槛过滤 current node 小幅抖动
+      latest_frontier_best_distance_ = current_distance;
+      latest_frontier_progress_time_ = current_time;
+    }
+    latest_frontier_ = selected_frontier->position;
+    latest_frontier_uuid_ = selected_frontier->uuid;
+  }
+  else if (!goal_radius_edges.empty())
+  {
+    reset_frontier_branch();
   }
 
   graph_.remove_vertex(virtual_goal);
@@ -314,7 +475,7 @@ visualization_msgs::msg::MarkerArray Planner::get_score_visualization(const rclc
   delete_all_idtext.id = 0;
   markers.markers.push_back(delete_all_idtext);
 
-  //visualize ring of local_frontier_radius around latest_frontier_
+  // 显示当前分支继承半径, 用于确认拐角处是否保持同一探索方向
   if (latest_frontier_) {
     visualization_msgs::msg::Marker frontier_marker;
     frontier_marker.header.frame_id = frame_id;
@@ -326,8 +487,8 @@ visualization_msgs::msg::MarkerArray Planner::get_score_visualization(const rclc
     frontier_marker.pose.position.x = latest_frontier_->x();
     frontier_marker.pose.position.y = latest_frontier_->y();
     frontier_marker.pose.position.z = latest_frontier_->z();
-    frontier_marker.scale.x = local_frontier_radius_ * 2;
-    frontier_marker.scale.y = local_frontier_radius_ * 2;
+    frontier_marker.scale.x = frontier_continuity_radius_ * 2;
+    frontier_marker.scale.y = frontier_continuity_radius_ * 2;
     frontier_marker.scale.z = 0.1;
     frontier_marker.color.a = 0.5;
     frontier_marker.color.r = 0.0;
@@ -346,10 +507,10 @@ visualization_msgs::msg::MarkerArray Planner::get_score_visualization(const rclc
     markers.markers.push_back(delete_marker);
   }
 
-  // add text for time_diff
-  if (latest_frontier_time_)
+  // 显示距离当前分支判定为无进展还剩多少时间
+  if (latest_frontier_progress_time_)
   {
-    double time_diff = (stamp - *latest_frontier_time_).seconds();
+    double time_diff = (stamp - *latest_frontier_progress_time_).seconds();
     visualization_msgs::msg::Marker text_marker;
     text_marker.header.frame_id = frame_id;
     text_marker.header.stamp = stamp;
@@ -357,8 +518,8 @@ visualization_msgs::msg::MarkerArray Planner::get_score_visualization(const rclc
     text_marker.id = 0;
     text_marker.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
     text_marker.action = visualization_msgs::msg::Marker::ADD;
-    text_marker.pose.position.x = latest_frontier_->x() + local_frontier_radius_;
-    text_marker.pose.position.y = latest_frontier_->y() + local_frontier_radius_;
+    text_marker.pose.position.x = latest_frontier_->x() + frontier_continuity_radius_;
+    text_marker.pose.position.y = latest_frontier_->y() + frontier_continuity_radius_;
     text_marker.pose.position.z = latest_frontier_->z() + 1.0;  // raise text above the node
     text_marker.scale.z = 1.5;           // only scale.z is used for text
     text_marker.color.a = 1.0;
@@ -366,7 +527,7 @@ visualization_msgs::msg::MarkerArray Planner::get_score_visualization(const rclc
     text_marker.color.g = 1.0;
     text_marker.color.b = 1.0;
     std::ostringstream ss;
-    ss << "Exploitation\nTimeout: " << path_smoothness_period_ - time_diff;
+    ss << "Branch continuity\nTimeout: " << frontier_progress_timeout_ - time_diff;
     text_marker.text = ss.str();
     markers.markers.push_back(text_marker);
   }

@@ -65,7 +65,6 @@ class GraphState:
     latest_robot_odom_position: Optional[Point3] = None
     latest_robot_position: Optional[Point3] = None
     latest_robot_ground_projected: bool = False
-    removed_frontiers: List[Point3] = field(default_factory=list)
     trajectory_points: List[Point3] = field(default_factory=list)
     next_node_id: int = 0
 
@@ -109,9 +108,9 @@ class GraphState:
             self.current_node_id = None
 
     def set_edges(self, edges: Iterable[InternalEdge]) -> None:
-        """使用规范化无向边键替换当前边集合
+        """使用规范化无向边键写入合并后的持久边集合
 
-        Graph Construction 每次更新后重建局部可见边
+        调用方先生成当前新边, 再合并未被可见障碍证伪的历史边
         normalize_edge_key 保证 (a,b) 和 (b,a) 不会重复存储
         """
         self.edges.clear()

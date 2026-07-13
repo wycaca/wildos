@@ -3,8 +3,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import fields
 from pathlib import Path
-from time import perf_counter
-from typing import Any, Dict
+from typing import Any, Dict, Mapping
 
 from ament_index_python.packages import get_package_share_directory
 from grid_map_msgs.msg import GridMap
@@ -30,10 +29,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "grid_map_topic": "/elevation_mapping_node/elevation_map_raw",
     "nav_graph_topic": "/spot1/nav_graph",
     "viz_topic": "/spot1/graph_construction_viz",
-    "trav_class": "default",
     "publish_rate_hz": 2.0,
-    "diagnostics_log_period_sec": 5.0,
-    "slow_update_warning_ms": 200.0,
     "free_threshold": 20,
     "obstacle_threshold": 65,
     "grid_map_traversability_layer": "traversability",
@@ -44,7 +40,6 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "grid_map_normalize_low_quantile": 0.05,
     "grid_map_normalize_high_quantile": 0.95,
     "grid_map_z_offset": 0.08,
-    "grid_map_enable_postprocess": True,
     "grid_map_min_free_component_cells": 25,
     "grid_map_fill_hole_max_cells": 90,
     "grid_map_fill_hole_min_free_neighbor_ratio": 0.65,
@@ -52,31 +47,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "grid_map_fill_elevation_radius_cells": 5,
     "grid_map_majority_fill_iterations": 1,
     "grid_map_majority_fill_min_neighbors": 6,
-    "grid_map_max_node_odom_z_delta": 1.5,
-    "grid_map_transpose": False,
-    "grid_map_flip_x": False,
-    "grid_map_flip_y": False,
-    "sample_stride": 8,
-    "min_node_separation": 1.0,
-    "max_free_radius": 4.0,
-    "min_obstacle_clearance": 0.5,
-    "edge_radius": 8.0,
-    "max_edge_neighbors": 4,
-    "current_node_max_edge_neighbors": 12,
-    "validate_historical_edges": True,
-    "ensure_robot_anchor_node": True,
-    "robot_anchor_edge_radius": 0.0,
-    "robot_anchor_max_edges": 6,
-    "prune_disconnected_nodes": False,
-    "frontier_assign_radius": 5.0,
-    "frontier_min_points": 4,
-    "frontier_min_span": 0.6,
-    "frontier_border_margin": 0.8,
-    "frontier_candidate_spacing": 0.0,
-    "deadend_observation_count": 3,
-    "removed_frontier_suppression_radius": 1.0,
-    "trajectory_min_separation": 0.25,
 }
+
+GRID_INPUT_TYPES = {"occupancy_grid", "grid_map"}
+TRAVERSABILITY_CLASS = "default"
 
 
 class GraphConstructionNode(Node):
@@ -89,7 +63,7 @@ class GraphConstructionNode(Node):
 
     def __init__(self, config: Dict[str, Any]) -> None:
         super().__init__("graph_construction")
-        self.config = {**DEFAULT_CONFIG, **config}
+        self.config = _resolve_config(config)
         self.builder = GraphBuilder(_builder_config(self.config))
         self.visualizer = GraphVisualizer()
 
@@ -99,7 +73,6 @@ class GraphConstructionNode(Node):
         self._logged_first_grid = False
         self._logged_first_odom = False
         self._logged_first_publish = False
-        self._last_diagnostics_log_time = perf_counter()
 
         self.nav_graph_pub = self.create_publisher(
             NavigationGraph,
@@ -132,7 +105,7 @@ class GraphConstructionNode(Node):
             10,
         )
 
-        publish_rate = max(0.1, float(self.config["publish_rate_hz"]))
+        publish_rate = float(self.config["publish_rate_hz"])
         self.create_timer(1.0 / publish_rate, self._on_timer)
 
         self.get_logger().info(
@@ -172,40 +145,29 @@ class GraphConstructionNode(Node):
     def _on_timer(self) -> None:
         """周期性构建并发布导航图
 
-        这里不做 message_filters 同步, 第一版优先保证简单可跑
-        如果后续发现 grid 和 odom 时间差影响较大, 再换成近似时间同步
+        节点使用最新 grid 和 odom 快照, 不要求时间戳严格同步
+        地图解码或图更新失败时保留历史图, 当前周期不发布部分结果
+        graph message 和 marker 使用同一份更新结果, 避免可视化与规划图不一致
         """
         if self.latest_grid is None or self.latest_odom is None:
             return
 
-        update_start = perf_counter()
-        node_stage_timings_ms: Dict[str, float] = {}
         try:
-            stage_start = perf_counter()
             classified_grid = self._classify_latest_grid()
-            node_stage_timings_ms["classify_grid"] = _elapsed_ms(stage_start)
-
-            stage_start = perf_counter()
             update_result = self.builder.update(
                 classified_grid,
                 _robot_position(self.latest_odom),
                 _stamp_to_seconds(self.latest_grid.header),
             )
-            node_stage_timings_ms["builder_update"] = _elapsed_ms(stage_start)
         except Exception as exc:
             self.get_logger().error(f"更新导航图失败: {exc}")
             return
 
-        stage_start = perf_counter()
         header = self._graph_header(self.latest_grid.header, classified_grid.frame_id)
-        nav_graph = graph_to_msg(update_result.graph, header, self.config["trav_class"])
-        node_stage_timings_ms["convert_graph_msg"] = _elapsed_ms(stage_start)
+        nav_graph = graph_to_msg(update_result.graph, header, TRAVERSABILITY_CLASS)
 
-        stage_start = perf_counter()
         self.nav_graph_pub.publish(nav_graph)
-        node_stage_timings_ms["publish_graph"] = _elapsed_ms(stage_start)
 
-        stage_start = perf_counter()
         self.viz_pub.publish(
             self.visualizer.build_markers(
                 update_result.graph,
@@ -213,8 +175,6 @@ class GraphConstructionNode(Node):
                 update_result.classified_grid,
             )
         )
-        node_stage_timings_ms["publish_viz"] = _elapsed_ms(stage_start)
-        node_stage_timings_ms["total"] = _elapsed_ms(update_start)
 
         if not self._logged_first_publish:
             frontier_count = sum(
@@ -233,10 +193,13 @@ class GraphConstructionNode(Node):
                 f"frontier={frontier_count}{grid_stats}{robot_stats}"
             )
             self._logged_first_publish = True
-        # self._maybe_log_diagnostics(update_result, node_stage_timings_ms)
 
     def _classify_latest_grid(self):
-        """把缓存的 ROS 地图消息解码为通用 grid"""
+        """按配置的输入后端把 ROS 地图解码为统一 ClassifiedGrid
+
+        GridMap 的 rolling buffer 已由 grid_adapter 解包, 这里固定启用经过验证的
+        拓扑后处理和标准轴约定, 避免重新开放会破坏坐标一致性的历史调试开关
+        """
         if self.grid_input_type == "grid_map":
             return classify_grid_map(
                 self.latest_grid,
@@ -248,15 +211,15 @@ class GraphConstructionNode(Node):
                 normalize_low_quantile=self.config["grid_map_normalize_low_quantile"],
                 normalize_high_quantile=self.config["grid_map_normalize_high_quantile"],
                 z_offset=self.config["grid_map_z_offset"],
-                enable_postprocess=self.config["grid_map_enable_postprocess"],
+                enable_postprocess=True,
                 min_free_component_cells=self.config["grid_map_min_free_component_cells"],
                 fill_hole_max_cells=self.config["grid_map_fill_hole_max_cells"],
                 fill_hole_min_free_neighbor_ratio=self.config["grid_map_fill_hole_min_free_neighbor_ratio"],
                 majority_fill_iterations=self.config["grid_map_majority_fill_iterations"],
                 majority_fill_min_neighbors=self.config["grid_map_majority_fill_min_neighbors"],
-                transpose=self.config["grid_map_transpose"],
-                flip_x=self.config["grid_map_flip_x"],
-                flip_y=self.config["grid_map_flip_y"],
+                transpose=False,
+                flip_x=False,
+                flip_y=False,
                 fill_elevation_holes=self.config["grid_map_fill_elevation_holes"],
                 fill_elevation_radius_cells=self.config["grid_map_fill_elevation_radius_cells"],
             )
@@ -274,30 +237,41 @@ class GraphConstructionNode(Node):
         header.frame_id = self.config["global_frame"] or fallback_frame
         return header
 
-    def _maybe_log_diagnostics(self, update_result, node_stage_timings_ms: Dict[str, float]) -> None:
-        """按周期打印诊断日志, 慢帧单独升为 warning"""
-        now = perf_counter()
-        log_period = float(self.config["diagnostics_log_period_sec"])
-        slow_update_warning_ms = float(self.config["slow_update_warning_ms"])
-        total_ms = node_stage_timings_ms.get("total", 0.0)
-        should_warn = slow_update_warning_ms > 0.0 and total_ms >= slow_update_warning_ms
-        should_log = log_period > 0.0 and now - self._last_diagnostics_log_time >= log_period
 
-        if not should_warn and not should_log:
-            return
+def _resolve_config(config: Mapping[str, Any]) -> Dict[str, Any]:
+    """合并稳定默认值并验证 Graph Construction 配置契约
 
-        if should_log:
-            self._last_diagnostics_log_time = now
+    ROS 适配默认值来自 DEFAULT_CONFIG, 纯算法默认值来自 GraphBuilderConfig
+    未知字段直接报错, 避免拼写错误或已删除参数被静默忽略
+    """
+    allowed_keys = set(DEFAULT_CONFIG)
+    allowed_keys.update(field.name for field in fields(GraphBuilderConfig))
+    unknown_keys = sorted(set(config) - allowed_keys)
+    if unknown_keys:
+        raise ValueError(f"Unknown graph construction config keys: {', '.join(unknown_keys)}")
 
-        message = _format_update_diagnostics(update_result, node_stage_timings_ms)
-        if should_warn:
-            self.get_logger().warn(f"导航图更新较慢, {message}")
-        else:
-            self.get_logger().info(f"导航图更新诊断, {message}")
+    resolved = {**DEFAULT_CONFIG, **config}
+    grid_input_type = str(resolved["grid_input_type"])
+    if grid_input_type not in GRID_INPUT_TYPES:
+        raise ValueError(
+            f"grid_input_type must be one of {sorted(GRID_INPUT_TYPES)}, got '{grid_input_type}'"
+        )
+    if float(resolved["publish_rate_hz"]) <= 0.0:
+        raise ValueError("publish_rate_hz must be greater than 0")
+    if int(resolved["free_threshold"]) > int(resolved["obstacle_threshold"]):
+        raise ValueError("free_threshold must not exceed obstacle_threshold")
+    if float(resolved["grid_map_obstacle_threshold"]) > float(resolved["grid_map_free_threshold"]):
+        raise ValueError("grid_map_obstacle_threshold must not exceed grid_map_free_threshold")
+
+    low_quantile = float(resolved["grid_map_normalize_low_quantile"])
+    high_quantile = float(resolved["grid_map_normalize_high_quantile"])
+    if not 0.0 <= low_quantile < high_quantile <= 1.0:
+        raise ValueError("GridMap normalization quantiles must satisfy 0 <= low < high <= 1")
+    return resolved
 
 
 def _builder_config(config: Dict[str, Any]) -> GraphBuilderConfig:
-    """从完整 ROS 配置中提取 GraphBuilder 需要的字段"""
+    """只把纯算法字段传给 GraphBuilderConfig"""
     allowed = {field.name for field in fields(GraphBuilderConfig)}
     values = {
         key: value
@@ -334,83 +308,6 @@ def _format_robot_stats(odom_position: Any, ground_position: Any, ground_project
     )
 
 
-def _format_update_diagnostics(update_result: Any, node_stage_timings_ms: Dict[str, float]) -> str:
-    """格式化周期性 graph update 诊断日志"""
-    diagnostics = update_result.diagnostics
-    current_node_status = _format_current_node_status(diagnostics.current_node_status)
-    return (
-        f"节点数={diagnostics.node_count}, 边数={diagnostics.edge_count}, "
-        f"frontier节点={diagnostics.frontier_node_count}, frontier栅格={diagnostics.frontier_cell_count}, "
-        f"frontier候选={diagnostics.frontier_candidate_count}, "
-        f"连通分量={diagnostics.connected_components}, 当前分量大小={diagnostics.current_component_size}, "
-        f"当前节点={diagnostics.current_node_id}, 当前节点状态={current_node_status}, "
-        f"节点度数=min/{diagnostics.degree_min},avg/{diagnostics.degree_avg:.2f},max/{diagnostics.degree_max}"
-        f"{_format_grid_stats(update_result.classified_grid.stats)}, "
-        f"阶段耗时={_format_stage_timings(update_result.diagnostics.stage_timings_ms, node_stage_timings_ms)}"
-    )
-
-
-def _format_current_node_status(status: str) -> str:
-    """把内部 current node 状态映射为中文日志"""
-    labels = {
-        "reachable": "安全可达",
-        "geometry_fallback": "几何回退",
-        "missing": "缺失",
-    }
-    return labels.get(status, status)
-
-
-def _format_stage_timings(
-    builder_stage_timings_ms: Dict[str, float],
-    node_stage_timings_ms: Dict[str, float],
-) -> str:
-    """按固定顺序输出 builder 和 ROS node 两层耗时"""
-    entries: list[tuple[str, float]] = []
-    node_order = [
-        "classify_grid",
-        "builder_update",
-        "convert_graph_msg",
-        "publish_graph",
-        "publish_viz",
-        "total",
-    ]
-    builder_order = [
-        "prepare_grid",
-        "distance_fields",
-        "update_nodes",
-        "sample_nodes",
-        "update_frontiers",
-        "current_node",
-        "build_edges",
-        "total",
-    ]
-
-    for name in node_order:
-        if name in node_stage_timings_ms:
-            entries.append((f"node.{name}", node_stage_timings_ms[name]))
-    for name in builder_order:
-        if name in builder_stage_timings_ms:
-            entries.append((f"builder.{name}", builder_stage_timings_ms[name]))
-
-    seen_names = {name for name, _ in entries}
-    for name, value in node_stage_timings_ms.items():
-        entry_name = f"node.{name}"
-        if entry_name not in seen_names:
-            entries.append((entry_name, value))
-            seen_names.add(entry_name)
-    for name, value in builder_stage_timings_ms.items():
-        entry_name = f"builder.{name}"
-        if entry_name not in seen_names:
-            entries.append((entry_name, value))
-
-    return ", ".join(f"{name}={value:.1f}ms" for name, value in entries)
-
-
-def _elapsed_ms(start_time: float) -> float:
-    """计算阶段耗时, 单位毫秒"""
-    return (perf_counter() - start_time) * 1000.0
-
-
 def _stamp_to_seconds(header: Any) -> float:
     """将 ROS header stamp 转成纯算法层使用的秒"""
     return float(header.stamp.sec) + float(header.stamp.nanosec) * 1e-9
@@ -426,37 +323,43 @@ def _robot_position(odom_msg: Odometry):
 
 
 def _load_config(config_name: str, overrides: list[str] | None = None) -> Dict[str, Any]:
-    """加载安装目录或绝对路径中的 yaml 配置"""
+    """加载 YAML 配置并应用 launch 覆盖
+
+    相对路径从已安装 package share 的 configs 目录解析
+    缺失文件, 缺失 YAML 依赖和非 mapping 顶层结构都视为启动错误
+    """
     config_path = Path(config_name)
     if not config_path.is_absolute():
         share_dir = Path(get_package_share_directory("graph_construction"))
         config_path = share_dir / "configs" / config_name
 
     if not config_path.exists():
-        return {}
+        raise FileNotFoundError(f"Graph construction config not found: {config_path}")
 
     try:
         import yaml
-    except ImportError:
-        return {}
+    except ImportError as exc:
+        raise RuntimeError("PyYAML is required to load graph construction config") from exc
 
     with config_path.open("r", encoding="utf-8") as config_file:
         loaded = yaml.safe_load(config_file) or {}
-    return _apply_config_overrides(loaded, overrides or [])
+    if not isinstance(loaded, dict):
+        raise ValueError(f"Graph construction config must be a mapping: {config_path}")
+    return _resolve_config(_apply_config_overrides(loaded, overrides or []))
 
 
 def _apply_config_overrides(config: Dict[str, Any], overrides: list[str]) -> Dict[str, Any]:
-    """应用 launch 传入的 key=value 覆盖项"""
+    """解析 launch 传入的 key=value 标量覆盖项"""
     try:
         import yaml
-    except ImportError:
-        yaml = None
+    except ImportError as exc:
+        raise RuntimeError("PyYAML is required to parse graph construction overrides") from exc
 
     for item in overrides:
         if "=" not in item:
             raise ValueError(f"Invalid config override '{item}', expected key=value")
         key, raw_value = item.split("=", 1)
-        config[key] = yaml.safe_load(raw_value) if yaml is not None else raw_value
+        config[key] = yaml.safe_load(raw_value)
     return config
 
 
