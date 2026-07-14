@@ -163,7 +163,12 @@ class SparseGraphBuilder:
         # 距离场用于节点 clearance 和 frontier 生命周期判断
         stage_start = perf_counter()
         sdf_obstacle = distance_to_mask(grid.obstacle, grid.resolution)
-        sdf_unknown = distance_to_mask(grid.unknown, grid.resolution)
+        # rolling GridMap 外部必须视为 unknown, 否则全 known 局部图会产生无限探索半径
+        sdf_unknown = distance_to_mask(
+            grid.unknown,
+            grid.resolution,
+            include_grid_exterior=True,
+        )
         stage_timings_ms["distance_fields"] = _elapsed_ms(stage_start)
 
         # 先刷新旧节点, 再采样和建边
@@ -261,6 +266,9 @@ class SparseGraphBuilder:
     ) -> None:
         """用可靠局部观测刷新历史节点, unknown 和窗口外区域不否定记忆"""
         for node_id, node in list(self.graph.nodes.items()):
+            # 旧进程可能已保存非有限半径, 该值不能表达全局探索覆盖
+            if not math.isfinite(node.explored_radius) or node.explored_radius < 0.0:
+                node.explored_radius = 0.0
             if node.is_robot_anchor:
                 continue
             grid_index = grid.world_to_grid(node.position[0], node.position[1])
@@ -301,14 +309,27 @@ class SparseGraphBuilder:
         stamp_seconds: float,
         reachable_free: np.ndarray,
     ) -> None:
-        """在机器人当前可达的 free 分量中按固定 stride 采样新节点
+        """在机器人当前可达 free 分量中按分层世界网格补充节点
 
-        可达分量约束替代旧的机器人高度差过滤, 避免长坡历史被误删
-        同时防止在墙体另一侧或不连通高层表面生成规划节点
+        最细网格由 sample stride 决定, free radius 越大则选择越粗的嵌套层级
+        所有层级共享世界坐标锚点, rolling GridMap 移动时不会改变节点排列
         """
         stride = max(1, int(self.config.sample_stride))
-        for iy in range(0, grid.height, stride):
-            for ix in range(0, grid.width, stride):
+        base_spacing = max(grid.resolution, stride * grid.resolution)
+        lattice_offset = grid.resolution * 0.5
+        min_key_x, max_key_x, min_key_y, max_key_y = _world_lattice_bounds(
+            grid,
+            base_spacing,
+            lattice_offset,
+        )
+        for lattice_y in range(min_key_y, max_key_y + 1):
+            for lattice_x in range(min_key_x, max_key_x + 1):
+                world_x = lattice_x * base_spacing + lattice_offset
+                world_y = lattice_y * base_spacing + lattice_offset
+                grid_index = grid.world_to_grid(world_x, world_y)
+                if grid_index is None:
+                    continue
+                ix, iy = grid_index
                 if not grid.is_free_index(ix, iy):
                     continue
                 if not reachable_free[iy, ix]:
@@ -316,8 +337,19 @@ class SparseGraphBuilder:
                 if float(sdf_obstacle[iy, ix]) < self.config.min_obstacle_clearance:
                     continue
 
-                position = grid.grid_to_world(ix, iy)
+                free_radius = min(
+                    float(sdf_obstacle[iy, ix]),
+                    float(sdf_unknown[iy, ix]),
+                    self.config.max_free_radius,
+                )
+                lattice_multiple = _adaptive_lattice_multiple(
+                    free_radius,
+                    base_spacing,
+                )
+                if lattice_x % lattice_multiple != 0 or lattice_y % lattice_multiple != 0:
+                    continue
 
+                position = (world_x, world_y, grid.elevation_at_index(ix, iy))
                 if self.graph.nearest_node(
                     position,
                     max_distance=self.config.min_node_separation,
@@ -325,11 +357,7 @@ class SparseGraphBuilder:
                     continue
 
                 node = self.graph.create_node(position=position, stamp_seconds=stamp_seconds)
-                node.free_radius = min(
-                    float(sdf_obstacle[iy, ix]),
-                    float(sdf_unknown[iy, ix]),
-                    self.config.max_free_radius,
-                )
+                node.free_radius = free_radius
                 node.explored_radius = float(sdf_unknown[iy, ix])
 
     def _update_current_node(
@@ -495,6 +523,40 @@ class SparseGraphBuilder:
         return None
 
 GraphBuilder = SparseGraphBuilder
+
+
+def _adaptive_lattice_multiple(free_radius: float, base_spacing: float) -> int:
+    """选择不超过局部自由半径的二次幂网格倍数"""
+    safe_base_spacing = max(float(base_spacing), 1e-6)
+    target_spacing = max(safe_base_spacing, float(free_radius))
+    multiple = 1
+    while safe_base_spacing * multiple * 2 <= target_spacing:
+        multiple *= 2
+    return multiple
+
+
+def _world_lattice_bounds(
+    grid: ClassifiedGrid,
+    spacing: float,
+    offset: float,
+) -> Tuple[int, int, int, int]:
+    """计算覆盖当前 GridMap 的世界坐标网格键范围"""
+    corner_points = [
+        grid.grid_to_world(ix, iy)
+        for ix in (0, grid.width - 1)
+        for iy in (0, grid.height - 1)
+    ]
+    margin = grid.resolution
+    min_x = min(point[0] for point in corner_points) - margin
+    max_x = max(point[0] for point in corner_points) + margin
+    min_y = min(point[1] for point in corner_points) - margin
+    max_y = max(point[1] for point in corner_points) + margin
+    return (
+        int(math.ceil((min_x - offset) / spacing)),
+        int(math.floor((max_x - offset) / spacing)),
+        int(math.ceil((min_y - offset) / spacing)),
+        int(math.floor((max_y - offset) / spacing)),
+    )
 
 
 def _elapsed_ms(start_time: float) -> float:

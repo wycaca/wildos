@@ -147,7 +147,10 @@ graph_builder.py
 当前原则:
 
 - 新 node 从当前 free cells 中采样
-- 采样点之间保持 `min_node_separation`
+- 候选点固定在世界坐标对齐的嵌套网格上, rolling GridMap 移动不改变排列相位
+- `sample_stride` 定义最细网格间距, free radius 越大则选择越粗的二次幂网格层级
+- 障碍物和 unknown 附近使用细网格, 开阔区域使用粗网格
+- `min_node_separation` 防止重复补点, 同时用于 robot anchor breadcrumb 固化阈值
 - 已有 node 跨帧保留, 避免 UUID 抖动
 - 明确落入障碍或不可用区域的 node 会被移除或失效
 - 当前局部地图外的历史 node 可作为 graph memory 保留
@@ -309,6 +312,10 @@ graphnav_planner/src/path_follower_node.cpp
 - virtual goal 只参与搜索
 - 默认不把 virtual goal 加入可执行 path
 - 默认不把 unknown frontier point 加入可执行 path
+- 探索分支保存完整有序路径, 候选必须经过已提交尾部并继续向前延伸
+- Graph 更新只验证或延伸当前提交路线, 不能因公共路径前缀或瞬时 Frontier 分数切换分支
+- 路径进度使用单调弧长, 横移和回退不重置死路计时
+- 只有提交路线变化、真实目标路线拓扑变化或路线失效时发布新 Path
 - 到达 goal 半径内时发布当前位置单点 path
 - `path_follower_node` 输出 `/spot1/tracking_goal_pose`
 

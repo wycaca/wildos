@@ -12,6 +12,7 @@
 
 - 长期保存稳定节点、edge、explored radius、current node 和 traversal memory
 - unknown 或滚动窗口移出不能删除历史路线
+- explored radius 只表示节点周围到当前 unknown 边界的有限局部覆盖, 不能表达全局已探索
 
 ### Active Frontier
 
@@ -30,7 +31,7 @@
 
 - planner 将未选择分支保存为稳定 owner UUID、位置、发现方向和发现顺序
 - 当前 `ActiveBranch` 有进展时 deferred branch 不参与实时候选排序
-- 当前分支持续无 odom 进展后, 临时屏蔽失败邻域并恢复最早可达分支
+- 当前路径 edge 失效或持续无路径弧长进展后, 临时屏蔽失败邻域并恢复最早可达分支
 - 返回保存入口后由当前地图 Frontier 接管, 不恢复历史视觉评分
 
 ## 参数变化
@@ -38,7 +39,7 @@
 - 删除 `min_frontier_separation`
 - 不新增 deferred branch 参数
 - 继续复用 `frontier_progress_timeout` 作为当前分支无进展确认时间
-- 继续复用 `frontier_continuity_radius` 屏蔽刚失败的分支邻域
+- 继续复用 `frontier_continuity_radius` 处理 Frontier UUID 消失后的近邻迁移和失败邻域屏蔽, Unity 默认 `5m`
 
 ## 修改文件
 
@@ -60,5 +61,12 @@
 
 - Graph Construction、Current Frontier Scores 和 Object Search 相关定向测试共 `41` 项通过
 - `graph_construction`、`visual_navigation` 和 `graphnav_planner` 构建通过
-- deferred branch 两项 GTest 通过
+- committed branch 和 deferred branch 九项 GTest 通过
 - 包级 `uncrustify` 仍报告该包原有 C++ 文件整体格式差异, 本次不重排无关代码
+
+## 后续修正
+
+- rolling GridMap 外部按 unknown 处理, 避免全 known 局部图生成无限 explored radius
+- Frontier 覆盖索引忽略非有限历史半径, 防止全部当前 Frontier 被错误清除
+- 详细修复见 `2026-07-14-explored-radius-and-free-radius-sampling.md`
+- 分支硬锁定和路径发布去抖见 `2026-07-14-committed-branch-and-path-debounce.md`

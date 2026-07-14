@@ -226,6 +226,12 @@ class Planner
 public:
   using Polygon = std::vector<Eigen::Vector3f>;
 
+  struct PlanningResult
+  {
+    std::vector<Eigen::Vector3d> path;
+    bool path_changed;
+  };
+
   Planner(rclcpp::Logger logger);
   void set_trav_class(std::string trav_class);
   void start_directional_exploration(
@@ -239,7 +245,7 @@ public:
   // void set_keep_out_polygons(std::vector<Polygon> &keep_out_polygons);
   // void set_dynamic_obstacles(std::vector<Polygon> &obstacles);
   void update_graph(graphnav_msgs::msg::NavigationGraph::ConstSharedPtr graph);
-  std::vector<Eigen::Vector3d> plan_to_goal(
+  PlanningResult plan_to_goal(
     Eigen::Vector3d& goal,
     double goal_radius,
     rclcpp::Time current_time,
@@ -269,10 +275,10 @@ private:
     Eigen::Vector3d frontier_position;
     std::string frontier_uuid;
     rclcpp::Time progress_time;
-    Eigen::Vector3d progress_position;
-    std::unordered_set<std::string> path_node_uuids;
-    std::optional<Eigen::Vector3d> direction;
+    double max_path_progress;
+    std::vector<std::string> path_node_uuids;
     std::vector<Eigen::Vector3d> path_points;
+    std::optional<Eigen::Vector3d> terminal_direction;
     bool recovering_deferred;
   };
 
@@ -283,6 +289,30 @@ private:
     Eigen::Vector3d discovery_direction;
     std::uint64_t discovery_order;
   };
+
+  struct FrontierCandidate
+  {
+    graaf::vertex_id_t id;
+    Eigen::Vector3d position;
+    std::string uuid;
+    std::vector<std::string> path_node_uuids;
+    std::vector<Eigen::Vector3d> path_points;
+    Eigen::Vector3d initial_direction;
+    double frontier_cost;
+    double total_cost;
+    bool is_deferred;
+  };
+
+  enum class BranchRelation
+  {
+    none,
+    same_frontier,
+    ordered_extension,
+    spatial_migration,
+    deferred_handoff,
+  };
+
+  using NodeIdsByUuid = std::unordered_map<std::string, graaf::vertex_id_t>;
 
   std::optional<UnexploredSpaceMap> compute_unexplored_space_map();
 
@@ -303,6 +333,8 @@ private:
   std::optional<rclcpp::Time> stalled_frontier_until_;
   std::optional<std::string> last_current_node_uuid_;
   std::unordered_set<std::string> traversed_edges_;
+  std::vector<std::string> direct_path_node_uuids_;
+  std::vector<Eigen::Vector3d> direct_path_points_;
 
   std::unordered_map<graaf::vertex_id_t, std::pair<graphnav_msgs::msg::Node, std::pair<double, double>>> frontier_scores_;
 
@@ -313,6 +345,21 @@ private:
     const std::string& node_uuid,
     const Eigen::Vector3d& position,
     const Eigen::Vector3d& direction);
+  void update_active_branch_progress(
+    const Eigen::Vector3d& current_position,
+    rclcpp::Time current_time);
+  bool committed_path_invalid(
+    const NodeIdsByUuid& node_ids_by_uuid,
+    const std::string& current_uuid,
+    const Eigen::Vector3d& current_position) const;
+  void release_active_branch(const char* reason, rclcpp::Time current_time);
+  BranchRelation classify_branch_candidate(
+    const FrontierCandidate& candidate,
+    const NodeIdsByUuid& node_ids_by_uuid) const;
+  static int branch_relation_rank(BranchRelation relation);
+  bool extend_active_branch(
+    const FrontierCandidate& candidate,
+    BranchRelation relation);
   static std::string stable_edge_key(
     const graphnav_msgs::msg::UUID& from_uuid,
     const graphnav_msgs::msg::UUID& to_uuid);
@@ -322,7 +369,7 @@ public:
   double goal_dist_cost_factor_ = 1.0;
   double frontier_score_factor_ = 10.0;
   bool append_virtual_goal_to_path_ = false;
-  double frontier_continuity_radius_ = 7.0;
+  double frontier_continuity_radius_ = 5.0;
   double frontier_progress_timeout_ = 12.0;
   double revisit_cost_factor_ = 1.0;
 

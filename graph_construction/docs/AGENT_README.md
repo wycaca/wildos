@@ -192,11 +192,15 @@ Graph Construction 参数按职责分为三层:
 - 历史节点重新进入 free 区域时使用自身 cell 的 elevation 更新高度, 不与机器人当前高度比较
 - 低于新边 clearance 阈值的历史节点继续保留, 该阈值不再删除路线记忆
 - 历史 edge 固定保留, 只用当前可见障碍证伪
+- 普通节点使用世界坐标对齐的嵌套分层网格, rolling GridMap 移动时排列不漂移
+- `sample_stride` 定义最细网格, 局部 free radius 越大则使用越粗的二次幂网格层级
+- `min_node_separation` 同时防止重复补点, 开阔区域稀疏且障碍物和 unknown 附近保持较密节点
 - Frontier 只表示当前地图可验证的 free/unknown 边界, 移出滚动窗口后清除活动状态但保留 owner 节点
 - 当前可见 Frontier owner 使用世界坐标键稳定继承, 避免同一边界在相邻帧反复换 UUID
-- 新 Frontier 落入任一持久节点的 explored radius 时不再创建, 重复探索由稀疏图覆盖状态抑制
+- rolling GridMap 外部按 unknown 处理, free radius 和 explored radius 始终保持局部有限值
+- 新 Frontier 落入任一持久节点的有限 explored radius 时不再创建, 重复探索由稀疏图覆盖状态抑制
 - disconnected component 始终保留, current node 短时断边不会清空其他历史路线
-- 脚下点云缺失时启用 robot anchor current node, anchor 移动超过节点间距后固化旧位置为 breadcrumb
+- 脚下点云缺失时启用 robot anchor current node, anchor 移动超过 `min_node_separation` 后固化旧位置为 breadcrumb
 - graph 数据 z 保持贴近 elevation surface, RViz marker 额外抬高显示
 - graph edge 要求 line 和 clearance 都安全, 避免路径贴墙或穿障碍
 
@@ -235,14 +239,17 @@ front / left / right camera
 - 输入 Object Search 状态, 明确区分初始方向探索和真实目标导航
 - 使用 graph edge 做搜索, virtual goal 只参与搜索
 - 默认不把 virtual goal 或 unknown frontier point 追加进可执行 path
-- 使用显式 `ActiveBranch` 保存 Frontier、路径 UUID、局部方向、进度和最后有效高层路径
+- 使用显式 `ActiveBranch` 保存 Frontier、完整有序路径 UUID、尾部方向、弧长进度和最后有效高层路径
+- 同分支继承要求候选路径有序经过已提交尾节点并继续向前延伸, 共享机器人附近公共前缀不能继承
 - Frontier 短暂失配时复用最后有效路径后缀, 不立即切换其他分支
 - 未选择分支进入 `DeferredBranch` 记忆, 正常前进时不参与实时 Frontier 排序
-- 当前分支持续无进展后释放活动分支并临时屏蔽失败邻域, 优先恢复最早保存的可达分支
+- 进度按机器人在已提交路径上的单调弧长计算, 横移和回退不能重置无进展计时
+- 当前路径 edge 确认失效或持续无路径进展后才释放活动分支, 并优先恢复最早保存的可达分支
 - 同一走廊仍有可达候选时禁止按瞬时视觉分数或总代价切换
 - 按稳定 UUID edge 二值记录是否经过, 已走边增加固定代价但不会被禁止
 - 初始 `30m` 粗目标只作为方向 lookahead, 越过该位置不会停止或反向规划
 - planner 通过私有 `~/path` 输出 `/spot1/graphnav_planner/path`
+- Graph 更新继续触发路线验证, 但只有提交分支延伸、目标路线拓扑变化、路线失效或恢复分支时发布新 Path
 - 集成 launch 只启动 planner, 路径细化和执行由自研导航负责
 
 ## TODO 和 Roadmap
@@ -252,15 +259,19 @@ front / left / right camera
 - 持久图只保存节点、edge、explored radius 和访问状态
 - Frontier 移出当前滚动地图后立即取消活动状态, owner 节点和历史路线继续保留
 - `CurrentFrontierScores` 每帧聚合三相机当前证据, 不保留旧视角评分
-- 已探索区域通过持久节点 explored radius 阻止重复 Frontier, 不再维护 removed Frontier 坐标集合
+- 已探索区域通过持久节点有限 explored radius 阻止重复 Frontier, 非有限历史值不能参与覆盖
 - 实施记录见 `docs/2026-07-14/2026-07-14-frontier-lifecycle-and-deferred-branch.md`
+- 半径边界和自适应网格采样见 `docs/2026-07-14/2026-07-14-explored-radius-and-free-radius-sampling.md`
 
 ### P1, 活动分支锁定, 已完成
 
-- `graphnav_planner` 已增加显式 `ActiveBranch`, 保存路径 UUID、终点 Frontier、局部方向、odom 进度和最后有效路径
+- `graphnav_planner` 已增加显式 `ActiveBranch`, 保存有序路径 UUID、终点 Frontier、尾部方向、路径弧长进度和最后有效路径
 - 当前分支暂时失配时复用未执行路径后缀, 不能立即退回全局无记忆选择
 - 初始探索 heading 固定为首帧 odom 前方, 有效分支允许沿走廊自然拐弯
-- 当前仅以持续无 odom 进展确认分支失败, 失败后临时屏蔽该 Frontier 邻域
+- 候选只有有序经过当前尾节点并继续向前延伸时才能更新活动分支, 公共路径前缀不能触发切换
+- 当前路径 edge 失效或持续无路径弧长进展时确认分支失败, 失败后临时屏蔽该 Frontier 邻域
+- planner 只在提交路径版本变化时发布新 Path, Unity 自研导航不需要承担该层去抖
+- 实施记录见 `docs/2026-07-14/2026-07-14-committed-branch-and-path-debounce.md`
 
 ### P1, Deferred Branch 记忆, 已完成
 

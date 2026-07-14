@@ -235,8 +235,21 @@ class ClassifiedGrid:
         return x, y
 
 
-def distance_to_mask(mask: np.ndarray, resolution: float) -> np.ndarray:
-    """计算近似 8 连通距离场"""
+def distance_to_mask(
+    mask: np.ndarray,
+    resolution: float,
+    include_grid_exterior: bool = False,
+) -> np.ndarray:
+    """计算近似 8 连通距离场, 可将局部地图外部视为目标区域"""
+    if include_grid_exterior:
+        padded_mask = np.zeros((mask.shape[0] + 2, mask.shape[1] + 2), dtype=bool)
+        padded_mask[0, :] = True
+        padded_mask[-1, :] = True
+        padded_mask[:, 0] = True
+        padded_mask[:, -1] = True
+        padded_mask[1:-1, 1:-1] = mask
+        return distance_to_mask(padded_mask, resolution)[1:-1, 1:-1]
+
     height, width = mask.shape
     distances = np.full((height, width), np.inf, dtype=np.float32)
     queue = []

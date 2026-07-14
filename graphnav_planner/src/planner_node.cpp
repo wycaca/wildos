@@ -29,7 +29,7 @@ public:
     this->declare_parameter("goal_dist_cost_factor", 1.0);
     this->declare_parameter("frontier_score_factor", 10.0);
     this->declare_parameter("append_virtual_goal_to_path", false);
-    this->declare_parameter("frontier_continuity_radius", 7.0);
+    this->declare_parameter("frontier_continuity_radius", 5.0);
     this->declare_parameter("frontier_progress_timeout", 12.0);
     this->declare_parameter("revisit_cost_factor", 1.0);
 
@@ -205,51 +205,55 @@ private:
           RCLCPP_WARN(this->get_logger(), "Could not transform robot pose to graph frame: %s", ex.what());
         }
       }
-      auto path = planner_.plan_to_goal(
+      const auto planning_result = planner_.plan_to_goal(
         goal_vec,
         goal_radius_,
         this->get_clock()->now(),
         robot_position);
-      nav_msgs::msg::Path path_msg;
-      path_msg.header = *latest_graph_header_;
-      path_msg.poses.resize(path.size());
-      for (size_t i = 0; i < path.size(); i++)
+      if (planning_result.path_changed)
       {
-        path_msg.poses[i].header = path_msg.header;
-        path_msg.poses[i].pose.position.x = path[i].x();
-        path_msg.poses[i].pose.position.y = path[i].y();
-        path_msg.poses[i].pose.position.z = path[i].z();
-        if (i < path.size() - 1)
+        // Graph 高频更新只做路线验证, 仅提交分支改变或路线失效时发布新 Path
+        nav_msgs::msg::Path path_msg;
+        path_msg.header = *latest_graph_header_;
+        path_msg.poses.resize(planning_result.path.size());
+        for (size_t i = 0; i < planning_result.path.size(); i++)
         {
-          // 相邻路径点重合时保留默认朝向, 避免零向量归一化
-          Eigen::Vector3d delta = path[i + 1] - path[i];
-          if (delta.norm() < 1e-6)
+          path_msg.poses[i].header = path_msg.header;
+          path_msg.poses[i].pose.position.x = planning_result.path[i].x();
+          path_msg.poses[i].pose.position.y = planning_result.path[i].y();
+          path_msg.poses[i].pose.position.z = planning_result.path[i].z();
+          if (i < planning_result.path.size() - 1)
           {
-            path_msg.poses[i].pose.orientation.w = 1.0;
-            continue;
+            // 相邻路径点重合时保留默认朝向, 避免零向量归一化
+            Eigen::Vector3d delta = planning_result.path[i + 1] - planning_result.path[i];
+            if (delta.norm() < 1e-6)
+            {
+              path_msg.poses[i].pose.orientation.w = 1.0;
+              continue;
+            }
+            Eigen::Vector3d direction = delta.normalized();
+            Eigen::Matrix3d orientation = Eigen::Matrix3d::Identity();
+            Eigen::Vector3d lateral = Eigen::Vector3d::UnitZ().cross(direction);
+            if (lateral.norm() < 1e-6)
+            {
+              path_msg.poses[i].pose.orientation.w = 1.0;
+              continue;
+            }
+            orientation.col(1) = lateral.normalized();
+            orientation.col(0) = orientation.col(1).cross(orientation.col(2)).normalized();
+            Eigen::Quaterniond quaternion(orientation);
+            path_msg.poses[i].pose.orientation.x = quaternion.x();
+            path_msg.poses[i].pose.orientation.y = quaternion.y();
+            path_msg.poses[i].pose.orientation.z = quaternion.z();
+            path_msg.poses[i].pose.orientation.w = quaternion.w();
           }
-          Eigen::Vector3d d = delta.normalized();
-          Eigen::Matrix3d m = Eigen::Matrix3d::Identity();
-          Eigen::Vector3d lateral = Eigen::Vector3d::UnitZ().cross(d);
-          if (lateral.norm() < 1e-6)
+          else
           {
-            path_msg.poses[i].pose.orientation.w = 1.0;
-            continue;
+            path_msg.poses[i].pose.orientation = goal_in_graph_frame.pose.orientation;
           }
-          m.col(1) = lateral.normalized();
-          m.col(0) = m.col(1).cross(m.col(2)).normalized();
-          Eigen::Quaterniond q(m);
-          path_msg.poses[i].pose.orientation.x = q.x();
-          path_msg.poses[i].pose.orientation.y = q.y();
-          path_msg.poses[i].pose.orientation.z = q.z();
-          path_msg.poses[i].pose.orientation.w = q.w();
         }
-        else  // last waypoint
-        {
-          path_msg.poses[i].pose.orientation = goal_in_graph_frame.pose.orientation;
-        }
+        path_pub_->publish(path_msg);
       }
-      path_pub_->publish(path_msg);
       if (grid_map_debug_pub_->get_subscription_count() > 0)
       {
         grid_map_msgs::msg::GridMap grid_map_msg = planner_.get_unexplored_debug_map();

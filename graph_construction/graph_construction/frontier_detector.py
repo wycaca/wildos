@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import ceil, hypot
+from math import ceil, hypot, isfinite
 from typing import Dict, Iterable, List, Sequence, Tuple
 
 from graph_construction.graph_memory import GraphState, InternalNode, Point3
@@ -277,7 +277,11 @@ class _ExploredAreaIndex:
         self.nodes = {
             node.node_id: node
             for node in nodes
-            if not node.is_robot_anchor and node.explored_radius > self.resolution
+            if (
+                not node.is_robot_anchor
+                and isfinite(node.explored_radius)
+                and node.explored_radius > self.resolution
+            )
         }
         max_radius = max(
             (node.explored_radius for node in self.nodes.values()),

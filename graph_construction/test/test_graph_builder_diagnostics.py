@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 
 from graph_construction.graph_builder import GraphBuilderConfig, SparseGraphBuilder
@@ -5,6 +7,90 @@ from graph_construction.edge_builder import EdgeBuilder
 from graph_construction.graph_memory import GraphState, InternalEdge
 from graph_construction.grid_types import ClassifiedGrid
 from graph_construction.grid_types import distance_to_mask
+
+
+def test_unknown_distance_field_treats_grid_exterior_as_unknown():
+    """局部地图没有 unknown cell 时, 地图外部仍提供有限未知距离"""
+    unknown = np.zeros((5, 5), dtype=bool)
+
+    distances = distance_to_mask(
+        unknown,
+        resolution=1.0,
+        include_grid_exterior=True,
+    )
+
+    assert np.isfinite(distances).all()
+    assert distances[0, 0] == 1.0
+    assert distances[2, 2] == 3.0
+
+
+def test_graph_builder_replaces_nonfinite_explored_radius():
+    """历史 inf explored radius 必须在下一帧恢复为局部有限覆盖"""
+    grid = ClassifiedGrid(
+        width=5,
+        height=5,
+        resolution=1.0,
+        origin_x=0.0,
+        origin_y=0.0,
+        frame_id="map",
+        free=np.ones((5, 5), dtype=bool),
+        obstacle=np.zeros((5, 5), dtype=bool),
+        unknown=np.zeros((5, 5), dtype=bool),
+    )
+    builder = SparseGraphBuilder(
+        GraphBuilderConfig(
+            sample_stride=10,
+            min_obstacle_clearance=0.0,
+            edge_radius=10.0,
+        )
+    )
+    node = builder.graph.create_node(position=(2.5, 2.5, 0.0), stamp_seconds=1.0)
+    node.explored_radius = math.inf
+
+    result = builder.update(grid, robot_position=(2.5, 2.5, 0.0), stamp_seconds=2.0)
+
+    assert math.isfinite(result.graph.nodes[node.node_id].explored_radius)
+    assert result.graph.nodes[node.node_id].explored_radius == 3.0
+
+
+def test_node_sampling_uses_world_aligned_adaptive_lattice():
+    """节点保持世界网格排列, unknown 附近密集且开阔区域稀疏"""
+    free = np.ones((12, 12), dtype=bool)
+    unknown = np.zeros((12, 12), dtype=bool)
+    unknown[:, 0] = True
+    free[:, 0] = False
+    grid = ClassifiedGrid(
+        width=12,
+        height=12,
+        resolution=1.0,
+        origin_x=0.0,
+        origin_y=0.0,
+        frame_id="map",
+        free=free,
+        obstacle=np.zeros((12, 12), dtype=bool),
+        unknown=unknown,
+    )
+    builder = SparseGraphBuilder(
+        GraphBuilderConfig(
+            sample_stride=1,
+            min_node_separation=0.1,
+            max_free_radius=4.0,
+            min_obstacle_clearance=0.0,
+            edge_radius=10.0,
+        )
+    )
+
+    result = builder.update(grid, robot_position=(5.5, 5.5, 0.0), stamp_seconds=2.0)
+    positions = {
+        (node.position[0], node.position[1])
+        for node in result.graph.nodes.values()
+        if not node.is_robot_anchor
+    }
+
+    assert positions
+    assert all((x - 0.5).is_integer() and (y - 0.5).is_integer() for x, y in positions)
+    assert (1.5, 6.5) in positions
+    assert (6.5, 6.5) not in positions
 
 
 def test_graph_builder_returns_stage_timing_diagnostics():

@@ -576,7 +576,7 @@ def _planner_node(
             {"frontier_dist_cost_factor": 2.0},
             {"goal_dist_cost_factor": 1.0},
             {"frontier_score_factor": 20.0},
-            {"frontier_continuity_radius": 10.0},
+            {"frontier_continuity_radius": 5.0},
             {"frontier_progress_timeout": 12.0},
             {"revisit_cost_factor": 1.0},
             {"trav_class": "default"},

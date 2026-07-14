@@ -119,6 +119,27 @@ def test_frontier_inside_persistent_explored_area_is_not_recreated():
     assert explored_node.frontier_points == []
 
 
+def test_nonfinite_explored_radius_does_not_hide_current_frontier():
+    """失效的无限探索半径不能把当前可见 Frontier 全部过滤"""
+    free = np.ones((6, 6), dtype=bool)
+    unknown = np.zeros((6, 6), dtype=bool)
+    unknown[2, 3] = True
+    free[2, 3] = False
+    graph = GraphState()
+    stale_node = graph.create_node(position=(0.5, 0.5, 0.0), stamp_seconds=1.0)
+    stale_node.explored_radius = float("inf")
+    owner = graph.create_node(position=(2.5, 2.5, 0.0), stamp_seconds=1.0)
+
+    _frontier_detector().assign_frontiers(
+        graph,
+        _grid(free=free, unknown=unknown),
+        frontier_cells=[(2, 2)],
+    )
+
+    assert owner.is_frontier
+    assert owner.frontier_points == [(2.5, 2.5, 0.0)]
+
+
 def test_navigation_clearance_does_not_delete_historical_node():
     """低于新边安全阈值的历史节点仍应保留为路线记忆"""
     obstacle = np.zeros((5, 5), dtype=bool)

@@ -40,7 +40,7 @@ launch:
         - name: frontier_score_factor
           value: 20.0
         - name: frontier_continuity_radius
-          value: 10.0
+          value: 5.0
         - name: frontier_progress_timeout
           value: 12.0
         - name: revisit_cost_factor
