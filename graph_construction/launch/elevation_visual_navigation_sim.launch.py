@@ -131,7 +131,6 @@ def generate_launch_description():
             _profile_arg("object_search_memory_goal_distance", "object_search_memory_goal_distance"),
             _profile_arg("object_search_target_reached_radius", "object_search_target_reached_radius"),
             _profile_arg("object_search_object_reached_timeout_sec", "object_search_object_reached_timeout_sec"),
-            _profile_arg("object_search_reached_latch_timeout_sec", "object_search_reached_latch_timeout_sec"),
             _profile_arg(
                 "object_search_object_reached_require_target_distance",
                 "object_search_object_reached_require_target_distance",
@@ -492,14 +491,6 @@ def _launch_setup(context):
                     profile,
                     "object_search_object_reached_timeout_sec",
                     "object_search_object_reached_timeout_sec",
-                )
-            },
-            {
-                "reached_latch_timeout_sec": _float_value(
-                    context,
-                    profile,
-                    "object_search_reached_latch_timeout_sec",
-                    "object_search_reached_latch_timeout_sec",
                 )
             },
             {

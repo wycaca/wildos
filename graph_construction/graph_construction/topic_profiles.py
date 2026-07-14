@@ -84,7 +84,6 @@ PROFILE_KEY_DESCRIPTIONS = {
     "object_search_memory_goal_distance": "目标记忆引导 goal 距离",
     "object_search_target_reached_radius": "目标 frontier 到达半径",
     "object_search_object_reached_timeout_sec": "目标近距离确认消息超时",
-    "object_search_reached_latch_timeout_sec": "目标到达后保持停止 goal 的时间",
     "object_search_object_reached_require_target_distance": "是否要求目标导航点距离足够近才接受视觉到达确认",
     "object_search_object_reached_max_target_distance": "允许视觉到达确认触发停止的最大目标距离",
     "object_search_reached_mask_fraction": "近距离确认 mask 面积比例阈值",

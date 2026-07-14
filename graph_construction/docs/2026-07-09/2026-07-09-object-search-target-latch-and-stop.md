@@ -15,8 +15,8 @@ Unity 目标搜索中, 机器人已经进入目标附近后仍会继续规划, �
 
 ## 修改
 
-- `object_search_goal_mux` 新增 `reached_latch_timeout_sec`
-- 到达确认后进入 reached latch, 持续发布当前位置 hold goal, 后续 `object_reached=False` 不会立刻恢复搜索
+- `object_search_goal_mux` 当时新增有超时的 reached latch, 当前实现已移除超时参数并改为永久完成锁
+- 到达确认后进入 reached latch, 持续发布当前位置 hold goal, 后续 `object_reached=False` 不会恢复搜索
 - `object_search_goal_mux` 新增 `object_reached_require_target_distance`, 默认 `false`, 让视觉近距离确认可以立即触发停止 latch
 - 如果现场再次出现远距离误停, 可把 `object_reached_require_target_distance=true`, 或提高 `object_search_reached_mask_fraction` 和 `object_search_reached_min_pixel_count`
 - Unity profile 默认 `object_search_latch_target_after_first_detection=true`, `object_search_latch_target_timeout_sec=12.0`

@@ -227,7 +227,8 @@ front / left / right camera
 - 未选择分支由 planner 保存稳定 owner UUID、位置、方向和发现顺序, 不把历史 Frontier 当成当前候选
 - frontier 选择、分支连续性、无进展屏蔽和回头代价统一由 `graphnav_planner` 负责
 - Unity 已启用 target latch, 支持短时遮挡后继续朝目标方向规划
-- 目标到达或近距离视觉确认后, `object_search_goal_mux` 进入 reached latch 并持续发布当前位置 hold goal
+- 目标到达或近距离视觉确认后, WildOS 永久锁定任务完成, 停止目标检测候选链和后续 False 日志
+- `object_search_goal_mux` 收到首次 reached 后永久发布当前位置 hold goal, 仅节点重启可开始新任务
 - `graphnav_planner` 到达 goal 半径内时发布当前位置单点 path, 让下游停止
 
 ## Planner 架构

@@ -96,7 +96,6 @@ profiles:
     object_search_memory_goal_distance: "10.0"
     object_search_target_reached_radius: "1.5"
     object_search_object_reached_timeout_sec: "2.0"
-    object_search_reached_latch_timeout_sec: "60.0"
     object_search_object_reached_require_target_distance: "false"
     object_search_object_reached_max_target_distance: "2.0"
 
@@ -204,7 +203,6 @@ profiles:
     object_search_memory_goal_distance: "10.0"
     object_search_target_reached_radius: "1.5"
     object_search_object_reached_timeout_sec: "5.0"
-    object_search_reached_latch_timeout_sec: "60.0"
     object_search_object_reached_require_target_distance: "false"
     object_search_object_reached_max_target_distance: "2.0"
 
@@ -312,7 +310,6 @@ profiles:
     object_search_memory_goal_distance: "10.0"
     object_search_target_reached_radius: "1.5"
     object_search_object_reached_timeout_sec: "2.0"
-    object_search_reached_latch_timeout_sec: "60.0"
     object_search_object_reached_require_target_distance: "false"
     object_search_object_reached_max_target_distance: "2.0"
 

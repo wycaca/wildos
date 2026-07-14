@@ -26,6 +26,7 @@ from visual_navigation.wildos.viz import VisualizeGoalAgnosticGeoFrontierScoring
 from explorfm import ExploRFMInference
 from visual_navigation.utils.object_search_utils import localize_query, get_objectmask_msg
 from visual_navigation.object_detection_filter import filter_object_detection_mask
+from visual_navigation.object_reached_latch import ObjectReachedLatch
 
 HOME_DIR = Path("/home/ks-server3/han/wildos_ws/src/nebula2-wildos/")
 CAMERA_MAPPING = {
@@ -180,8 +181,7 @@ class WildOS_Nav(TFLookupSubscriber):
         self._last_object_target_log_signature = None
         self._object_missing_log_count = 0
         self._object_detection_confirm_count = 0
-        self._object_reached_confirm_count = 0
-        self._object_reached_last_state = False
+        self.object_reached_latch = None
         if self.object_search_mode:
             self.object_target_min_score = float(config.object_search_config.get("target_min_score", 0.2))
             self.object_target_ray_length = float(config.object_search_config.get("target_ray_length", 8.0))
@@ -222,6 +222,11 @@ class WildOS_Nav(TFLookupSubscriber):
             self.object_reached_confirm_frames = max(
                 int(config.object_search_config.get("reached_confirm_frames", 2)),
                 1,
+            )
+            self.object_reached_latch = ObjectReachedLatch(
+                self.object_reached_min_pixel_count,
+                self.object_reached_mask_fraction,
+                self.object_reached_confirm_frames,
             )
 
         # 将导航图 frontier 投影到图像
@@ -521,52 +526,57 @@ class WildOS_Nav(TFLookupSubscriber):
         object_target_candidate = None
         object_detection_rays = []
         if self.object_search_mode:
-            if self.model.model_precision.is_fp16():
-                spatial_feats = spatial_feats.half()
-
-            text_sim_spatial, binary_mask = localize_query(
-                text_feats=self.text_feats,
-                spatial_feats=spatial_feats,
-                orig_img_shape=rgb_imgs[0].shape[:2],
-                pixel_level_seg=self.pixel_level_seg,
-                mask_threshold=self.mask_threshold
-            )
-            binary_mask, detection_components = filter_object_detection_mask(
-                text_sim_spatial,
-                binary_mask,
-                min_peak_score=self.object_detection_min_peak_score,
-                min_component_pixels=self.object_detection_min_component_pixels,
-                min_component_fraction=self.object_detection_min_component_fraction,
-            )
-            has_detection_evidence = bool(detection_components)
-            if has_detection_evidence:
-                self._object_detection_confirm_count = min(
-                    self._object_detection_confirm_count + 1,
-                    self.object_detection_confirm_frames,
-                )
+            if self.object_reached_latch.completed:
+                # 任务完成后保留 scored graph 更新, 跳过目标检测、候选和 False 状态
+                binary_mask = np.zeros_like(batch_img_frontiers, dtype=np.uint8)
+                self.object_reached_publisher.publish(Bool(data=True))
             else:
-                self._object_detection_confirm_count = 0
-            object_detected = (
-                has_detection_evidence
-                and self._object_detection_confirm_count >= self.object_detection_confirm_frames
-            )
+                if self.model.model_precision.is_fp16():
+                    spatial_feats = spatial_feats.half()
 
-            if object_detected:
-                self._object_missing_log_count = 0
-                self._publish_object_reached(binary_mask)
-                tf_list = [tf_data[f"world_from_cam{i}"] for i in range(self.num_cameras)]
-                self.object_mask_publisher.publish(
-                    get_objectmask_msg(binary_mask, self.cam_inverted, odom_msg, tf_list, cam_info_msgs)
+                text_sim_spatial, binary_mask = localize_query(
+                    text_feats=self.text_feats,
+                    spatial_feats=spatial_feats,
+                    orig_img_shape=rgb_imgs[0].shape[:2],
+                    pixel_level_seg=self.pixel_level_seg,
+                    mask_threshold=self.mask_threshold
                 )
-                batch_img_frontiers = np.maximum(batch_img_frontiers, self.obj_frontier_score*binary_mask)
-                batch_img_traversability = np.maximum(batch_img_traversability, self.obj_trav_score*binary_mask)
-            else:
-                self._publish_object_reached(None)
+                binary_mask, detection_components = filter_object_detection_mask(
+                    text_sim_spatial,
+                    binary_mask,
+                    min_peak_score=self.object_detection_min_peak_score,
+                    min_component_pixels=self.object_detection_min_component_pixels,
+                    min_component_fraction=self.object_detection_min_component_fraction,
+                )
+                has_detection_evidence = bool(detection_components)
                 if has_detection_evidence:
-                    self._log_object_detection_pending(detection_components)
+                    self._object_detection_confirm_count = min(
+                        self._object_detection_confirm_count + 1,
+                        self.object_detection_confirm_frames,
+                    )
                 else:
-                    self._log_object_missing(text_sim_spatial)
-                binary_mask.fill(0)
+                    self._object_detection_confirm_count = 0
+                object_detected = (
+                    has_detection_evidence
+                    and self._object_detection_confirm_count >= self.object_detection_confirm_frames
+                )
+
+                if object_detected:
+                    self._object_missing_log_count = 0
+                    self._publish_object_reached(binary_mask)
+                    tf_list = [tf_data[f"world_from_cam{i}"] for i in range(self.num_cameras)]
+                    self.object_mask_publisher.publish(
+                        get_objectmask_msg(binary_mask, self.cam_inverted, odom_msg, tf_list, cam_info_msgs)
+                    )
+                    batch_img_frontiers = np.maximum(batch_img_frontiers, self.obj_frontier_score*binary_mask)
+                    batch_img_traversability = np.maximum(batch_img_traversability, self.obj_trav_score*binary_mask)
+                else:
+                    self._publish_object_reached(None)
+                    if has_detection_evidence:
+                        self._log_object_detection_pending(detection_components)
+                    else:
+                        self._log_object_missing(text_sim_spatial)
+                    binary_mask.fill(0)
 
         # 给几何 frontier 评分
         nav_data = []
@@ -600,7 +610,7 @@ class WildOS_Nav(TFLookupSubscriber):
                 "paths": paths,
             })
 
-        if self.object_search_mode:
+        if self.object_search_mode and not self.object_reached_latch.completed:
             if object_detected:
                 object_detection_rays = self.build_object_detection_rays(binary_mask, all_cam_data)
             object_target_candidate = self.select_object_target_candidate(
@@ -829,31 +839,15 @@ class WildOS_Nav(TFLookupSubscriber):
         )
 
     def _publish_object_reached(self, binary_mask) -> None:
+        was_completed = self.object_reached_latch.completed
         reached = self._object_reached_from_mask(binary_mask)
         self.object_reached_publisher.publish(Bool(data=reached))
-        if reached != self._object_reached_last_state:
-            self._object_reached_last_state = reached
-            self.get_logger().info(f"目标近距离确认={reached}")
+        if reached and not was_completed:
+            self.get_logger().info("目标近距离确认=True, 任务完成并永久停止")
 
     def _object_reached_from_mask(self, binary_mask) -> bool:
-        """用目标 mask 面积估计是否已经到达可达观察点"""
-        if binary_mask is None:
-            self._object_reached_confirm_count = 0
-            return False
-
-        masks = np.asarray(binary_mask)[:, 0]
-        image_area = max(float(masks.shape[-2] * masks.shape[-1]), 1.0)
-        max_pixel_count = int(np.max(np.sum(masks > 0, axis=(-2, -1))))
-        max_fraction = max_pixel_count / image_area
-        reached_candidate = (
-            max_pixel_count >= self.object_reached_min_pixel_count
-            and max_fraction >= self.object_reached_mask_fraction
-        )
-        if reached_candidate:
-            self._object_reached_confirm_count += 1
-        else:
-            self._object_reached_confirm_count = 0
-        return self._object_reached_confirm_count >= self.object_reached_confirm_frames
+        """更新永久完成锁, 完成后空帧不能恢复搜索"""
+        return self.object_reached_latch.update(binary_mask)
 
     def build_object_detection_rays(self, binary_mask, all_cam_data):
         """将图像目标 mask 质心转成 RViz 中的相机观测射线"""

@@ -37,7 +37,6 @@ class ObjectSearchGoalMux(Node):
         self.declare_parameter("memory_goal_distance", 10.0)
         self.declare_parameter("target_reached_radius", 1.5)
         self.declare_parameter("object_reached_timeout_sec", 2.0)
-        self.declare_parameter("reached_latch_timeout_sec", 60.0)
         self.declare_parameter("object_reached_require_target_distance", False)
         self.declare_parameter("object_reached_max_target_distance", 2.0)
 
@@ -61,7 +60,6 @@ class ObjectSearchGoalMux(Node):
         self.memory_goal_distance = max(self._param_float("memory_goal_distance"), 0.1)
         self.target_reached_radius = max(self._param_float("target_reached_radius"), 0.1)
         self.object_reached_timeout_sec = max(self._param_float("object_reached_timeout_sec"), 0.0)
-        self.reached_latch_timeout_sec = max(self._param_float("reached_latch_timeout_sec"), 0.0)
         self.object_reached_require_target_distance = self._param_bool(
             "object_reached_require_target_distance"
         )
@@ -98,7 +96,6 @@ class ObjectSearchGoalMux(Node):
         self.latest_object_reached = False
         self.latest_object_reached_time = None
         self.reached_latched = False
-        self.reached_latched_time = None
         self.reached_hold_goal: PoseStamped | None = None
         self._last_state = ""
         self._last_status_text = ""
@@ -170,7 +167,7 @@ class ObjectSearchGoalMux(Node):
             self.get_logger().warn("收到无效 object target pose, 已忽略")
             return
         now = self.get_clock().now()
-        if self._reached_latch_is_active(now):
+        if self._reached_latch_is_active():
             return
         now_sec = _time_seconds(now)
         self.latest_target = msg
@@ -201,7 +198,7 @@ class ObjectSearchGoalMux(Node):
     def _select_goal(self) -> tuple[str, PoseStamped | None]:
         """按目标状态选择固定粗目标、目标位置或短期目标记忆"""
         now = self.get_clock().now()
-        if self._reached_latch_is_active(now):
+        if self._reached_latch_is_active():
             if self.reached_hold_goal is None and self.latest_odom is None:
                 return ObjectSearchState.WAIT_FOR_ODOM, None
             return ObjectSearchState.TARGET_REACHED_VIEWPOINT, self._build_hold_goal(now)
@@ -453,23 +450,14 @@ class ObjectSearchGoalMux(Node):
     def _activate_reached_latch(self, now) -> None:
         """到达确认后锁定停止 goal, 不再被后续 mask False 拉回搜索"""
         self.reached_latched = True
-        self.reached_latched_time = now
         self.reached_hold_goal = None
         if self.latest_odom is not None:
             self.reached_hold_goal = self._build_hold_goal(now)
         self._clear_target_search_state()
 
-    def _reached_latch_is_active(self, now) -> bool:
-        if not self.reached_latched:
-            return False
-        if self.reached_latch_timeout_sec <= 0.0:
-            return True
-        if self._age_seconds(now, self.reached_latched_time) <= self.reached_latch_timeout_sec:
-            return True
-        self.reached_latched = False
-        self.reached_latched_time = None
-        self.reached_hold_goal = None
-        return False
+    def _reached_latch_is_active(self) -> bool:
+        """任务完成是终态, 节点生命周期内不允许回到搜索状态"""
+        return self.reached_latched
 
     @staticmethod
     def _pose_xy_distance(a: PoseStamped, b: PoseStamped) -> float:

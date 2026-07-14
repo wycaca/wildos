@@ -4,6 +4,7 @@ from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
 import pytest
 import rclpy
+from std_msgs.msg import Bool
 
 from visual_navigation.object_search_goal_mux import ObjectSearchGoalMux
 from visual_navigation.object_search_types import ObjectSearchState
@@ -83,3 +84,21 @@ def test_initial_goal_orientation_matches_configured_heading(mux_node):
     assert goal.pose.position.y == pytest.approx(22.0)
     assert goal.pose.orientation.z == pytest.approx(math.sin(math.pi * 0.25))
     assert goal.pose.orientation.w == pytest.approx(math.cos(math.pi * 0.25))
+
+
+def test_reached_event_permanently_holds_current_pose(mux_node):
+    """首次 reached 后 False 消息不能解除当前位置停止 goal"""
+    mux_node._on_odom(_odom(4.0, -2.0, 0.5))
+
+    mux_node._on_object_reached(Bool(data=True))
+    reached_state, reached_goal = mux_node._select_goal()
+
+    mux_node._on_object_reached(Bool(data=False))
+    later_state, later_goal = mux_node._select_goal()
+
+    assert reached_state == ObjectSearchState.TARGET_REACHED_VIEWPOINT
+    assert later_state == ObjectSearchState.TARGET_REACHED_VIEWPOINT
+    assert reached_goal.pose.position.x == pytest.approx(4.0)
+    assert reached_goal.pose.position.y == pytest.approx(-2.0)
+    assert later_goal.pose.position.x == pytest.approx(4.0)
+    assert later_goal.pose.position.y == pytest.approx(-2.0)
