@@ -93,8 +93,6 @@ PROFILE_KEY_DESCRIPTIONS = {
     "object_search_goal_viz_topic": "object_search_goal_mux 目标可视化 topic",
     "object_search_status_topic": "object_search_goal_mux 状态 topic",
     "goal_pose_topic": "planner 高层 goal 输入 topic",
-    "tracking_goal_pose_topic": "path follower 跟踪点输出 topic",
-    "path_topic": "path follower 输出路径 topic",
     "camera_img_topic": "三相机图像 topic 模板",
     "camera_info_topic": "三相机 camera info topic 模板",
 }

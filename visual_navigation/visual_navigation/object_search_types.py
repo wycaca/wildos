@@ -6,7 +6,6 @@ from geometry_msgs.msg import PoseStamped
 class ObjectSearchState:
     """目标搜索状态名集中定义, 避免不同模块拼写分叉"""
 
-    WAIT_FOR_SUBSCRIBER = "WAIT_FOR_SUBSCRIBER"
     WAIT_FOR_ODOM = "WAIT_FOR_ODOM"
     TARGET_MEMORY_GUIDED_SEARCH = "TARGET_MEMORY_GUIDED_SEARCH"
     TARGET_APPROACH = "TARGET_APPROACH"

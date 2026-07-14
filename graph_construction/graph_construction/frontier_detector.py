@@ -61,16 +61,17 @@ class FrontierDetector:
         grid: ClassifiedGrid,
         frontier_cells: Sequence[GridIndex],
     ) -> FrontierAssignmentStats:
-        """增量验证历史 frontier, 再把新边界分配给稳定 owner
+        """验证当前可见 Frontier, 再把新边界分配给稳定 owner
 
-        滚动局部地图只能否定当前可见范围内的历史 frontier
-        窗口外 frontier 必须保留, 否则机器人移动一个局部地图宽度后会丢失探索记忆
-        当前可见的历史点需要重新满足 free/unknown 边界和 owner 可达条件
+        Frontier 只表达当前地图的 free/unknown 边界, 窗口外分支由 planner 单独记忆
+        当前可见的历史点需要重新满足边界语义、探索覆盖和 owner 可达条件
         新边界使用世界坐标键去重, 已保留的 owner 不会被每帧最近邻结果替换
         """
+        explored_areas = _ExploredAreaIndex(graph.nodes.values(), grid.resolution)
         preserved_owner_ids, assigned_frontier_keys = self._validate_historical_frontiers(
             graph,
             grid,
+            explored_areas,
         )
 
         candidate_cells = self._select_frontier_candidates(grid, frontier_cells)
@@ -94,7 +95,7 @@ class FrontierDetector:
             )
             if owner is None:
                 continue
-            if self._inside_explored_area(owner.position, frontier_point, owner.explored_radius, grid.resolution):
+            if explored_areas.contains(frontier_point):
                 continue
             if not grid.is_world_collision_free(
                 (owner.position[0], owner.position[1]),
@@ -132,11 +133,13 @@ class FrontierDetector:
         self,
         graph: GraphState,
         grid: ClassifiedGrid,
+        explored_areas: _ExploredAreaIndex,
     ) -> Tuple[set[int], set[Tuple[int, int]]]:
-        """保留窗口外历史点, 并重新验证当前可见历史点
+        """只保留当前地图仍能验证的历史 Frontier
 
         frontier point 在本实现中位于 free cell, 且其 8 邻域必须接触 unknown
-        可见点若已成为普通 known free、unknown、obstacle 或无法从 owner 安全到达则删除
+        地图外点转交 planner 的 deferred branch 记忆, 不再作为活动 Frontier 发布
+        可见点若已被其他节点探索、失去边界语义或无法从 owner 安全到达则删除
         世界坐标键同时消除不同 owner 上重复保存的同一物理边界
         """
         preserved_owner_ids: set[int] = set()
@@ -156,8 +159,6 @@ class FrontierDetector:
 
                 grid_index = grid.world_to_grid(point[0], point[1])
                 if grid_index is None:
-                    preserved_points.append(point)
-                    assigned_frontier_keys.add(frontier_key)
                     continue
 
                 ix, iy = grid_index
@@ -166,6 +167,8 @@ class FrontierDetector:
                 if self._near_grid_border(grid, ix, iy):
                     continue
                 if not self._touches_unknown(grid, ix, iy):
+                    continue
+                if explored_areas.contains(point, excluded_node_id=node.node_id):
                     continue
                 if not grid.is_world_collision_free(
                     (node.position[0], node.position[1]),
@@ -240,20 +243,6 @@ class FrontierDetector:
         ys = [point[1] for point in points]
         return hypot(max(xs) - min(xs), max(ys) - min(ys))
 
-    def _inside_explored_area(
-        self,
-        node_position: Point3,
-        frontier_point: Point3,
-        explored_radius: float,
-        resolution: float,
-    ) -> bool:
-        """判断 frontier point 是否已经落入节点的已探索区域"""
-        if explored_radius <= 0.0:
-            return False
-        distance = hypot(node_position[0] - frontier_point[0], node_position[1] - frontier_point[1])
-        return distance < max(0.0, explored_radius - resolution)
-
-
 class _NodeSpatialIndex:
     """按 assign radius 建立临时节点桶, 避免每个 frontier 扫描全图节点"""
 
@@ -278,3 +267,33 @@ class _NodeSpatialIndex:
             int(position[0] // self.bucket_size),
             int(position[1] // self.bucket_size),
         )
+
+
+class _ExploredAreaIndex:
+    """查询 Frontier 是否已被持久图节点的探索半径覆盖"""
+
+    def __init__(self, nodes: Iterable[InternalNode], resolution: float) -> None:
+        self.resolution = max(0.0, float(resolution))
+        self.nodes = {
+            node.node_id: node
+            for node in nodes
+            if not node.is_robot_anchor and node.explored_radius > self.resolution
+        }
+        max_radius = max(
+            (node.explored_radius for node in self.nodes.values()),
+            default=self.resolution,
+        )
+        self.node_index = _NodeSpatialIndex(self.nodes.values(), max_radius)
+
+    def contains(self, point: Point3, excluded_node_id: int | None = None) -> bool:
+        """只扫描附近节点, owner 可排除以保留自身仍有效的边界"""
+        for node_id in self.node_index.candidate_ids(point):
+            if node_id == excluded_node_id:
+                continue
+            node = self.nodes[node_id]
+            radius = max(0.0, node.explored_radius - self.resolution)
+            if radius <= 0.0:
+                continue
+            if node.distance_xy(point) < radius:
+                return True
+        return False

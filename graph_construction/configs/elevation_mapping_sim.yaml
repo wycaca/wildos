@@ -13,6 +13,8 @@ elevation_mapping_node:
     update_pose_fps: 10.0
     map_acquire_fps: 5.0
     publish_statistics_fps: 1.0
+    # Static simulation keeps observed terrain stable and does not need ray-based stale-surface cleanup
+    enable_visibility_cleanup: false
     enable_drift_compensation: false
     enable_drift_corrected_TF_publishing: false
     enable_pointcloud_publishing: false

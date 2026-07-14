@@ -41,8 +41,8 @@ def _frontier_detector() -> FrontierDetector:
     )
 
 
-def test_historical_frontier_survives_outside_rolling_grid():
-    """局部窗口移走后, 历史 frontier 必须保留在全局图中"""
+def test_historical_frontier_outside_rolling_grid_becomes_inactive():
+    """局部窗口移走后只保留 owner 拓扑, 不保留活动 Frontier 状态"""
     graph = GraphState()
     owner = graph.create_node(position=(1.5, 2.5, 0.0), stamp_seconds=1.0)
     owner.frontier_points = [(2.5, 2.5, 0.0)]
@@ -54,8 +54,9 @@ def test_historical_frontier_survives_outside_rolling_grid():
         frontier_cells=[],
     )
 
-    assert owner.is_frontier
-    assert owner.frontier_points == [(2.5, 2.5, 0.0)]
+    assert owner.node_id in graph.nodes
+    assert not owner.is_frontier
+    assert owner.frontier_points == []
 
 
 def test_historical_frontier_is_removed_when_reobserved_as_known_free():
@@ -96,6 +97,26 @@ def test_visible_historical_frontier_keeps_original_owner():
 
     assert historical_owner.frontier_points == [(2.5, 2.5, 0.0)]
     assert closer_node.frontier_points == []
+
+
+def test_frontier_inside_persistent_explored_area_is_not_recreated():
+    """历史节点已覆盖的区域不能因局部 unknown 再次生成活动 Frontier"""
+    free = np.ones((6, 6), dtype=bool)
+    unknown = np.zeros((6, 6), dtype=bool)
+    unknown[2, 3] = True
+    free[2, 3] = False
+    graph = GraphState()
+    explored_node = graph.create_node(position=(2.5, 2.5, 0.0), stamp_seconds=1.0)
+    explored_node.explored_radius = 2.0
+
+    _frontier_detector().assign_frontiers(
+        graph,
+        _grid(free=free, unknown=unknown),
+        frontier_cells=[(2, 2)],
+    )
+
+    assert not explored_node.is_frontier
+    assert explored_node.frontier_points == []
 
 
 def test_navigation_clearance_does_not_delete_historical_node():

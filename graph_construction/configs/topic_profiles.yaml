@@ -109,8 +109,6 @@ profiles:
 
     # planner 输出和三相机 topic
     goal_pose_topic: /goal_pose
-    tracking_goal_pose_topic: /spot1/tracking_goal_pose
-    path_topic: /path2
     camera_img_topic: /unitree_go2/{}_cam/color_image
     camera_info_topic: /unitree_go2/{}_cam/info
 
@@ -170,7 +168,7 @@ profiles:
     grid_height_diff_obstacle_threshold: "0.04"
     grid_high_obstacle_min_height: "0.12"
 
-    # graph, visual scoring 和 planner topic, Unity 路径输出当前是 /multi_planned_path
+    # graph, visual scoring 和 planner topic, 自研导航消费 planner 原始路径
     planner_odom_topic: odom_for_scoring
     traversability_grid_topic: /spot1/traversability_grid
     elevation_grid_map_topic: /elevation_mapping_node/elevation_map_raw
@@ -217,10 +215,8 @@ profiles:
     object_search_goal_viz_topic: /spot1/object_search_goal_viz
     object_search_status_topic: /spot1/object_search_status
 
-    # planner 输出和三相机 topic, Unity 避开 nav_slam/astar 订阅的公共 /goal_pose
+    # planner 输入和三相机 topic, Unity 避开 nav_slam/astar 订阅的公共 /goal_pose
     goal_pose_topic: /spot1/graphnav_goal_pose
-    tracking_goal_pose_topic: /spot1/tracking_goal_pose
-    path_topic: /multi_planned_path
     camera_img_topic: /camera/{}/color/image/compressed
     camera_info_topic: /camera/{}/color/camera_info
 
@@ -329,7 +325,5 @@ profiles:
 
     # planner 输出和三相机 topic
     goal_pose_topic: /goal_pose
-    tracking_goal_pose_topic: /spot1/tracking_goal_pose
-    path_topic: /path2
     camera_img_topic: /spot1/realsense/{}/color/image_raw/compressed
     camera_info_topic: /spot1/realsense/{}/color/camera_info

@@ -161,8 +161,6 @@ def generate_launch_description():
             _profile_arg("object_search_status_topic", "object_search_status_topic"),
             _profile_arg("planner_odom_topic", "planner_odom_topic"),
             _profile_arg("goal_pose_topic", "goal_pose_topic"),
-            _profile_arg("tracking_goal_pose_topic", "tracking_goal_pose_topic"),
-            _profile_arg("path_topic", "path_topic"),
             DeclareLaunchArgument(
                 "publish_camera_static_tf",
                 default_value="true",
@@ -600,13 +598,13 @@ def _launch_setup(context):
         condition=IfCondition(LaunchConfiguration("do_object_search")),
     )
 
-    planner = _planner_node(ns, use_sim_time, planner_odom_topic, goal_pose_topic, scored_nav_graph_topic)
-    path_follower = _path_follower_node(
+    planner = _planner_node(
         ns,
         use_sim_time,
         planner_odom_topic,
-        _value(context, profile, "tracking_goal_pose_topic", "tracking_goal_pose_topic"),
-        _value(context, profile, "path_topic", "path_topic"),
+        goal_pose_topic,
+        scored_nav_graph_topic,
+        _value(context, profile, "object_search_status_topic", "object_search_status_topic"),
     )
 
     return [
@@ -620,11 +618,18 @@ def _launch_setup(context):
         _camera_static_tf("right", camera_parent_frame, camera_transforms["right"], publish_camera_static_tf),
         TimerAction(period=LaunchConfiguration("graph_start_delay"), actions=[graph_construction]),
         TimerAction(period=LaunchConfiguration("visual_start_delay"), actions=[wildos]),
-        TimerAction(period=LaunchConfiguration("planner_start_delay"), actions=[object_search_goal_mux, planner, path_follower]),
+        TimerAction(period=LaunchConfiguration("planner_start_delay"), actions=[object_search_goal_mux, planner]),
     ]
 
 
-def _planner_node(ns, use_sim_time, odom_topic, goal_pose_topic, scored_nav_graph_topic):
+def _planner_node(
+    ns,
+    use_sim_time,
+    odom_topic,
+    goal_pose_topic,
+    scored_nav_graph_topic,
+    object_search_status_topic,
+):
     return Node(
         package="graphnav_planner",
         executable="planner_node",
@@ -638,7 +643,6 @@ def _planner_node(ns, use_sim_time, odom_topic, goal_pose_topic, scored_nav_grap
             {"frontier_score_factor": 20.0},
             {"frontier_continuity_radius": 5.0},
             {"frontier_progress_timeout": 15.0},
-            {"frontier_switch_margin": 2.0},
             {"revisit_cost_factor": 1.0},
             {"trav_class": "default"},
             {"goal_radius": 3.0},
@@ -648,25 +652,7 @@ def _planner_node(ns, use_sim_time, odom_topic, goal_pose_topic, scored_nav_grap
             ("~/nav_graph", scored_nav_graph_topic),
             ("~/odom", odom_topic),
             ("~/goal_pose", goal_pose_topic),
-        ],
-    )
-
-
-def _path_follower_node(ns, use_sim_time, odom_topic, tracking_goal_pose_topic, path_topic):
-    return Node(
-        package="graphnav_planner",
-        executable="path_follower_node",
-        name="graphnav_path_follower",
-        output="screen",
-        namespace=ns,
-        parameters=[
-            {"use_sim_time": use_sim_time},
-            {"wp_lookahead_dist": 5.0},
-        ],
-        remappings=[
-            ("~/path", path_topic),
-            ("~/odom", odom_topic),
-            ("~/goal_pose", tracking_goal_pose_topic),
+            ("~/object_search_status", object_search_status_topic),
         ],
     )
 

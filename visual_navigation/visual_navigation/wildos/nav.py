@@ -20,6 +20,7 @@ from torchvision import transforms
 
 from visual_navigation.utils.tf_lookup_sub import TFEdge, TFLookupSubscriber
 from visual_navigation.wildos.goalagnostic_scoring import GoalAgnosticScoring
+from visual_navigation.wildos.current_frontier_scores import CurrentFrontierScores
 from visual_navigation.geofrontier_nav.geofrontier_to_image import GeoFrontierToImage
 from visual_navigation.wildos.viz import VisualizeGoalAgnosticGeoFrontierScoring
 from explorfm import ExploRFMInference
@@ -60,7 +61,6 @@ class WildOS_Nav(TFLookupSubscriber):
         "default_max_score": 0.5,
         "std_for_default_scores": 30.0,  # 角度
         "std_for_frontier_heading": 30.0,  # 角度
-        "min_frontier_separation": 0.5,  # 米
 
         # 像素评分参数
         "frontier_threshold": 0.6,
@@ -171,8 +171,6 @@ class WildOS_Nav(TFLookupSubscriber):
         
         # 保存当前 frontier node 及其评分
         self.frontier_uuid_to_scores = {}
-        self.frontier_uuid_to_scoring_distance = {}
-        self.removed_frontier_positions = np.zeros((0, 3), dtype=np.float32)
         self.object_target_min_score = 0.0
         self.object_target_ray_length = 8.0
         self.object_target_ray_match_radius = 2.0
@@ -240,7 +238,6 @@ class WildOS_Nav(TFLookupSubscriber):
         self.default_max_score = config.default_max_score
         self.std_for_default_scores = config.std_for_default_scores
         self.std_for_frontier_heading = config.std_for_frontier_heading
-        self.min_frontier_separation = config.min_frontier_separation
 
         # 初始化像素评分参数
         frontier_threshold = config.frontier_threshold
@@ -615,13 +612,8 @@ class WildOS_Nav(TFLookupSubscriber):
             )
 
         # 发布评分后的 navgraph
-        robot_pos = np.array([
-            odom_msg.pose.pose.position.x,
-            odom_msg.pose.pose.position.y,
-            odom_msg.pose.pose.position.z
-        ], dtype=np.float32).reshape(1, 3)
         updated_navgraph, removed_uuids, updated_uuids = self.update_navgraph_with_scores(
-            navgraph_msg, geofrontiers, nav_data, robot_pos
+            navgraph_msg, geofrontiers, nav_data
         )
         if object_target_candidate is not None:
             self.annotate_object_target_node(updated_navgraph, object_target_candidate)
@@ -915,35 +907,9 @@ class WildOS_Nav(TFLookupSubscriber):
         target_pose.pose.orientation.w = 1.0
         self.object_target_pose_publisher.publish(target_pose)
 
-    def remove_old_frontiers(self, navgraph_msg):
-        # 移除不再存在于 navgraph 的 frontier
-        trav_class_idx = navgraph_msg.trav_classes.index(self.traversability_class)
-        current_uuids = set()
-        for node in navgraph_msg.nodes:
-            if node.trav_properties[trav_class_idx].is_frontier:
-                current_uuids.add(self.uuid_to_str(node.uuid))
-
-        old_uuids = set(self.frontier_uuid_to_scores.keys())
-        removed_uuids = []
-        for old_uuid in old_uuids:
-            if old_uuid not in current_uuids:
-                # 保存已移除 frontier 的位置
-                del_node = self.frontier_uuid_to_scores[old_uuid][1]
-                pos = np.array([
-                    del_node.pose.position.x,
-                    del_node.pose.position.y,
-                    del_node.pose.position.z
-                ], dtype=np.float32).reshape(1, 3)
-                self.removed_frontier_positions = np.vstack((self.removed_frontier_positions, pos))
-
-                del self.frontier_uuid_to_scores[old_uuid]
-                removed_uuids.append(old_uuid)
-
-        return removed_uuids
-
-    def update_navgraph_with_scores(self, navgraph_msg, geofrontiers, nav_data, robot_pos):
-        removed_uuids = self.remove_old_frontiers(navgraph_msg)
-        updated_uuids = set()
+    def update_navgraph_with_scores(self, navgraph_msg, geofrontiers, nav_data):
+        """只发布当前活动 Frontier 的本帧评分, 不沿用历史视角结果"""
+        current_scores = CurrentFrontierScores(self.frontier_uuid_to_scores)
         trav_class_idx = navgraph_msg.trav_classes.index(self.traversability_class)
         scored_navgraph = navgraph_msg
         
@@ -957,29 +923,6 @@ class WildOS_Nav(TFLookupSubscriber):
                 nav_data[i]["scores"]
             ):
                 uuid = self.uuid_to_str(frontier_node.uuid)
-                frontier_pos = np.array([
-                    frontier_node.pose.position.x,
-                    frontier_node.pose.position.y,
-                    frontier_node.pose.position.z
-                ], dtype=np.float32).reshape(1, 3)
-
-                # 检查 frontier 是否过近于已移除 frontier
-                # 如果过近则把评分置零
-                if len(self.removed_frontier_positions) > 0:
-                    distances = np.linalg.norm(self.removed_frontier_positions - frontier_pos, axis=1)
-                    if np.any(distances < self.min_frontier_separation):
-                        scores *= 0.0
-
-                # 只有机器人比之前更接近 frontier 时才更新评分
-                node_dist = np.linalg.norm(robot_pos - frontier_pos)
-                if uuid in self.frontier_uuid_to_scoring_distance:
-                    prev_dist = self.frontier_uuid_to_scoring_distance[uuid]
-                    if node_dist < prev_dist:
-                        self.frontier_uuid_to_scoring_distance[uuid] = node_dist
-                    else:
-                        continue
-                else:
-                    self.frontier_uuid_to_scoring_distance[uuid] = node_dist
 
                 # 根据朝向对齐程度调制评分
                 if self.std_for_frontier_heading is not None:
@@ -989,62 +932,31 @@ class WildOS_Nav(TFLookupSubscriber):
                         max_score=1.0
                     )
 
-                # 更新评分
+                # 多相机同时看到同一 Frontier 时保留每个方向的最高当前证据
                 scores = self.normalize_frontier_scores(scores)
-                updated_uuids.add(uuid)
-                self.frontier_uuid_to_scores[uuid] = (scores, frontier_node)
+                current_scores.add_visual(uuid, scores, frontier_node)
 
         scored_navgraph.header.stamp = self.get_clock().now().to_msg()
         for node in scored_navgraph.nodes:
             uuid = self.uuid_to_str(node.uuid)
-            if uuid in self.frontier_uuid_to_scores:
-                scores = self.normalize_frontier_scores(self.frontier_uuid_to_scores[uuid][0])
-                self.frontier_uuid_to_scores[uuid] = (scores, self.frontier_uuid_to_scores[uuid][1])
-                kv = KeyValue(
-                    key = "frontier_scores",
-                    value = list(scores)
-                )
-                node.properties.append(kv)
-                kv = KeyValue(
-                    key = "is_default_scored",
-                    value = [0.0]
-                )
-                node.properties.append(kv)
-
-            elif node.trav_properties[trav_class_idx].is_frontier:
+            if not node.trav_properties[trav_class_idx].is_frontier:
+                continue
+            if not current_scores.has(uuid):
                 # 未评分 frontier 使用默认评分
                 scores = self.scorer.get_default_scores(
                     node, trav_class_idx, std=self.std_for_default_scores, def_max_score=self.default_max_score
                 ).astype(np.float32)
+                current_scores.add_default(uuid, self.normalize_frontier_scores(scores), node)
 
-                node_pos = np.array([
-                    node.pose.position.x,
-                    node.pose.position.y,
-                    node.pose.position.z
-                ], dtype=np.float32).reshape(1, 3)
+            scores = self.normalize_frontier_scores(current_scores.scores(uuid))
+            current_scores.set_scores(uuid, scores)
+            node.properties.append(KeyValue(key="frontier_scores", value=list(scores)))
+            node.properties.append(KeyValue(
+                key="is_default_scored",
+                value=[0.0 if current_scores.is_visual(uuid) else 1.0],
+            ))
 
-                # 检查 frontier 是否过近于已移除 frontier
-                # 如果过近则把评分置零
-                if len(self.removed_frontier_positions) > 0:
-                    distances = np.linalg.norm(self.removed_frontier_positions - node_pos, axis=1)
-                    if np.any(distances < self.min_frontier_separation):
-                        scores *= 0.0
-
-                scores = self.normalize_frontier_scores(scores)
-                kv = KeyValue(
-                    key = "frontier_scores",
-                    value = list(scores)
-                )
-                node.properties.append(kv)
-                kv = KeyValue(
-                    key = "is_default_scored",
-                    value = [1.0]
-                )
-                node.properties.append(kv)
-
-                updated_uuids.add(uuid)
-                self.frontier_uuid_to_scores[uuid] = (scores, node)
-
+        self.frontier_uuid_to_scores, removed_uuids, updated_uuids = current_scores.finish()
         return scored_navgraph, removed_uuids, updated_uuids
 
     @staticmethod

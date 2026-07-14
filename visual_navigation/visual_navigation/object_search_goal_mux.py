@@ -40,7 +40,6 @@ class ObjectSearchGoalMux(Node):
         self.declare_parameter("reached_latch_timeout_sec", 60.0)
         self.declare_parameter("object_reached_require_target_distance", False)
         self.declare_parameter("object_reached_max_target_distance", 2.0)
-        self.declare_parameter("require_subscriber", True)
 
         self.output_goal_topic = self._param_str("output_goal_topic")
         self.goal_viz_topic = self._param_str("goal_viz_topic")
@@ -70,7 +69,6 @@ class ObjectSearchGoalMux(Node):
             self._param_float("object_reached_max_target_distance"),
             self.target_reached_radius,
         )
-        self.require_subscriber = self._param_bool("require_subscriber")
 
         if self.output_goal_topic == self.object_target_pose_topic:
             raise ValueError(
@@ -202,9 +200,6 @@ class ObjectSearchGoalMux(Node):
 
     def _select_goal(self) -> tuple[str, PoseStamped | None]:
         """按目标状态选择固定粗目标、目标位置或短期目标记忆"""
-        if self.require_subscriber and self.goal_pub.get_subscription_count() == 0:
-            return ObjectSearchState.WAIT_FOR_SUBSCRIBER, None
-
         now = self.get_clock().now()
         if self._reached_latch_is_active(now):
             if self.reached_hold_goal is None and self.latest_odom is None:
@@ -349,7 +344,8 @@ class ObjectSearchGoalMux(Node):
             + self.initial_goal_distance * math.sin(yaw)
         )
         goal.pose.position.z = odom.pose.pose.position.z
-        goal.pose.orientation = odom.pose.pose.orientation
+        goal.pose.orientation.z = math.sin(yaw * 0.5)
+        goal.pose.orientation.w = math.cos(yaw * 0.5)
         self.initial_search_goal = copy.deepcopy(goal)
         return goal
 

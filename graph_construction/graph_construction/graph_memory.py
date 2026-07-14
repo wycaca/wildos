@@ -18,7 +18,7 @@ class InternalNode:
     node_id 是内部递增 id, 用于快速索引和生成稳定 UUID
     position 是图节点在全局 frame 下的位置, 第一版主要使用 XY 平面
     free_radius 和 explored_radius 对应论文中的自由半径和探索半径
-    frontier_points 是该节点关联的未知边界点, WildOS scoring 会依赖这些点计算 frontier heading
+    frontier_points 是当前地图中该节点关联的未知边界点, WildOS scoring 用它计算当前 heading
     """
 
     node_id: int
@@ -29,7 +29,6 @@ class InternalNode:
     frontier_points: List[Point3] = field(default_factory=list)
     is_frontier: bool = False
     last_seen_time: float = 0.0
-    failed_frontier_count: int = 0
     is_robot_anchor: bool = False
 
     def distance_xy(self, position: Point3) -> float:
@@ -76,8 +75,8 @@ class GraphState:
     ) -> InternalNode:
         """创建节点, 使用 node id 生成稳定 UUID
 
-        UUID 必须稳定, 因为 WildOS 视觉评分会按 frontier UUID 缓存 score
-        如果同一个物理节点频繁换 UUID, score ring 和 deadend memory 都会抖动
+        UUID 必须稳定, 因为 traversal memory 和 deferred branch 都引用持久节点
+        如果同一个物理节点频繁换 UUID, 历史路线和分支入口都会失效
         """
         node_id = self.next_node_id
         self.next_node_id += 1

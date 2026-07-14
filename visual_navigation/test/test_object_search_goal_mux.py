@@ -11,12 +11,10 @@ from visual_navigation.object_search_types import ObjectSearchState
 
 @pytest.fixture
 def mux_node():
-    """创建不依赖 planner subscriber 的 goal mux 测试节点"""
+    """创建 goal mux 测试节点"""
     rclpy.init(
         args=[
             "--ros-args",
-            "-p",
-            "require_subscriber:=false",
             "-p",
             "initial_goal_distance:=20.0",
         ]
@@ -71,3 +69,17 @@ def test_confirmed_target_replaces_coarse_goal(mux_node):
     assert state == ObjectSearchState.TARGET_APPROACH
     assert goal.pose.position.x == pytest.approx(12.0)
     assert goal.pose.position.y == pytest.approx(-3.0)
+
+
+def test_initial_goal_orientation_matches_configured_heading(mux_node):
+    """粗目标姿态必须携带与目标位置一致的固定探索方向"""
+    mux_node.initial_goal_heading_deg = 90.0
+    mux_node._on_odom(_odom(1.0, 2.0, 0.0))
+
+    state, goal = mux_node._select_goal()
+
+    assert state == ObjectSearchState.SEARCHING_WITH_INITIAL_GOAL
+    assert goal.pose.position.x == pytest.approx(1.0)
+    assert goal.pose.position.y == pytest.approx(22.0)
+    assert goal.pose.orientation.z == pytest.approx(math.sin(math.pi * 0.25))
+    assert goal.pose.orientation.w == pytest.approx(math.cos(math.pi * 0.25))

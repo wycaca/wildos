@@ -23,8 +23,6 @@ heading_sim_thresh: 0.0
 default_max_score: 0.3
 std_for_default_scores: 80.0
 std_for_frontier_heading: null
-min_frontier_separation: 0.75
-
 # Pixel Scoring Params
 frontier_threshold: 0.6
 frontier_opening_kernel_size: 20

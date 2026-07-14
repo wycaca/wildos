@@ -9,9 +9,9 @@
 系统核心能力:
 
 - 从局部几何地图生成稀疏 `NavigationGraph`
-- 用 graph memory 保留历史节点, frontier, edge 和机器人当前位置
+- 用 graph memory 保留历史节点、edge、探索覆盖和机器人当前位置
 - 用三相机视觉模型给 graph frontier 做语义评分
-- 在没有目标检测时使用固定粗目标引导 planner 选择连续探索分支
+- 在没有目标检测时使用首帧 odom heading 和活动分支锁定持续向前探索
 - 在看到目标后选择安全的目标导航点, 并通过 graph planner 输出路径
 - 在目标到达或视觉近距离确认后锁存停止状态, 避免继续规划旧路径
 
@@ -96,8 +96,8 @@ graph_construction/configs/topic_profiles.yaml
 
 内置 profile:
 
-- `isaac`, Isaac Sim 5.1 Go2, 默认 `ROS_DOMAIN_ID=3`, raw LiDAR `/unitree_go2/lidar/points`, path `/path2`, goal `/goal_pose`
-- `unity`, Unity 仿真, 默认 `ROS_DOMAIN_ID=89`, RMW `rmw_zenoh_cpp`, elevation 输入 `/livox/lidar`, 2D fallback 输入 `/mapokk`, path `/multi_planned_path`, goal `/spot1/graphnav_goal_pose`
+- `isaac`, Isaac Sim 5.1 Go2, 默认 `ROS_DOMAIN_ID=3`, raw LiDAR `/unitree_go2/lidar/points`, planner path `/spot1/graphnav_planner/path`, goal `/goal_pose`
+- `unity`, Unity 仿真, 默认 `ROS_DOMAIN_ID=89`, RMW `rmw_zenoh_cpp`, elevation 输入 `/livox/lidar`, 2D fallback 输入 `/mapokk`, planner path `/spot1/graphnav_planner/path`, goal `/spot1/graphnav_goal_pose`
 - `robot`, 真实机器人占位 profile, 需要按现场 topic 和 TF 更新
 
 Unity 的重要约束:
@@ -107,6 +107,8 @@ Unity 的重要约束:
 - Unity 2D fallback 必须保持 `lidar_assume_input_in_grid_frame=true`
 - 不要把 raw `/livox/lidar` 直接替换成 2D fallback 输入, 否则会重新引入地图随机器人朝向旋转的问题
 - Unity 高层 goal topic 使用 `/spot1/graphnav_goal_pose`, 避免触发外部 `nav_slam/astar` 的公共 `/goal_pose`
+- Unity 自研导航直接消费 `/spot1/graphnav_planner/path` 并发布 `/corrected_path`
+- 集成 launch 不启动 `path_follower_node`, 避免重复消费自研导航输出
 
 ## Graph Construction 架构
 
@@ -190,8 +192,9 @@ Graph Construction 参数按职责分为三层:
 - 历史节点重新进入 free 区域时使用自身 cell 的 elevation 更新高度, 不与机器人当前高度比较
 - 低于新边 clearance 阈值的历史节点继续保留, 该阈值不再删除路线记忆
 - 历史 edge 固定保留, 只用当前可见障碍证伪
-- 历史 frontier 在滚动窗口外继续保留, 重新进入窗口后才按当前 free/unknown 边界验证
-- frontier owner 使用世界坐标键稳定继承, 不再每帧清空后重新分配
+- Frontier 只表示当前地图可验证的 free/unknown 边界, 移出滚动窗口后清除活动状态但保留 owner 节点
+- 当前可见 Frontier owner 使用世界坐标键稳定继承, 避免同一边界在相邻帧反复换 UUID
+- 新 Frontier 落入任一持久节点的 explored radius 时不再创建, 重复探索由稀疏图覆盖状态抑制
 - disconnected component 始终保留, current node 短时断边不会清空其他历史路线
 - 脚下点云缺失时启用 robot anchor current node, anchor 移动超过节点间距后固化旧位置为 breadcrumb
 - graph 数据 z 保持贴近 elevation surface, RViz marker 额外抬高显示
@@ -214,8 +217,10 @@ front / left / right camera
 - 目标检测必须同时满足相似度峰值, 连通区域面积和连续帧确认, 单像素弱响应不会发布目标点
 - 模型可视化第一行会同时叠加 graph 和确认后的 object mask, 不再用 graph 图覆盖 mask
 - `object_search_goal_mux` 不再订阅 scored graph 或选择 frontier
-- 未检测到目标时, mux 根据首帧 odom 计算一次固定粗目标, 后续移动和转向不会重算
+- 未检测到目标时, mux 根据首帧 odom 固定探索 heading, planner 沿该 heading 持续前移虚拟目标
 - 目标出现时, mux 直接切换到确认后的目标 pose, 短时丢失使用目标记忆
+- 视觉 Frontier 分数每帧重建, 相机不可见后不继续发布旧视角分数
+- 未选择分支由 planner 保存稳定 owner UUID、位置、方向和发现顺序, 不把历史 Frontier 当成当前候选
 - frontier 选择、分支连续性、无进展屏蔽和回头代价统一由 `graphnav_planner` 负责
 - Unity 已启用 target latch, 支持短时遮挡后继续朝目标方向规划
 - 目标到达或近距离视觉确认后, `object_search_goal_mux` 进入 reached latch 并持续发布当前位置 hold goal
@@ -227,14 +232,75 @@ front / left / right camera
 
 - 输入 `graphnav_msgs/NavigationGraph`
 - 输入 goal pose topic, 不同 profile 可不同
+- 输入 Object Search 状态, 明确区分初始方向探索和真实目标导航
 - 使用 graph edge 做搜索, virtual goal 只参与搜索
 - 默认不把 virtual goal 或 unknown frontier point 追加进可执行 path
-- 使用 frontier UUID 和空间邻域保持同一探索分支
-- 当前分支持续无进展后临时屏蔽该邻域, 无其他候选时允许回退
-- 按稳定 UUID edge 记录实际经过次数, 重复边增加代价但不会被禁止
-- `frontier_switch_margin` 控制新分支必须明显更优才允许主动切换
-- 输出 profile 配置的 path topic
-- `path_follower_node` 输出 `/spot1/tracking_goal_pose`
+- 使用显式 `ActiveBranch` 保存 Frontier、路径 UUID、局部方向、进度和最后有效高层路径
+- Frontier 短暂失配时复用最后有效路径后缀, 不立即切换其他分支
+- 未选择分支进入 `DeferredBranch` 记忆, 正常前进时不参与实时 Frontier 排序
+- 当前分支持续无进展后释放活动分支并临时屏蔽失败邻域, 优先恢复最早保存的可达分支
+- 同一走廊仍有可达候选时禁止按瞬时视觉分数或总代价切换
+- 按稳定 UUID edge 二值记录是否经过, 已走边增加固定代价但不会被禁止
+- 初始 `30m` 粗目标只作为方向 lookahead, 越过该位置不会停止或反向规划
+- planner 通过私有 `~/path` 输出 `/spot1/graphnav_planner/path`
+- 集成 launch 只启动 planner, 路径细化和执行由自研导航负责
+
+## TODO 和 Roadmap
+
+### P0, Frontier 生命周期分层, 已完成
+
+- 持久图只保存节点、edge、explored radius 和访问状态
+- Frontier 移出当前滚动地图后立即取消活动状态, owner 节点和历史路线继续保留
+- `CurrentFrontierScores` 每帧聚合三相机当前证据, 不保留旧视角评分
+- 已探索区域通过持久节点 explored radius 阻止重复 Frontier, 不再维护 removed Frontier 坐标集合
+- 实施记录见 `docs/2026-07-14/2026-07-14-frontier-lifecycle-and-deferred-branch.md`
+
+### P1, 活动分支锁定, 已完成
+
+- `graphnav_planner` 已增加显式 `ActiveBranch`, 保存路径 UUID、终点 Frontier、局部方向、odom 进度和最后有效路径
+- 当前分支暂时失配时复用未执行路径后缀, 不能立即退回全局无记忆选择
+- 初始探索 heading 固定为首帧 odom 前方, 有效分支允许沿走廊自然拐弯
+- 当前仅以持续无 odom 进展确认分支失败, 失败后临时屏蔽该 Frontier 邻域
+
+### P1, Deferred Branch 记忆, 已完成
+
+- 保存未选择分支的稳定 owner UUID、位置、发现方向和发现顺序
+- 当前分支确认死路后优先恢复保存分支, 不重新执行每帧全局无记忆选择
+- deferred branch 只在当前活动分支持续无 odom 进展后启用, 正常前进时不能触发后方跳转
+
+### P1, 自研导航失败反馈
+
+- 接入局部路径不可达、执行拒绝和控制器停止反馈
+- 将底层失败反馈与持续无 odom 进展共同用于死路确认
+
+### P2, 多视角粒子目标融合
+
+- 将现有 `obj_mask_triangulation` 和 `triangulation3d` 接入当前 Object Search 主链路
+- 融合前、左、右相机的目标 Mask、相机位姿和 LiDAR 投影
+- 明确视觉多视角估计、LiDAR lock、目标记忆和目标到达之间的状态切换
+- 增加误检门控, 不允许单帧错误 Mask 直接覆盖持久目标
+
+### P2, Nav2 接入
+
+- Unity 当前继续使用同事开发的自研导航直接消费 `/spot1/graphnav_planner/path`
+- Nav2 作为 Isaac 或真实机器人可选局部规划和控制后端接入, 不替换当前 Unity 链路
+- 接入前明确高层 graph path 到 Nav2 goal 或 action 的限流、抢占、失败恢复和停止协议
+- 保持 `path_follower_node` 与外部导航消费者互斥, 避免双重路径执行
+
+### P2, DLIO 接入
+
+- Unity 仿真继续使用仿真里程计, 不强制引入 DLIO
+- 真实机器人根据 LiDAR、IMU 和现有定位质量决定是否使用 DLIO
+- 接入时统一 odom topic、`odom -> base_link` TF、时间同步和重定位后的 graph frame 行为
+- DLIO 只提供 LiDAR-inertial odometry, 不负责局部规划或路径跟踪
+
+### P3, 真实机器狗平台接入
+
+- 完成 `robot` topic profile, 替换当前占位 topic 和 frame
+- 标定三相机、LiDAR、IMU 和 base frame 外参
+- 验证 elevation map、持久 graph、目标检测和高层路径在真实传感器噪声下的稳定性
+- 对接真实机器狗导航接口、急停、速度限制、跌倒保护和任务停止反馈
+- 在室内受控环境完成回放和低速闭环后, 再进入室外目标搜索测试
 
 ## 文件夹结构
 
@@ -251,7 +317,7 @@ visual_navigation/
   configs/        WildOS, object search goal mux 和 baseline 配置
   launch/         WildOS 视觉节点和 baseline launch
   visual_navigation/wildos/
-                  ExploRFM 推理, frontier scoring, object target selection
+                  ExploRFM 推理, 当前帧 frontier scoring, object target selection
   visual_navigation/object_search_goal_mux.py
                   object search goal 状态机和 planner goal 输出
   visual_navigation/utils/
@@ -297,7 +363,7 @@ graph_construction/configs/graph_construction.yaml
   2D OccupancyGrid fallback 后端差异和调优覆盖
 
 graph_construction/configs/elevation_mapping_sim.yaml
-  elevation_mapping_cupy 仿真配置
+  elevation_mapping_cupy 静态仿真配置, 默认关闭 visibility cleanup 避免有效地面被射线清除
 
 graph_construction/configs/livox_grid_builder.yaml
   2D fallback 点云转 OccupancyGrid 配置

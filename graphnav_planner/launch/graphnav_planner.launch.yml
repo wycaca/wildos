@@ -43,8 +43,6 @@ launch:
           value: 10.0
         - name: frontier_progress_timeout
           value: 12.0
-        - name: frontier_switch_margin
-          value: 2.0
         - name: revisit_cost_factor
           value: 1.0
         - name: trav_class
@@ -58,6 +56,8 @@ launch:
           to: $(var odom_topic)
         - from: "~/goal_pose"
           to: "/goal_pose"
+        - from: "~/object_search_status"
+          to: "/spot1/object_search_status"
         # - from: "~/path"
         #   to: "graph_nav_path"
         # namespaced default ros topics
