@@ -35,7 +35,8 @@ PointCloud2
   -> /spot1/nav_graph
   -> visual_navigation WildOS scoring
      -> /spot1/scored_nav_graph -> graphnav_planner
-     -> /spot1/object_search_target_pose -> object_search_goal_mux -> graphnav_planner goal
+     -> /spot1/object_mask -> object_target_fusion -> /spot1/object_target_estimate -> object_search_goal_mux
+     -> /spot1/object_search_target_pose -> red marker debug only
   -> path output
 ```
 
@@ -75,8 +76,16 @@ WILDOS_TOPIC_PROFILE=robot ./scripts/start_wildos_elevation.sh do_object_search:
 - 设置 `PYTHONNOUSERSITE=1`
 - 将仓库根目录加入 `PYTHONPATH`
 - 检查 `elevation_mapping_cupy`
+- 启用目标搜索时检查 `TargetEstimate` 和两个目标搜索节点是否已安装
 - 修正部分已安装 Python entrypoint 的 shebang
 - 调用 `graph_construction/launch/elevation_visual_navigation_sim.launch.py`
+
+修改目标融合消息或节点后需要重新构建完整链路:
+
+```bash
+cd /mnt/hhd/han/wildos_ws
+colcon build --packages-select object_search_msgs triangulation3d visual_navigation graph_construction --symlink-install
+```
 
 2D fallback 仍保留 launch 文件, 但当前没有对应启动脚本:
 
@@ -212,7 +221,9 @@ Graph Construction 参数按职责分为三层:
 front / left / right camera
   -> visual_navigation.wildos.nav
   -> /spot1/scored_nav_graph -> graphnav_planner
-  -> /spot1/object_search_target_pose -> visual_navigation.object_search_goal_mux
+  -> /spot1/object_mask -> object_target_fusion -> /spot1/object_target_estimate
+  -> /spot1/object_search_target_pose -> red marker debug only
+  -> /spot1/object_target_estimate -> visual_navigation.object_search_goal_mux
   -> graphnav_planner goal topic
 ```
 
@@ -220,15 +231,26 @@ front / left / right camera
 
 - 目标检测必须同时满足相似度峰值, 连通区域面积和连续帧确认, 单像素弱响应不会发布目标点
 - 模型可视化第一行会同时叠加 graph 和确认后的 object mask, 不再用 graph 图覆盖 mask
-- `object_search_goal_mux` 不再订阅 scored graph 或选择 frontier
+- `object_search_goal_mux` 不订阅 scored graph、视觉 Frontier Pose 或选择 frontier
 - 未检测到目标时, mux 根据首帧 odom 固定探索 heading, planner 沿该 heading 持续前移虚拟目标
-- 目标出现时, mux 直接切换到确认后的目标 pose, 短时丢失使用目标记忆
+- 两个有效视觉视角形成粗目标后, mux 从初始探索 goal 切换到远距离粗目标
+- 稳定视觉或 LiDAR 增强目标出现后, mux 在原目标基础上提升定位精度
+- 视觉 reached 只有在机器人距稳定融合目标不超过 `2.0m` 时才会永久停止
+- `object_target_fusion` 按论文方案使用视觉粒子完成远距离粗定位, LiDAR 点云不是定位前置条件
+- LiDAR 点落入目标 Mask 时只作为近距离快速收紧和锁定增强
+- 红色旧视觉目标只保留发布和 RViz 对照, 不进入 Mux 或控制导航
+- 两视角 `TRACKING` 粗目标可控制导航, `STABLE_VISION` 或 `LIDAR_LOCKED` 再提升目标质量
+- 单视角 `PENDING` 只发布调试粒子, 不显示没有深度约束的位置 marker
+- 目标 Mask 使用图像中位时间查询相机 TF 和匹配 LiDAR, 不使用宽松同步后的 odom 时间
+- LiDAR 目标测量剔除 Mask 内地面点, 使用最密集高点簇对齐高程图障碍凸起
+- 多视角稳定要求有效横向视差, 沿目标射线直行不能制造虚假的深度收敛
+- WildOS reached 只产生当前视觉候选证据, 不拥有任务完成状态
 - 视觉 Frontier 分数每帧重建, 相机不可见后不继续发布旧视角分数
 - 未选择分支由 planner 保存稳定 owner UUID、位置、方向和发现顺序, 不把历史 Frontier 当成当前候选
 - frontier 选择、分支连续性、无进展屏蔽和回头代价统一由 `graphnav_planner` 负责
-- Unity 已启用 target latch, 支持短时遮挡后继续朝目标方向规划
-- 目标到达或近距离视觉确认后, WildOS 永久锁定任务完成, 停止目标检测候选链和后续 False 日志
-- `object_search_goal_mux` 收到首次 reached 后永久发布当前位置 hold goal, 仅节点重启可开始新任务
+- 粗目标和稳定目标由 Mux 持续锁定, 后续视觉短时遮挡不会退回初始探索 goal
+- Mux 同时确认稳定目标、`2.0m` 距离和视觉证据后永久发布当前位置 hold goal
+- `/spot1/object_search_completed` 由 Mux 发布, WildOS 和 Fusion 收到后才停止目标更新
 - `graphnav_planner` 到达 goal 半径内时发布当前位置单点 path, 让下游停止
 
 ## Planner 架构
@@ -285,12 +307,16 @@ front / left / right camera
 - 接入局部路径不可达、执行拒绝和控制器停止反馈
 - 将底层失败反馈与持续无 odom 进展共同用于死路确认
 
-### P2, 多视角粒子目标融合
+### P2, 多视角粒子目标融合, 代码已完成
 
-- 将现有 `obj_mask_triangulation` 和 `triangulation3d` 接入当前 Object Search 主链路
-- 融合前、左、右相机的目标 Mask、相机位姿和 LiDAR 投影
-- 明确视觉多视角估计、LiDAR lock、目标记忆和目标到达之间的状态切换
-- 增加误检门控, 不允许单帧错误 Mask 直接覆盖持久目标
+- `obj_mask_triangulation` 已重构为薄 ROS 节点, 粒子算法位于 `triangulation3d/target_particle_filter.py`
+- 前、左、右相机 Mask 和相机位姿进入固定数量递归粒子融合
+- LiDAR 使用独立时间缓存, 没有同步点云时仍执行纯视觉融合
+- 已增加重复视角抑制、异常方向门控和可选两帧 LiDAR lock
+- 两视角视觉粗 estimate 和稳定 estimate 均已接入 `object_search_goal_mux`
+- Mux 独占 reached 终态, 旧视觉目标不再作为 fallback
+- 待 Unity 验证目标误差、收敛时间、误锁次数和路径更新次数
+- 简明说明见 `docs/2026-07-15/2026-07-15-multiview-target-fusion.md`
 
 ### P2, Nav2 接入
 

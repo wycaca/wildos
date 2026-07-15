@@ -4,8 +4,9 @@ object_search_goal_mux:
     output_goal_topic: /spot1/graphnav_goal_pose
     goal_viz_topic: /spot1/object_search_goal_viz
     status_topic: /spot1/object_search_status
-    object_target_pose_topic: /spot1/object_search_target_pose
+    object_target_estimate_topic: /spot1/object_target_estimate
     object_reached_topic: /spot1/object_search_reached
+    completion_topic: /spot1/object_search_completed
     odom_topic: /spot1/odom_for_scoring
     frame_id: map
 
@@ -14,14 +15,11 @@ object_search_goal_mux:
     initial_goal_distance: 30.0
     initial_goal_heading_deg: 0.0
 
-    # 目标 frontier 和目标记忆, 目标短暂丢失时避免立刻回到初始 goal
+    # 论文式两视角视觉粗定位先替换初始探索 goal, 稳定估计随后提升精度
     publish_rate: 5.0
-    target_timeout_sec: 3.0
-    latch_target_after_first_detection: false
-    latch_target_timeout_sec: 3.0
-    memory_timeout_sec: 10.0
-    memory_goal_distance: 10.0
-    target_reached_radius: 1.5
     object_reached_timeout_sec: 2.0
-    object_reached_require_target_distance: false
+    object_reached_require_target_distance: true
     object_reached_max_target_distance: 2.0
+    coarse_target_min_views: 2
+    coarse_target_min_confidence: 0.35
+    metric_target_update_distance: 0.75

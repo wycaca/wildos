@@ -13,6 +13,7 @@ if [[ ! -f "${DEFAULT_VENV_ACTIVATE}" ]]; then
 fi
 VENV_ACTIVATE="${VENV_ACTIVATE:-${DEFAULT_VENV_ACTIVATE}}"
 FAST_DDS_PROFILE="${FAST_DDS_PROFILE:-${REPO_ROOT}/configs/fastdds_shm_profile.xml}"
+OBJECT_SEARCH_BUILD_PACKAGES="object_search_msgs triangulation3d visual_navigation graph_construction"
 
 if [[ ! -f "${ROS_SETUP}" ]]; then
   echo "缺少 ROS 环境文件: ${ROS_SETUP}" >&2
@@ -99,9 +100,25 @@ ensure_installed_executable() {
   script_path="$(find "${INSTALL_ROOT}" -path "*/lib/${package}/${executable}" -type f -print -quit 2>/dev/null || true)"
   if [[ -z "${script_path}" ]]; then
     echo "缺少已安装可执行脚本: ${package}/${executable}" >&2
-    echo "请重新构建后再启动: colcon build --packages-select visual_navigation graph_construction --symlink-install" >&2
+    print_object_search_rebuild_hint
     exit 1
   fi
+}
+
+print_object_search_rebuild_hint() {
+  echo "请重新构建后再启动:" >&2
+  echo "  cd ${WORKSPACE_ROOT}" >&2
+  echo "  colcon build --packages-select ${OBJECT_SEARCH_BUILD_PACKAGES} --symlink-install" >&2
+}
+
+ensure_object_search_interfaces() {
+  if ros2 interface show object_search_msgs/msg/TargetEstimate >/dev/null 2>&1; then
+    return 0
+  fi
+
+  echo "已安装的 object_search_msgs 缺少 TargetEstimate, 当前 install 与源码不一致" >&2
+  print_object_search_rebuild_hint
+  exit 1
 }
 
 if ! ros2 pkg prefix elevation_mapping_cupy >/dev/null 2>&1; then
@@ -114,9 +131,12 @@ fix_executable_shebang "elevation_mapping_node.py"
 fix_executable_shebang "wildos"
 fix_executable_shebang "odom_frame_adapter"
 fix_executable_shebang "object_search_goal_mux"
+fix_executable_shebang "obj_mask_triangulation"
 
 if launch_arg_enabled "do_object_search" "$@"; then
+  ensure_object_search_interfaces
   ensure_installed_executable "object_search_goal_mux" "visual_navigation"
+  ensure_installed_executable "obj_mask_triangulation" "visual_navigation"
 fi
 
 echo "启动 WildOS elevation/2.5D, profile=${WILDOS_TOPIC_PROFILE}, python=${PYTHON_BIN}"

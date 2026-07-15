@@ -1,10 +1,11 @@
+import copy
 import math
 
-from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
 import pytest
 import rclpy
 from std_msgs.msg import Bool
+from object_search_msgs.msg import TargetEstimate
 
 from visual_navigation.object_search_goal_mux import ObjectSearchGoalMux
 from visual_navigation.object_search_types import ObjectSearchState
@@ -39,6 +40,29 @@ def _odom(x: float, y: float, yaw: float) -> Odometry:
     return msg
 
 
+def _target_estimate(
+    x: float,
+    y: float,
+    *,
+    stable: bool = True,
+    confidence: float = 0.8,
+    accepted_views: int = 2,
+    state: str | None = None,
+) -> TargetEstimate:
+    """构造视觉粗目标或稳定融合目标估计"""
+    msg = TargetEstimate()
+    msg.header.frame_id = "odom"
+    msg.pose.pose.position.x = x
+    msg.pose.pose.position.y = y
+    msg.pose.pose.orientation.w = 1.0
+    msg.confidence = confidence
+    msg.source = TargetEstimate.SOURCE_VISION
+    msg.stable = stable
+    msg.accepted_views = accepted_views
+    msg.state = state or ("STABLE_VISION" if stable else "TRACKING")
+    return msg
+
+
 def test_initial_coarse_goal_is_computed_once(mux_node):
     """机器人后续移动和转向不能让粗目标围绕当前位置重算"""
     mux_node._on_odom(_odom(1.0, 2.0, 0.0))
@@ -55,21 +79,14 @@ def test_initial_coarse_goal_is_computed_once(mux_node):
     assert second_goal.pose.position.y == pytest.approx(first_goal.pose.position.y)
 
 
-def test_confirmed_target_replaces_coarse_goal(mux_node):
-    """有效目标进入后由 mux 直接切换为目标位置"""
-    mux_node._on_odom(_odom(1.0, 2.0, 0.0))
-    target = PoseStamped()
-    target.header.frame_id = "odom"
-    target.pose.position.x = 12.0
-    target.pose.position.y = -3.0
-    target.pose.orientation.w = 1.0
+def test_legacy_visual_target_topic_is_not_subscribed(mux_node):
+    """旧视觉目标只保留发布和显示, Mux 不允许订阅或控制导航"""
+    subscribed_topics = {
+        subscription.topic_name
+        for subscription in mux_node.subscriptions
+    }
 
-    mux_node._on_target_pose(target)
-    state, goal = mux_node._select_goal()
-
-    assert state == ObjectSearchState.TARGET_APPROACH
-    assert goal.pose.position.x == pytest.approx(12.0)
-    assert goal.pose.position.y == pytest.approx(-3.0)
+    assert "/spot1/object_search_target_pose" not in subscribed_topics
 
 
 def test_initial_goal_orientation_matches_configured_heading(mux_node):
@@ -89,6 +106,7 @@ def test_initial_goal_orientation_matches_configured_heading(mux_node):
 def test_reached_event_permanently_holds_current_pose(mux_node):
     """首次 reached 后 False 消息不能解除当前位置停止 goal"""
     mux_node._on_odom(_odom(4.0, -2.0, 0.5))
+    mux_node._on_target_estimate(_target_estimate(5.0, -2.0))
 
     mux_node._on_object_reached(Bool(data=True))
     reached_state, reached_goal = mux_node._select_goal()
@@ -102,3 +120,85 @@ def test_reached_event_permanently_holds_current_pose(mux_node):
     assert reached_goal.pose.position.y == pytest.approx(-2.0)
     assert later_goal.pose.position.x == pytest.approx(4.0)
     assert later_goal.pose.position.y == pytest.approx(-2.0)
+
+
+def test_reached_requires_metric_target_within_distance(mux_node):
+    """视觉 reached 不能在融合目标仍较远时提前停止导航"""
+    mux_node._on_odom(_odom(0.0, 0.0, 0.0))
+    mux_node._on_target_estimate(_target_estimate(5.0, 0.0))
+
+    mux_node._on_object_reached(Bool(data=True))
+    far_state, _ = mux_node._select_goal()
+
+    mux_node._on_target_estimate(_target_estimate(1.5, 0.0))
+    mux_node._on_object_reached(Bool(data=True))
+    near_state, _ = mux_node._select_goal()
+
+    assert far_state == ObjectSearchState.TARGET_APPROACH_METRIC
+    assert near_state == ObjectSearchState.TARGET_REACHED_VIEWPOINT
+
+
+def test_single_view_pending_estimate_keeps_initial_goal(mux_node):
+    """单视角深度不确定时不能替换初始探索 goal"""
+    mux_node._on_odom(_odom(0.0, 0.0, 0.0))
+
+    estimate = _target_estimate(
+        12.0,
+        3.0,
+        stable=False,
+        accepted_views=1,
+        state="PENDING",
+    )
+    mux_node._on_target_estimate(estimate)
+    state, goal = mux_node._select_goal()
+
+    assert state == ObjectSearchState.SEARCHING_WITH_INITIAL_GOAL
+    assert goal.pose.position.x == pytest.approx(20.0)
+
+
+def test_two_view_tracking_estimate_replaces_initial_goal(mux_node):
+    """论文式两视角粗定位形成后立即引导远距离导航"""
+    mux_node._on_odom(_odom(0.0, 0.0, 0.0))
+    estimate = _target_estimate(
+        12.0,
+        3.0,
+        stable=False,
+        confidence=0.51,
+        accepted_views=2,
+        state="TRACKING",
+    )
+
+    mux_node._on_target_estimate(estimate)
+    state, coarse_goal = mux_node._select_goal()
+
+    assert state == ObjectSearchState.TARGET_APPROACH_COARSE
+    assert coarse_goal.pose.position.x == pytest.approx(12.0)
+    assert coarse_goal.pose.position.y == pytest.approx(3.0)
+
+
+def test_coarse_target_cannot_trigger_final_completion(mux_node):
+    """粗目标即使距离很近也不能拥有最终完成权限"""
+    mux_node._on_odom(_odom(0.0, 0.0, 0.0))
+    mux_node._on_target_estimate(
+        _target_estimate(1.0, 0.0, stable=False, confidence=0.5)
+    )
+
+    mux_node._on_object_reached(Bool(data=True))
+    state, _ = mux_node._select_goal()
+
+    assert state == ObjectSearchState.TARGET_APPROACH_COARSE
+
+
+def test_small_metric_updates_do_not_move_goal(mux_node):
+    """置信度相近的小幅粒子波动不能反复改变高层 goal"""
+    first = _target_estimate(10.0, 2.0)
+    mux_node._on_target_estimate(first)
+
+    jittered = copy.deepcopy(first)
+    jittered.pose.pose.position.x = 10.2
+    jittered.pose.pose.position.y = 2.1
+    jittered.confidence = 0.82
+    mux_node._on_target_estimate(jittered)
+
+    assert mux_node.metric_target.pose.position.x == pytest.approx(10.0)
+    assert mux_node.metric_target.pose.position.y == pytest.approx(2.0)

@@ -15,10 +15,12 @@ find_package(std_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(tf2_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ObjectMaskWithTf.msg"
-  DEPENDENCIES std_msgs nav_msgs sensor_msgs tf2_msgs
+  "msg/TargetEstimate.msg"
+  DEPENDENCIES std_msgs nav_msgs sensor_msgs tf2_msgs geometry_msgs
 )
 
 if(BUILD_TESTING)

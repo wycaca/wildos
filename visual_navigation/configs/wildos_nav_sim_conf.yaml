@@ -51,6 +51,7 @@ graph_viz_topic: /spot1/nav_graph_viz
 object_mask_topic: /spot1/object_mask
 object_target_pose_topic: /spot1/object_search_target_pose
 object_target_viz_topic: /spot1/object_search_target_viz
+object_completed_topic: /spot1/object_search_completed
 
 # ROS2 subscriber params
 qos_history_depth: 1

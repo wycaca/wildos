@@ -1,20 +1,26 @@
-# Triangulation3D — Particle-Filter-Based 3D Object Triangulation
+# Triangulation3D — Multi-View Target Fusion
 
-ROS 2 package for coarse 3D localization of open-vocabulary target objects beyond the robot's depth horizon using a particle-filter-based approach.
+This package contains the pure particle filter used to remember one target from multiple camera views.
 
 ## Overview
 
-When the target object is detected in multiple camera views (via ExploRFM), this module estimates its 3D position by:
+The current target fusion process is:
 
-1. **Particle sampling** — Randomly sampling candidate 3D positions given an object detection in image space
-2. **Multi-view triangulation** — Fusing multiple object hypotheses (projected particles) across camera views to converge on the target location
+1. Sample a fixed number of 3D particles from a confirmed object Mask
+2. Reweight the same particles with later camera views
+3. Reject repeated views and observations that disagree with a stable target
+4. Publish a coarse visual goal after two distinct views
+5. Use consistent LiDAR measurements only as an optional refinement
+
+The paper method does not require LiDAR for long-range localization. LiDAR points that project into the target Mask can provide a faster near-range lock, while pure multi-view vision remains the primary path.
 
 ## Key Files
 
 | File | Description |
 |---|---|
-| `triangulator.py` | Core triangulation logic using multiple object hypotheses and projected particles |
-| `particle_generator.py` | Particle sampling from object detections |
+| `target_particle_filter.py` | Current fixed-size recursive target filter |
+| `triangulator.py` | Legacy batch triangulation used by demos |
+| `particle_generator.py` | Legacy particle sampling used by demos |
 
 ## Usage
 

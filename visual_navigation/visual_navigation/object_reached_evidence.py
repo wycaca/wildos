@@ -1,20 +1,17 @@
 import numpy as np
 
 
-class ObjectReachedLatch:
-    """连续近距离证据确认后永久锁定任务完成状态"""
+class VisualReachedEvidence:
+    """连续 Mask 面积证据, 只表示当前视觉上可能已接近目标"""
 
     def __init__(self, min_pixel_count: int, min_mask_fraction: float, confirm_frames: int):
         self.min_pixel_count = max(int(min_pixel_count), 1)
         self.min_mask_fraction = max(float(min_mask_fraction), 0.0)
         self.confirm_frames = max(int(confirm_frames), 1)
         self.confirm_count = 0
-        self.completed = False
 
     def update(self, binary_mask) -> bool:
-        """未完成时累计连续证据, 完成后忽略后续空帧并始终返回 True"""
-        if self.completed:
-            return True
+        """连续帧满足面积阈值时返回 True, 中断后重新累计"""
         if binary_mask is None:
             self.confirm_count = 0
             return False
@@ -32,6 +29,4 @@ class ObjectReachedLatch:
             and max_fraction >= self.min_mask_fraction
         )
         self.confirm_count = self.confirm_count + 1 if reached_candidate else 0
-        if self.confirm_count >= self.confirm_frames:
-            self.completed = True
-        return self.completed
+        return self.confirm_count >= self.confirm_frames

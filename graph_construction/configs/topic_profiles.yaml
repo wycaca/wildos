@@ -73,8 +73,12 @@ profiles:
     graph_viz_topic: /spot1/nav_graph_viz
     object_mask_topic: /spot1/object_mask
     object_target_pose_topic: /spot1/object_search_target_pose
+    object_target_estimate_topic: /spot1/object_target_estimate
+    object_target_estimate_viz_topic: /spot1/object_target_estimate_viz
+    object_target_particles_topic: /spot1/object_target_particles
     object_target_viz_topic: /spot1/object_search_target_viz
     object_reached_topic: /spot1/object_search_reached
+    object_search_completed_topic: /spot1/object_search_completed
 
     # object search 基础策略, 常用调参是 mask threshold 和 visual frontier 阈值
     object_search_initial_goal_distance: "30.0"
@@ -89,14 +93,8 @@ profiles:
     object_search_detection_debug_interval: "20"
     object_search_target_log_period_sec: "2.0"
     object_search_goal_publish_rate: "5.0"
-    object_search_target_timeout_sec: "3.0"
-    object_search_latch_target_after_first_detection: "false"
-    object_search_latch_target_timeout_sec: "3.0"
-    object_search_memory_timeout_sec: "10.0"
-    object_search_memory_goal_distance: "10.0"
-    object_search_target_reached_radius: "1.5"
     object_search_object_reached_timeout_sec: "2.0"
-    object_search_object_reached_require_target_distance: "false"
+    object_search_object_reached_require_target_distance: "true"
     object_search_object_reached_max_target_distance: "2.0"
 
     # 到达确认, 用目标 mask 判断是否接近可观察位置
@@ -180,8 +178,12 @@ profiles:
     graph_viz_topic: /spot1/nav_graph_viz
     object_mask_topic: /spot1/object_mask
     object_target_pose_topic: /spot1/object_search_target_pose
+    object_target_estimate_topic: /spot1/object_target_estimate
+    object_target_estimate_viz_topic: /spot1/object_target_estimate_viz
+    object_target_particles_topic: /spot1/object_target_particles
     object_target_viz_topic: /spot1/object_search_target_viz
     object_reached_topic: /spot1/object_search_reached
+    object_search_completed_topic: /spot1/object_search_completed
 
     # object search 基础策略, Unity 当前略放宽 visual frontier 候选
     object_search_initial_goal_distance: "30.0"
@@ -196,14 +198,8 @@ profiles:
     object_search_detection_debug_interval: "20"
     object_search_target_log_period_sec: "2.0"
     object_search_goal_publish_rate: "5.0"
-    object_search_target_timeout_sec: "3.0"
-    object_search_latch_target_after_first_detection: "true"
-    object_search_latch_target_timeout_sec: "12.0"
-    object_search_memory_timeout_sec: "10.0"
-    object_search_memory_goal_distance: "10.0"
-    object_search_target_reached_radius: "1.5"
     object_search_object_reached_timeout_sec: "5.0"
-    object_search_object_reached_require_target_distance: "false"
+    object_search_object_reached_require_target_distance: "true"
     object_search_object_reached_max_target_distance: "2.0"
 
     # 到达确认, 用目标 mask 判断是否接近可观察位置
@@ -287,8 +283,12 @@ profiles:
     graph_viz_topic: /spot1/nav_graph_viz
     object_mask_topic: /spot1/object_mask
     object_target_pose_topic: /spot1/object_search_target_pose
+    object_target_estimate_topic: /spot1/object_target_estimate
+    object_target_estimate_viz_topic: /spot1/object_target_estimate_viz
+    object_target_particles_topic: /spot1/object_target_particles
     object_target_viz_topic: /spot1/object_search_target_viz
     object_reached_topic: /spot1/object_search_reached
+    object_search_completed_topic: /spot1/object_search_completed
 
     # object search 基础策略, 真实狗 profile 当前沿用 Isaac 阈值
     object_search_initial_goal_distance: "30.0"
@@ -303,14 +303,8 @@ profiles:
     object_search_detection_debug_interval: "20"
     object_search_target_log_period_sec: "2.0"
     object_search_goal_publish_rate: "5.0"
-    object_search_target_timeout_sec: "3.0"
-    object_search_latch_target_after_first_detection: "false"
-    object_search_latch_target_timeout_sec: "3.0"
-    object_search_memory_timeout_sec: "10.0"
-    object_search_memory_goal_distance: "10.0"
-    object_search_target_reached_radius: "1.5"
     object_search_object_reached_timeout_sec: "2.0"
-    object_search_object_reached_require_target_distance: "false"
+    object_search_object_reached_require_target_distance: "true"
     object_search_object_reached_max_target_distance: "2.0"
 
     # 到达确认, 用目标 mask 判断是否接近可观察位置

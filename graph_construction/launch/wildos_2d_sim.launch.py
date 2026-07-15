@@ -118,8 +118,12 @@ def generate_launch_description():
             _profile_arg("graph_viz_topic", "graph_viz_topic"),
             _profile_arg("object_mask_topic", "object_mask_topic"),
             _profile_arg("object_target_pose_topic", "object_target_pose_topic"),
+            _profile_arg("object_target_estimate_topic", "object_target_estimate_topic"),
+            _profile_arg("object_target_estimate_viz_topic", "object_target_estimate_viz_topic"),
+            _profile_arg("object_target_particles_topic", "object_target_particles_topic"),
             _profile_arg("object_target_viz_topic", "object_target_viz_topic"),
             _profile_arg("object_reached_topic", "object_reached_topic"),
+            _profile_arg("object_search_completed_topic", "object_search_completed_topic"),
             _profile_arg("object_search_initial_goal_distance", "object_search_initial_goal_distance"),
             _profile_arg("object_search_initial_goal_heading_deg", "object_search_initial_goal_heading_deg"),
             _profile_arg("object_search_mask_threshold", "object_search_mask_threshold"),
@@ -128,12 +132,6 @@ def generate_launch_description():
             _profile_arg("object_search_detection_debug_interval", "object_search_detection_debug_interval"),
             _profile_arg("object_search_target_log_period_sec", "object_search_target_log_period_sec"),
             _profile_arg("object_search_goal_publish_rate", "object_search_goal_publish_rate"),
-            _profile_arg("object_search_target_timeout_sec", "object_search_target_timeout_sec"),
-            _profile_arg("object_search_latch_target_after_first_detection", "object_search_latch_target_after_first_detection"),
-            _profile_arg("object_search_latch_target_timeout_sec", "object_search_latch_target_timeout_sec"),
-            _profile_arg("object_search_memory_timeout_sec", "object_search_memory_timeout_sec"),
-            _profile_arg("object_search_memory_goal_distance", "object_search_memory_goal_distance"),
-            _profile_arg("object_search_target_reached_radius", "object_search_target_reached_radius"),
             _profile_arg("object_search_object_reached_timeout_sec", "object_search_object_reached_timeout_sec"),
             _profile_arg(
                 "object_search_object_reached_require_target_distance",
@@ -304,6 +302,7 @@ def _launch_setup(context):
             "object_target_pose_topic": _value(context, profile, "object_target_pose_topic", "object_target_pose_topic"),
             "object_target_viz_topic": _value(context, profile, "object_target_viz_topic", "object_target_viz_topic"),
             "object_reached_topic": _value(context, profile, "object_reached_topic", "object_reached_topic"),
+            "object_completed_topic": _value(context, profile, "object_search_completed_topic", "object_search_completed_topic"),
             "object_search_config.mask_threshold": _value(
                 context,
                 profile,
@@ -476,6 +475,24 @@ def _launch_setup(context):
         parameters=[{"use_sim_time": use_sim_time}],
     )
 
+    object_target_fusion = Node(
+        package="visual_navigation",
+        executable="obj_mask_triangulation",
+        name="object_target_fusion",
+        output="screen",
+        parameters=[
+            {"use_sim_time": use_sim_time},
+            {"global_frame": global_frame},
+            {"object_mask_topic": _value(context, profile, "object_mask_topic", "object_mask_topic")},
+            {"lidar_topic": _value(context, profile, "lidar_topic", "lidar_topic")},
+            {"target_estimate_topic": _value(context, profile, "object_target_estimate_topic", "object_target_estimate_topic")},
+            {"target_marker_topic": _value(context, profile, "object_target_estimate_viz_topic", "object_target_estimate_viz_topic")},
+            {"particle_topic": _value(context, profile, "object_target_particles_topic", "object_target_particles_topic")},
+            {"completion_topic": _value(context, profile, "object_search_completed_topic", "object_search_completed_topic")},
+        ],
+        condition=IfCondition(LaunchConfiguration("do_object_search")),
+    )
+
     object_search_goal_mux = Node(
         package="visual_navigation",
         executable="object_search_goal_mux",
@@ -485,8 +502,9 @@ def _launch_setup(context):
             {"output_goal_topic": goal_pose_topic},
             {"goal_viz_topic": _value(context, profile, "object_search_goal_viz_topic", "object_search_goal_viz_topic")},
             {"status_topic": _value(context, profile, "object_search_status_topic", "object_search_status_topic")},
-            {"object_target_pose_topic": _value(context, profile, "object_target_pose_topic", "object_target_pose_topic")},
+            {"object_target_estimate_topic": _value(context, profile, "object_target_estimate_topic", "object_target_estimate_topic")},
             {"object_reached_topic": _value(context, profile, "object_reached_topic", "object_reached_topic")},
+            {"completion_topic": _value(context, profile, "object_search_completed_topic", "object_search_completed_topic")},
             {"odom_topic": odom_output_topic},
             {"frame_id": global_frame},
             {
@@ -511,54 +529,6 @@ def _launch_setup(context):
                     profile,
                     "object_search_initial_goal_heading_deg",
                     "object_search_initial_goal_heading_deg",
-                )
-            },
-            {
-                "target_timeout_sec": _float_value(
-                    context,
-                    profile,
-                    "object_search_target_timeout_sec",
-                    "object_search_target_timeout_sec",
-                )
-            },
-            {
-                "latch_target_after_first_detection": _bool_value(
-                    context,
-                    profile,
-                    "object_search_latch_target_after_first_detection",
-                    "object_search_latch_target_after_first_detection",
-                )
-            },
-            {
-                "latch_target_timeout_sec": _float_value(
-                    context,
-                    profile,
-                    "object_search_latch_target_timeout_sec",
-                    "object_search_latch_target_timeout_sec",
-                )
-            },
-            {
-                "memory_timeout_sec": _float_value(
-                    context,
-                    profile,
-                    "object_search_memory_timeout_sec",
-                    "object_search_memory_timeout_sec",
-                )
-            },
-            {
-                "memory_goal_distance": _float_value(
-                    context,
-                    profile,
-                    "object_search_memory_goal_distance",
-                    "object_search_memory_goal_distance",
-                )
-            },
-            {
-                "target_reached_radius": _float_value(
-                    context,
-                    profile,
-                    "object_search_target_reached_radius",
-                    "object_search_target_reached_radius",
                 )
             },
             {
@@ -608,7 +578,7 @@ def _launch_setup(context):
         _camera_static_tf("left", camera_parent_frame, camera_transforms["left"], publish_camera_static_tf),
         _camera_static_tf("right", camera_parent_frame, camera_transforms["right"], publish_camera_static_tf),
         TimerAction(period=LaunchConfiguration("graph_start_delay"), actions=[graph_construction]),
-        TimerAction(period=LaunchConfiguration("visual_start_delay"), actions=[wildos]),
+        TimerAction(period=LaunchConfiguration("visual_start_delay"), actions=[wildos, object_target_fusion]),
         TimerAction(period=LaunchConfiguration("planner_start_delay"), actions=[object_search_goal_mux, planner]),
     ]
 

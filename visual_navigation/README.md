@@ -21,7 +21,7 @@ ROS 2 navigation package for WildOS and baseline implementations. This package c
 | `wildos/nav.py` | WildOS main node — runs ExploRFM inference and publishes scored navigation graph |
 | `wildos/goalagnostic_scoring.py` | Goal-agnostic frontier scoring combining traversability and frontier predictions |
 | `utils/scoring.py` | Graph scoring utilities shared across navigation methods |
-| `explorfm_triangulation/obj_mask_triangulation.py` | Object mask triangulation (used during WildOS deployment) |
+| `explorfm_triangulation/obj_mask_triangulation.py` | ROS adapter for multi-view target fusion |
 | `explorfm_triangulation/explorfm_triangulator.py` | Standalone ExploRFM triangulation node (for testing) |
 | `imgfrontier_nav/viz_net.py` | ExploRFM output visualization (debugging tool) |
 
@@ -38,12 +38,11 @@ YAML config files for each exectuable are in `configs/`:
 | `lrn_nav_conf.yaml` | LRN baseline |
 | `geofrontier_nav_conf.yaml` | Geometric frontier navigation |
 | `explorfm_triangulator_conf.yaml` | Standalone ExploRFM triangulation |
-| `triangulation3d_objsearch_conf.yaml` | Object search triangulation |
 
 ## Method Details
 
 ### WildOS
-WildOS scores frontier nodes of the navigation graph using ExploRFM predictions. The scoring combines traversability (is it safe?), visual frontier confidence (where to explore?), and object similarity (does it match the query?). When `do_object_search` is enabled, the `obj_mask_triangulation` node is automatically launched to estimate coarse goal positions using a particle filter.
+WildOS scores frontier nodes of the navigation graph using ExploRFM predictions. When object search is enabled, WildOS publishes confirmed masks and the target fusion node performs paper-style multi-view visual triangulation. A two-view coarse estimate can guide long-range navigation, while stable vision or optional LiDAR support refines the goal. The goal mux is the only owner of final task completion.
 
 ### Image Frontier Navigation (Baseline)
 Assumes a single geometric frontier at the center-bottom pixel of each camera image. Projects a path from the bottom-center pixel to the chosen visual frontier using the depth image and sends a goal at `lookahead_dist` along the projected path to the local planner.

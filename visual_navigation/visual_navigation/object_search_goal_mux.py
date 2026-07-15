@@ -9,12 +9,13 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from std_msgs.msg import Bool, String
 from visualization_msgs.msg import Marker, MarkerArray
+from object_search_msgs.msg import TargetEstimate
 
-from visual_navigation.object_search_types import ObjectSearchState, TargetHypothesis
+from visual_navigation.object_search_types import ObjectSearchState
 
 
 class ObjectSearchGoalMux(Node):
-    """目标搜索 goal 管理, 只负责固定粗目标和已确认目标之间的状态切换"""
+    """在初始探索、视觉粗目标、稳定目标和完成状态之间选择唯一 goal"""
 
     def __init__(self):
         super().__init__("object_search_goal_mux")
@@ -22,57 +23,55 @@ class ObjectSearchGoalMux(Node):
         self.declare_parameter("output_goal_topic", "/spot1/graphnav_goal_pose")
         self.declare_parameter("goal_viz_topic", "/spot1/object_search_goal_viz")
         self.declare_parameter("status_topic", "/spot1/object_search_status")
-        self.declare_parameter("object_target_pose_topic", "/spot1/object_search_target_pose")
+        self.declare_parameter("object_target_estimate_topic", "/spot1/object_target_estimate")
         self.declare_parameter("object_reached_topic", "/spot1/object_search_reached")
+        self.declare_parameter("completion_topic", "/spot1/object_search_completed")
         self.declare_parameter("odom_topic", "/spot1/odom_for_scoring")
         self.declare_parameter("frame_id", "map")
         self.declare_parameter("initial_goal_mode", "heading")
         self.declare_parameter("initial_goal_distance", 30.0)
         self.declare_parameter("initial_goal_heading_deg", 0.0)
         self.declare_parameter("publish_rate", 5.0)
-        self.declare_parameter("target_timeout_sec", 3.0)
-        self.declare_parameter("latch_target_after_first_detection", False)
-        self.declare_parameter("latch_target_timeout_sec", 3.0)
-        self.declare_parameter("memory_timeout_sec", 10.0)
-        self.declare_parameter("memory_goal_distance", 10.0)
-        self.declare_parameter("target_reached_radius", 1.5)
         self.declare_parameter("object_reached_timeout_sec", 2.0)
-        self.declare_parameter("object_reached_require_target_distance", False)
+        self.declare_parameter("object_reached_require_target_distance", True)
         self.declare_parameter("object_reached_max_target_distance", 2.0)
+        self.declare_parameter("coarse_target_min_views", 2)
+        self.declare_parameter("coarse_target_min_confidence", 0.35)
+        self.declare_parameter("metric_target_update_distance", 0.75)
 
         self.output_goal_topic = self._param_str("output_goal_topic")
         self.goal_viz_topic = self._param_str("goal_viz_topic")
         self.status_topic = self._param_str("status_topic")
-        self.object_target_pose_topic = self._param_str("object_target_pose_topic")
+        self.object_target_estimate_topic = self._param_str("object_target_estimate_topic")
         self.object_reached_topic = self._param_str("object_reached_topic")
+        self.completion_topic = self._param_str("completion_topic")
         self.odom_topic = self._param_str("odom_topic")
         self.frame_id = self._param_str("frame_id")
         self.initial_goal_mode = self._param_str("initial_goal_mode")
         self.initial_goal_distance = self._param_float("initial_goal_distance")
         self.initial_goal_heading_deg = self._param_float("initial_goal_heading_deg")
         self.publish_rate = max(self._param_float("publish_rate"), 0.1)
-        self.target_timeout_sec = max(self._param_float("target_timeout_sec"), 0.0)
-        self.latch_target_after_first_detection = self._param_bool(
-            "latch_target_after_first_detection"
-        )
-        self.latch_target_timeout_sec = max(self._param_float("latch_target_timeout_sec"), 0.0)
-        self.memory_timeout_sec = max(self._param_float("memory_timeout_sec"), 0.0)
-        self.memory_goal_distance = max(self._param_float("memory_goal_distance"), 0.1)
-        self.target_reached_radius = max(self._param_float("target_reached_radius"), 0.1)
         self.object_reached_timeout_sec = max(self._param_float("object_reached_timeout_sec"), 0.0)
         self.object_reached_require_target_distance = self._param_bool(
             "object_reached_require_target_distance"
         )
         self.object_reached_max_target_distance = max(
             self._param_float("object_reached_max_target_distance"),
-            self.target_reached_radius,
+            0.1,
+        )
+        self.coarse_target_min_views = max(
+            int(self.get_parameter("coarse_target_min_views").value),
+            2,
+        )
+        self.coarse_target_min_confidence = max(
+            self._param_float("coarse_target_min_confidence"),
+            0.0,
+        )
+        self.metric_target_update_distance = max(
+            self._param_float("metric_target_update_distance"),
+            0.0,
         )
 
-        if self.output_goal_topic == self.object_target_pose_topic:
-            raise ValueError(
-                "output_goal_topic 和 object_target_pose_topic 不能相同, "
-                "否则会形成 topic 回环"
-            )
         if self.initial_goal_mode != "heading":
             raise ValueError(
                 f"暂不支持 initial_goal_mode={self.initial_goal_mode}, "
@@ -80,17 +79,10 @@ class ObjectSearchGoalMux(Node):
             )
 
         self.latest_odom: Odometry | None = None
-        self.latest_target: PoseStamped | None = None
-        self.latest_target_time = None
-        self.latest_target_hypothesis: TargetHypothesis | None = None
-        self.latched_target: PoseStamped | None = None
-        self.latched_target_time = None
-        self.latched_target_hypothesis: TargetHypothesis | None = None
-        self.memory_target: PoseStamped | None = None
-        self.memory_target_hypothesis: TargetHypothesis | None = None
-        self.memory_direction: tuple[float, float] | None = None
-        self.memory_target_frame = ""
-        self.memory_target_time = None
+        self.metric_target: PoseStamped | None = None
+        self.metric_target_confidence = 0.0
+        self.metric_target_source = TargetEstimate.SOURCE_NONE
+        self.metric_target_stable = False
         self.initial_search_goal: PoseStamped | None = None
         self.exploration_heading_yaw: float | None = None
         self.latest_object_reached = False
@@ -104,10 +96,11 @@ class ObjectSearchGoalMux(Node):
         self.goal_pub = self.create_publisher(PoseStamped, self.output_goal_topic, 10)
         self.goal_viz_pub = self.create_publisher(MarkerArray, self.goal_viz_topic, 10)
         self.status_pub = self.create_publisher(String, self.status_topic, 10)
-        self.target_sub = self.create_subscription(
-            PoseStamped,
-            self.object_target_pose_topic,
-            self._on_target_pose,
+        self.completion_pub = self.create_publisher(Bool, self.completion_topic, 10)
+        self.metric_target_sub = self.create_subscription(
+            TargetEstimate,
+            self.object_target_estimate_topic,
+            self._on_target_estimate,
             10,
         )
         self.reached_sub = self.create_subscription(
@@ -126,7 +119,7 @@ class ObjectSearchGoalMux(Node):
 
         self.get_logger().info(
             "目标搜索 goal mux 已启动, "
-            f"output={self.output_goal_topic}, target={self.object_target_pose_topic}, "
+            f"output={self.output_goal_topic}, estimate={self.object_target_estimate_topic}, "
             f"reached={self.object_reached_topic}, "
             f"viz={self.goal_viz_topic}, odom={self.odom_topic}, "
             f"initial_distance={self.initial_goal_distance:.1f}m, "
@@ -162,32 +155,71 @@ class ObjectSearchGoalMux(Node):
                 + math.radians(self.initial_goal_heading_deg)
             )
 
-    def _on_target_pose(self, msg: PoseStamped) -> None:
-        if not self._pose_is_finite(msg):
-            self.get_logger().warn("收到无效 object target pose, 已忽略")
-            return
-        now = self.get_clock().now()
+    def _on_target_estimate(self, msg: TargetEstimate) -> None:
+        """两视角粗定位先引导导航, 稳定估计随后提升精度"""
         if self._reached_latch_is_active():
             return
-        now_sec = _time_seconds(now)
-        self.latest_target = msg
-        self.latest_target_time = now
-        self.latest_target_hypothesis = TargetHypothesis(
-            pose=copy.deepcopy(msg),
-            last_seen_sec=now_sec,
+        coarse_ready = (
+            int(msg.accepted_views) >= self.coarse_target_min_views
+            and float(msg.confidence) >= self.coarse_target_min_confidence
+            and msg.state in {"TRACKING", "STABLE_VISION", "LIDAR_LOCKED"}
         )
-        self._update_target_memory(msg, self.latest_target_time)
-        if self.latch_target_after_first_detection:
-            self._update_latched_target(msg, now)
+        if not msg.stable and not coarse_ready:
+            return
+        if self.metric_target_stable and not msg.stable:
+            return
+        target = PoseStamped()
+        target.header = copy.deepcopy(msg.header)
+        target.pose = copy.deepcopy(msg.pose.pose)
+        if not self._pose_is_finite(target):
+            self.get_logger().warn("收到无效 metric target estimate, 已忽略")
+            return
+
+        source_improved = int(msg.source) > int(self.metric_target_source)
+        quality_improved = bool(msg.stable) and not self.metric_target_stable
+        confidence_improved = (
+            self.metric_target is None
+            or float(msg.confidence) >= self.metric_target_confidence + 0.1
+        )
+        moved_enough = (
+            self.metric_target is None
+            or self._pose_xy_distance(self.metric_target, target)
+            >= self.metric_target_update_distance
+        )
+        if self.metric_target is not None and not (
+            quality_improved or source_improved or confidence_improved or moved_enough
+        ):
+            return
+
+        first_metric_target = self.metric_target is None
+        self.metric_target = target
+        self.metric_target_confidence = float(msg.confidence)
+        self.metric_target_source = int(msg.source)
+        self.metric_target_stable = bool(msg.stable)
+        if first_metric_target and not msg.stable:
+            self.get_logger().info(
+                "远距离视觉粗目标已锁定, "
+                f"confidence={self.metric_target_confidence:.2f}, "
+                f"views={int(msg.accepted_views)}"
+            )
+        elif first_metric_target or quality_improved or source_improved:
+            self.get_logger().info(
+                "稳定融合目标已锁定, "
+                f"source={_estimate_source_name(msg.source)}, "
+                f"confidence={self.metric_target_confidence:.2f}"
+            )
 
     def _on_object_reached(self, msg: Bool) -> None:
         self.latest_object_reached = bool(msg.data)
         self.latest_object_reached_time = self.get_clock().now()
-        if self.latest_object_reached and self._object_reached_is_active(self.latest_object_reached_time):
+        if self.latest_object_reached and self._object_reached_is_active(
+            self.latest_object_reached_time
+        ):
             self._activate_reached_latch(self.latest_object_reached_time)
 
     def _on_timer(self) -> None:
         state, goal = self._select_goal()
+        self.completion_pub.publish(Bool(data=self.reached_latched))
         self._publish_status(state, goal)
         if goal is None:
             self.goal_viz_pub.publish(_delete_goal_markers())
@@ -196,7 +228,7 @@ class ObjectSearchGoalMux(Node):
         self.goal_viz_pub.publish(_goal_markers(state, goal))
 
     def _select_goal(self) -> tuple[str, PoseStamped | None]:
-        """按目标状态选择固定粗目标、目标位置或短期目标记忆"""
+        """两视角粗目标出现前持续使用固定初始探索目标"""
         now = self.get_clock().now()
         if self._reached_latch_is_active():
             if self.reached_hold_goal is None and self.latest_odom is None:
@@ -207,99 +239,21 @@ class ObjectSearchGoalMux(Node):
             self._activate_reached_latch(now)
             return ObjectSearchState.TARGET_REACHED_VIEWPOINT, self._build_hold_goal(now)
 
-        has_fresh_target = self._fresh_target_is_active(now)
-        target_pose = self._active_target_pose(now)
-        if (
-            target_pose is not None
-            and self.latest_odom is not None
-            and self._target_is_reached(target_pose)
-        ):
-            self._activate_reached_latch(now)
-            return ObjectSearchState.TARGET_REACHED_VIEWPOINT, self._build_hold_goal(now)
-
-        if target_pose is not None and (has_fresh_target or self._latched_target_is_active(now)):
-            return ObjectSearchState.TARGET_APPROACH, self._retime_pose(target_pose, now)
-
-        if self.latest_target is not None and self.latest_target_time is not None:
-            target_age = (now - self.latest_target_time).nanoseconds * 1e-9
-            if target_age <= self.target_timeout_sec:
-                if self.latest_odom is not None and self._target_is_reached(self.latest_target):
-                    return ObjectSearchState.TARGET_REACHED_VIEWPOINT, self._build_hold_goal(now)
-                return ObjectSearchState.TARGET_APPROACH, self._retime_pose(self.latest_target, now)
-
-        if self.latch_target_after_first_detection and self.latched_target is not None:
-            latch_age = self._age_seconds(now, self.latched_target_time)
-            if latch_age <= self.latch_target_timeout_sec:
-                return (
-                    ObjectSearchState.TARGET_APPROACH,
-                    self._retime_pose(self.latched_target, now),
-                )
-            self.latched_target = None
-            self.latched_target_time = None
-            self.latched_target_hypothesis = None
+        if self.metric_target is not None:
+            state = (
+                ObjectSearchState.TARGET_APPROACH_METRIC
+                if self.metric_target_stable
+                else ObjectSearchState.TARGET_APPROACH_COARSE
+            )
+            return (
+                state,
+                self._retime_pose(self.metric_target, now),
+            )
 
         if self.latest_odom is None:
             return ObjectSearchState.WAIT_FOR_ODOM, None
 
-        if self.memory_direction is not None:
-            memory_age = self._age_seconds(now, self.memory_target_time)
-            if memory_age <= self.memory_timeout_sec:
-                return ObjectSearchState.TARGET_MEMORY_GUIDED_SEARCH, self._build_memory_goal(now)
-            self.memory_target = None
-            self.memory_target_hypothesis = None
-            self.memory_direction = None
-            self.memory_target_time = None
-            self.memory_target_frame = ""
-
         return ObjectSearchState.SEARCHING_WITH_INITIAL_GOAL, self._build_initial_goal(now)
-
-    def _active_target_pose(self, now) -> PoseStamped | None:
-        if self._latched_target_is_active(now):
-            return self.latched_target
-
-        if self.latest_target is not None and self.latest_target_time is not None:
-            if self._age_seconds(now, self.latest_target_time) <= self.target_timeout_sec:
-                return self.latest_target
-
-        if self._memory_is_active(now):
-            return self.memory_target
-        return None
-
-    def _update_latched_target(self, target: PoseStamped, now) -> None:
-        """看到目标后短时间固定目标 frontier, 避免每帧换到反方向节点"""
-        if not self._latched_target_is_active(now):
-            self.latched_target = copy.deepcopy(target)
-            self.latched_target_time = now
-            self.latched_target_hypothesis = copy.deepcopy(self.latest_target_hypothesis)
-            return
-        assert self.latched_target is not None
-        if self._pose_xy_distance(self.latched_target, target) <= self.target_reached_radius:
-            self.latched_target = copy.deepcopy(target)
-            self.latched_target_time = now
-            self.latched_target_hypothesis = copy.deepcopy(self.latest_target_hypothesis)
-
-    def _latched_target_is_active(self, now) -> bool:
-        if not self.latch_target_after_first_detection or self.latched_target is None:
-            return False
-        latch_age = self._age_seconds(now, self.latched_target_time)
-        if latch_age <= self.latch_target_timeout_sec:
-            return True
-        self.latched_target = None
-        self.latched_target_time = None
-        self.latched_target_hypothesis = None
-        return False
-
-    def _memory_is_active(self, now) -> bool:
-        return (
-            self.memory_target is not None
-            and self._age_seconds(now, self.memory_target_time) <= self.memory_timeout_sec
-        )
-
-    def _fresh_target_is_active(self, now) -> bool:
-        return (
-            self.latest_target is not None
-            and self._age_seconds(now, self.latest_target_time) <= self.target_timeout_sec
-        )
 
     @staticmethod
     def _age_seconds(now, then) -> float:
@@ -347,44 +301,10 @@ class ObjectSearchGoalMux(Node):
         return goal
 
     def _clear_target_search_state(self) -> None:
-        self.latest_target = None
-        self.latest_target_time = None
-        self.latest_target_hypothesis = None
-        self.latched_target = None
-        self.latched_target_time = None
-        self.latched_target_hypothesis = None
-        self.memory_target = None
-        self.memory_target_hypothesis = None
-        self.memory_direction = None
-        self.memory_target_time = None
-        self.memory_target_frame = ""
-
-    def _build_memory_goal(self, now) -> PoseStamped:
-        """复用最近一次目标 frontier 点, 让路径继续落在安全 graph 节点上"""
-        odom = self.latest_odom
-        assert odom is not None
-
-        if self.memory_target is not None:
-            goal = self._retime_pose(self.memory_target, now)
-            dx = goal.pose.position.x - odom.pose.pose.position.x
-            dy = goal.pose.position.y - odom.pose.pose.position.y
-            yaw = math.atan2(dy, dx)
-            goal.pose.orientation.z = math.sin(yaw * 0.5)
-            goal.pose.orientation.w = math.cos(yaw * 0.5)
-            return goal
-
-        assert self.memory_direction is not None
-        direction_x, direction_y = self.memory_direction
-        yaw = math.atan2(direction_y, direction_x)
-        goal = PoseStamped()
-        goal.header.frame_id = self.frame_id or odom.header.frame_id
-        goal.header.stamp = now.to_msg()
-        goal.pose.position.x = odom.pose.pose.position.x + self.memory_goal_distance * direction_x
-        goal.pose.position.y = odom.pose.pose.position.y + self.memory_goal_distance * direction_y
-        goal.pose.position.z = odom.pose.pose.position.z
-        goal.pose.orientation.z = math.sin(yaw * 0.5)
-        goal.pose.orientation.w = math.cos(yaw * 0.5)
-        return goal
+        self.metric_target = None
+        self.metric_target_confidence = 0.0
+        self.metric_target_source = TargetEstimate.SOURCE_NONE
+        self.metric_target_stable = False
 
     def _build_hold_goal(self, now) -> PoseStamped:
         """到达目标观察点后发布当前位置, 让 planner 不再继续追远处点"""
@@ -401,51 +321,24 @@ class ObjectSearchGoalMux(Node):
         goal.pose.orientation = copy.deepcopy(odom.pose.pose.orientation)
         return goal
 
-    def _update_target_memory(self, target: PoseStamped, now) -> None:
-        if self.latest_odom is None:
-            return
-        dx = target.pose.position.x - self.latest_odom.pose.pose.position.x
-        dy = target.pose.position.y - self.latest_odom.pose.pose.position.y
-        norm = math.hypot(dx, dy)
-        if norm < 1e-6:
-            return
-        self.memory_target = copy.deepcopy(target)
-        self.memory_target_hypothesis = TargetHypothesis(
-            pose=copy.deepcopy(target),
-            last_seen_sec=_time_seconds(now),
-            source="object_memory_frontier",
-        )
-        self.memory_direction = (dx / norm, dy / norm)
-        self.memory_target_time = now
-        self.memory_target_frame = target.header.frame_id
-
-    def _target_is_reached(self, target: PoseStamped) -> bool:
-        if self.latest_odom is None:
-            return False
-        dx = target.pose.position.x - self.latest_odom.pose.pose.position.x
-        dy = target.pose.position.y - self.latest_odom.pose.pose.position.y
-        return math.hypot(dx, dy) <= self.target_reached_radius
-
     def _object_reached_is_active(self, now) -> bool:
         if not self.latest_object_reached:
             return False
-        if self._age_seconds(now, self.latest_object_reached_time) > self.object_reached_timeout_sec:
+        if (
+            self._age_seconds(now, self.latest_object_reached_time)
+            > self.object_reached_timeout_sec
+        ):
             return False
         if not self.object_reached_require_target_distance:
             return True
-        target_pose = self._active_reached_target_pose(now)
+        target_pose = self._active_reached_target_pose()
         if target_pose is None:
             return False
         return self._target_distance(target_pose) <= self.object_reached_max_target_distance
 
-    def _active_reached_target_pose(self, now) -> PoseStamped | None:
-        """到达确认只接受当前目标或目标 latch, 不用 memory 目标触发停止"""
-        if self._latched_target_is_active(now):
-            return self.latched_target
-        if self.latest_target is not None and self.latest_target_time is not None:
-            if self._age_seconds(now, self.latest_target_time) <= self.target_timeout_sec:
-                return self.latest_target
-        return None
+    def _active_reached_target_pose(self) -> PoseStamped | None:
+        """到达距离门控只使用稳定融合目标"""
+        return self.metric_target if self.metric_target_stable else None
 
     def _activate_reached_latch(self, now) -> None:
         """到达确认后锁定停止 goal, 不再被后续 mask False 拉回搜索"""
@@ -529,10 +422,6 @@ def _yaw_from_quaternion(q) -> float:
     return math.atan2(siny_cosp, cosy_cosp)
 
 
-def _time_seconds(stamp) -> float:
-    return stamp.nanoseconds * 1e-9
-
-
 def _delete_goal_markers() -> MarkerArray:
     markers = MarkerArray()
     for marker_id in (0, 1):
@@ -583,11 +472,19 @@ def _goal_markers(state: str, goal: PoseStamped) -> MarkerArray:
 def _goal_color(state: str) -> tuple[float, float, float]:
     if state == ObjectSearchState.TARGET_REACHED_VIEWPOINT:
         return 0.0, 0.85, 0.2
-    if state == ObjectSearchState.TARGET_MEMORY_GUIDED_SEARCH:
-        return 0.0, 0.65, 1.0
-    if state == ObjectSearchState.TARGET_APPROACH:
-        return 1.0, 0.18, 0.02
+    if state == ObjectSearchState.TARGET_APPROACH_METRIC:
+        return 0.75, 0.1, 1.0
+    if state == ObjectSearchState.TARGET_APPROACH_COARSE:
+        return 0.0, 0.8, 1.0
     return 1.0, 0.78, 0.0
+
+
+def _estimate_source_name(source: int) -> str:
+    return {
+        TargetEstimate.SOURCE_VISION: "vision_particle_filter",
+        TargetEstimate.SOURCE_FUSED: "vision_lidar_fusion",
+        TargetEstimate.SOURCE_LIDAR: "lidar_locked",
+    }.get(int(source), "unknown")
 
 
 def main(args=None):

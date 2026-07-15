@@ -1,437 +1,442 @@
-import rclpy
-from rclpy.node import Node
-from rclpy.duration import Duration
+from __future__ import annotations
 
-from tf2_ros.buffer import Buffer
-from tf2_ros.transform_listener import TransformListener
-from visual_navigation.utils.buffer import MessageBuffer
-from visual_navigation.utils.tf_lookup_sub import TFLookupSubscriber
+from collections import deque
+import math
 
-from sensor_msgs_py import point_cloud2
-from object_search_msgs.msg import ObjectMaskWithTf
-from visualization_msgs.msg import Marker
-from nav_msgs.msg import Odometry, Path as PathMsg
-from geometry_msgs.msg import PoseStamped
-from sensor_msgs.msg import Image as ImageMsg, CameraInfo, PointCloud2
-from message_filters import ApproximateTimeSynchronizer, Subscriber
-from cv_bridge import CvBridge
-
-from pathlib import Path
-from omegaconf import OmegaConf
-import cv2
 import numpy as np
-from scipy.spatial.transform import Rotation as R
+import rclpy
+from rclpy.duration import Duration
+from rclpy.executors import ExternalShutdownException
+from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
+from scipy.spatial import cKDTree
+from scipy.spatial.transform import Rotation
+from sensor_msgs.msg import PointCloud2, PointField
+from sensor_msgs_py import point_cloud2
+from std_msgs.msg import Bool, Header
+from tf2_ros import Buffer, TransformException, TransformListener
+from visualization_msgs.msg import Marker
+
+from object_search_msgs.msg import ObjectMaskWithTf, TargetEstimate
+from triangulation3d.target_particle_filter import (
+    CameraObservation,
+    ParticleFilterConfig,
+    TargetEstimate as CoreTargetEstimate,
+    TargetParticleFilter,
+)
 
 
-from triangulation3d.camera_data import Camera
-from triangulation3d.particle_generator import ParticleGenerator
-from triangulation3d.bbox_generator import BoundingBoxGenerator
-from triangulation3d.triangulator import Triangulator
+_LIDAR_BUFFER_SIZE = 40
+_MAX_TARGET_MARKER_SCALE = 1.5
+_MIN_TARGET_HEIGHT_ABOVE_GROUND = 0.12
+_TARGET_CLUSTER_RADIUS = 0.75
 
-CAMERA_MAPPING = {
-    0: "front",
-    1: "left",
-    2: "right"
-}    
 
 class ObjectMaskTriangulator(Node):
-    default_config = {
-        # Robot Parameters
-        "num_cameras": 3,  # Number of cameras to use
-        "parent_frame": "spot1/odom",
-        "cam_frame": "spot1/realsense/{}_color_optical_frame",
-        "lidar_frame": "spot1/ouster/front/os_lidar",
-        "object_mask_topic": "/spot1/object_mask",  # Topic for object mask input
-        "lidar_topic": "/spot1/ouster/front/points_filtered",  # Topic for lidar input
+    """用多视角 Mask 估计远距离粗目标, LiDAR 仅作为可选精度增强"""
 
-        # Publisher topics
-        "triangulated_object_topic": "/spot1/triangulated_object",
-        "navigation_goal_topic": "/spot1/imgnav_waypoint",
-        "particle_viz_topic": "/spot1/object_hypotheses",
+    def __init__(self):
+        super().__init__("object_target_fusion")
 
-        # ROS2 subscriber params
-        "qos_history_depth": 10,
-        "syncsub_queue_size": 10,
-        "syncsub_slop": 0.2,
+        self.declare_parameter("object_mask_topic", "/spot1/object_mask")
+        self.declare_parameter("lidar_topic", "/spot1/lidar/points_aligned")
+        self.declare_parameter("target_estimate_topic", "/spot1/object_target_estimate")
+        self.declare_parameter("target_marker_topic", "/spot1/object_target_estimate_viz")
+        self.declare_parameter("particle_topic", "/spot1/object_target_particles")
+        self.declare_parameter("completion_topic", "/spot1/object_search_completed")
+        self.declare_parameter("global_frame", "odom")
+        self.declare_parameter("particle_count", 1500)
+        self.declare_parameter("max_depth", 100.0)
+        self.declare_parameter("stable_min_confidence", 0.6)
+        self.declare_parameter("lidar_min_points", 30)
+        self.declare_parameter("max_lidar_age_sec", 3.0)
 
-        # Triangulation config
-        "max_views": 350,  # Maximum number of cameras to initialize
-        "min_lidar_points": 150,  # Minimum number of lidar points in the object mask for triangulation
-        "min_view_distance": 1.0,  # Minimum distance between camera views to consider them different
-        "particle_generator_config": {
-            "num_particles": 1000, # Number of particles to generate
-            "depth_range": [1.0, 100.0],  # Depth range in meters
-            "add_odom_drift": False, # Whether to add odometry drift to the camera pose
-        },
-        "use_mask_for_projection": True,  # Whether to use the object mask for projection
+        particle_config = ParticleFilterConfig(
+            particle_count=max(int(self.get_parameter("particle_count").value), 100),
+            max_depth=max(float(self.get_parameter("max_depth").value), 2.0),
+            stable_min_confidence=float(self.get_parameter("stable_min_confidence").value),
+        )
+        self.particle_filter = TargetParticleFilter(particle_config)
+        self.global_frame = str(self.get_parameter("global_frame").value)
+        self.lidar_min_points = max(int(self.get_parameter("lidar_min_points").value), 1)
+        self.max_lidar_age_sec = max(float(self.get_parameter("max_lidar_age_sec").value), 0.0)
+        self.lidar_buffer: deque[tuple[float, PointCloud2]] = deque(
+            maxlen=_LIDAR_BUFFER_SIZE
+        )
+        self._last_logged_state = ""
 
-
-        # TFLookup Config
-        "buffer_size": 10,       # number of messages
-        "timer_duration": 0.2,   # seconds
-    }
-
-    def __init__(self, config: OmegaConf=OmegaConf.create()):
-        config = OmegaConf.merge(OmegaConf.create(self.default_config), config)
-        super().__init__('obj_mask_triangulator')
-
-        np.random.seed(42)
-
-        # Robot Parameters
-        self.num_cameras = config.num_cameras
-        assert self.num_cameras in [1, 3], "Only 1 or 3 cameras are supported."
-
-        # Triangulation parameters and initializations
-        self.views = []
-        self.max_views = config.max_views
-        self.min_lidar_points = config.min_lidar_points
-        self.min_view_distance = config.min_view_distance
-        self.use_mask_for_projection = config.use_mask_for_projection
-
-        self.particle_generator = ParticleGenerator(config.particle_generator_config)
-        self.triangulator = Triangulator()
-        self.triangulated_position = None
-        self.prev_view_pos = None
-        self.found_lidar_in_mask = False
-
-        # Subscribers and Publishers
-        self.init_publishers(config)
-        self.init_subscribers(config)
-
-        # Frames and Topic Names
-        self.global_frame = config.parent_frame
-        self.cam_tf_frame = config.cam_frame
-        self.lidar_tf_frame = config.lidar_frame
-
-        # TFLookup
-        self.tf_buffer = Buffer(cache_time=Duration(seconds=10))
+        self.tf_buffer = Buffer(cache_time=Duration(seconds=10.0))
         self.tf_listener = TransformListener(self.tf_buffer, self)
-        self.msg_buffer = MessageBuffer(
-            max_size=config.buffer_size, wait_for_oldest=True
-        )
-        self.clbk_cntr = 0
 
-        self.timer = self.create_timer(config.timer_duration, self.do_processing)
-
-    def init_publishers(self, config: OmegaConf):
-        self.triangulated_obj_publisher = self.create_publisher(
-            Marker, config.triangulated_object_topic, 10
+        self.estimate_publisher = self.create_publisher(
+            TargetEstimate,
+            str(self.get_parameter("target_estimate_topic").value),
+            10,
         )
-        self.nav_goal_publisher = self.create_publisher(
-            PoseStamped, config.navigation_goal_topic, 10
+        self.marker_publisher = self.create_publisher(
+            Marker,
+            str(self.get_parameter("target_marker_topic").value),
+            10,
         )
-        self.particle_viz_publisher = self.create_publisher(
-            PointCloud2, config.particle_viz_topic, 10
+        self.particle_publisher = self.create_publisher(
+            PointCloud2,
+            str(self.get_parameter("particle_topic").value),
+            10,
         )
-
-    def init_subscribers(self, config):
-        self.object_mask_sub = Subscriber(
-            self, ObjectMaskWithTf, config.object_mask_topic, qos_profile=config.qos_history_depth
+        self.create_subscription(
+            ObjectMaskWithTf,
+            str(self.get_parameter("object_mask_topic").value),
+            self._on_object_mask,
+            10,
         )
-        self.lidar_sub = Subscriber(
-            self, PointCloud2, config.lidar_topic, qos_profile=config.qos_history_depth
+        self.create_subscription(
+            PointCloud2,
+            str(self.get_parameter("lidar_topic").value),
+            self._on_lidar,
+            qos_profile_sensor_data,
         )
-
-        ts_subs = [self.object_mask_sub, self.lidar_sub]
-        self.ts = ApproximateTimeSynchronizer(
-            ts_subs, queue_size=config.syncsub_queue_size, slop=config.syncsub_slop
-        )
-        self.ts.registerCallback(self.listener_callback)
-
-    def listener_callback(self, object_mask_msg, lidar_msg):
-        self.clbk_cntr += 1
-
-        self.get_logger().info(f"Received callback {self.clbk_cntr}")
-        assert lidar_msg.header.frame_id == self.lidar_tf_frame, \
-            f"LiDAR frame_id {lidar_msg.header.frame_id} does not match expected {self.lidar_tf_frame}"
-
-        self.msg_buffer.add_msg(
-            msg={
-                "obj_mask": object_mask_msg,
-                "lidar": lidar_msg
-            },
-            stamp=object_mask_msg.header.stamp,
+        self.create_subscription(
+            Bool,
+            str(self.get_parameter("completion_topic").value),
+            self._on_completed,
+            10,
         )
 
-    def do_processing(self):
-        if not self.msg_buffer.buffer:
-            self.get_logger().warn("Message buffer is empty, waiting for messages...")
+        self.get_logger().info(
+            "目标融合已启动, "
+            f"mask={self.get_parameter('object_mask_topic').value}, "
+            f"lidar={self.get_parameter('lidar_topic').value}, "
+            f"estimate={self.get_parameter('target_estimate_topic').value}"
+        )
+
+    def _on_lidar(self, msg: PointCloud2) -> None:
+        self.lidar_buffer.append((_stamp_seconds(msg.header.stamp), msg))
+
+    def _on_completed(self, msg: Bool) -> None:
+        """只接受 Mux 最终完成通知, 未稳定估计不能提前终止融合"""
+        if not msg.data or self.particle_filter.completed:
+            return
+        estimate = self.particle_filter.estimate()
+        if estimate is None or not estimate.stable:
+            self.get_logger().warn("收到完成通知但融合目标未稳定, 已忽略")
+            return
+        self.particle_filter.mark_reached()
+        estimate = self.particle_filter.estimate()
+        stamp = self.get_clock().now().to_msg()
+        self._log_estimate_state(estimate)
+        self._publish_estimate(estimate, stamp)
+        self._publish_marker(estimate, stamp)
+        self.get_logger().info("目标融合收到 Mux 完成通知并进入 REACHED")
+
+    def _on_object_mask(self, msg: ObjectMaskWithTf) -> None:
+        """每条确认 Mask 都先更新视觉粒子, 有近时刻点云时再追加 LiDAR 测量"""
+        if self.particle_filter.completed:
+            return
+        try:
+            observations = self._camera_observations(msg)
+        except ValueError as exc:
+            self.get_logger().warn(f"目标 Mask 数据无效, 已跳过: {exc}")
+            return
+        if not observations:
             return
 
-        # Extract messages and data
-        oldest_msg, _, _ = self.msg_buffer.pop_oldest_msg()
+        estimate = self.particle_filter.update_vision(observations)
+        lidar_msg = self._nearest_lidar(msg.header.stamp)
+        if lidar_msg is not None:
+            lidar_measurement = self._lidar_measurement(observations, lidar_msg)
+            if lidar_measurement is not None:
+                position, support = lidar_measurement
+                estimate = self.particle_filter.update_lidar(position, support)
 
-        obj_mask_msg = oldest_msg["obj_mask"]
-        lidar_msg = oldest_msg["lidar"]
-        all_cam_data = self.extract_data_from_obj_mask_msg(obj_mask_msg)
-        cur_pos = np.array([
-            obj_mask_msg.odom.pose.pose.position.x,
-            obj_mask_msg.odom.pose.pose.position.y,
-            obj_mask_msg.odom.pose.pose.position.z
+        if estimate is None:
+            return
+        self._log_estimate_state(estimate)
+        self._publish_estimate(estimate, msg.header.stamp)
+        self._publish_marker(estimate, msg.header.stamp)
+        self._publish_particles(msg.header.stamp)
+
+    def _log_estimate_state(self, estimate: CoreTargetEstimate) -> None:
+        if estimate.state == self._last_logged_state:
+            return
+        self._last_logged_state = estimate.state
+        self.get_logger().info(
+            f"目标融合状态={estimate.state}, "
+            f"position=({estimate.position[0]:.2f}, {estimate.position[1]:.2f}, "
+            f"{estimate.position[2]:.2f}), confidence={estimate.confidence:.2f}, "
+            f"views={estimate.accepted_views}, lidar_support={estimate.lidar_support}"
+        )
+
+    def _camera_observations(self, msg: ObjectMaskWithTf) -> list[CameraObservation]:
+        masks = _mask_array(msg)
+        if masks.shape[0] != len(msg.cam_infos):
+            raise ValueError("mask 数量和 CameraInfo 数量不一致")
+        if masks.shape[0] != len(msg.cam_transforms.transforms):
+            raise ValueError("mask 数量和相机 TF 数量不一致")
+
+        scores = list(msg.camera_scores)
+        observations = []
+        for camera_idx in range(masks.shape[0]):
+            mask = masks[camera_idx, 0].astype(bool)
+            if not np.any(mask):
+                continue
+            camera_info = msg.cam_infos[camera_idx]
+            transform = msg.cam_transforms.transforms[camera_idx]
+            rotation = Rotation.from_quat([
+                transform.transform.rotation.x,
+                transform.transform.rotation.y,
+                transform.transform.rotation.z,
+                transform.transform.rotation.w,
+            ]).as_matrix()
+            translation = np.array([
+                transform.transform.translation.x,
+                transform.transform.translation.y,
+                transform.transform.translation.z,
+            ])
+            score = scores[camera_idx] if camera_idx < len(scores) else 1.0
+            observations.append(
+                CameraObservation(
+                    mask=mask,
+                    intrinsic=np.asarray(camera_info.k, dtype=np.float64).reshape(3, 3),
+                    rotation_world_from_camera=rotation,
+                    translation_world_from_camera=translation,
+                    confidence=score,
+                    camera_id=transform.child_frame_id,
+                )
+            )
+        return observations
+
+    def _nearest_lidar(self, stamp) -> PointCloud2 | None:
+        if not self.lidar_buffer:
+            return None
+        target_time = _stamp_seconds(stamp)
+        age, lidar_msg = min(
+            (
+                (abs(lidar_time - target_time), lidar_msg)
+                for lidar_time, lidar_msg in self.lidar_buffer
+            ),
+            key=lambda item: item[0],
+        )
+        return lidar_msg if age <= self.max_lidar_age_sec else None
+
+    def _lidar_measurement(
+        self,
+        observations: list[CameraObservation],
+        lidar_msg: PointCloud2,
+    ) -> tuple[np.ndarray, int] | None:
+        """把点云转到目标全局坐标系, 仅保留投影落入任一目标 Mask 的点"""
+        points = point_cloud2.read_points_numpy(
+            lidar_msg,
+            field_names=("x", "y", "z"),
+            skip_nans=True,
+        )
+        points = np.asarray(points, dtype=np.float64)
+        if points.size == 0:
+            return None
+        points = points.reshape(-1, 3)
+        world_points = self._points_in_global_frame(points, lidar_msg)
+        if world_points is None:
+            return None
+
+        mask_points = []
+        for observation in observations:
+            camera_points = (
+                observation.rotation_world_from_camera.T
+                @ (world_points - observation.translation_world_from_camera).T
+            ).T
+            positive_depth = camera_points[:, 2] > 0.1
+            projected = observation.intrinsic @ camera_points.T
+            safe_depth = np.where(positive_depth, projected[2], 1.0)
+            cols = np.rint(projected[0] / safe_depth).astype(np.int64)
+            rows = np.rint(projected[1] / safe_depth).astype(np.int64)
+            inside_image = (
+                positive_depth
+                & (rows >= 0)
+                & (rows < observation.mask.shape[0])
+                & (cols >= 0)
+                & (cols < observation.mask.shape[1])
+            )
+            inside_mask = np.zeros(world_points.shape[0], dtype=bool)
+            inside_mask[inside_image] = observation.mask[rows[inside_image], cols[inside_image]]
+            mask_points.append(world_points[inside_mask])
+
+        supported = [points for points in mask_points if points.size > 0]
+        if not supported:
+            return None
+        supported_points = np.vstack(supported)
+        if supported_points.shape[0] < self.lidar_min_points:
+            return None
+
+        measurement = _target_surface_measurement(
+            supported_points,
+            self.lidar_min_points,
+        )
+        if measurement is None:
+            return None
+        return measurement
+
+    def _points_in_global_frame(
+        self,
+        points: np.ndarray,
+        lidar_msg: PointCloud2,
+    ) -> np.ndarray | None:
+        lidar_frame = lidar_msg.header.frame_id.lstrip("/")
+        global_frame = self.global_frame.lstrip("/")
+        if lidar_frame == global_frame:
+            return points
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                global_frame,
+                lidar_frame,
+                rclpy.time.Time.from_msg(lidar_msg.header.stamp),
+                timeout=Duration(seconds=0.05),
+            )
+        except TransformException as exc:
+            self.get_logger().debug(f"LiDAR TF 暂不可用, 本帧只做视觉融合: {exc}")
+            return None
+        rotation = Rotation.from_quat([
+            transform.transform.rotation.x,
+            transform.transform.rotation.y,
+            transform.transform.rotation.z,
+            transform.transform.rotation.w,
+        ]).as_matrix()
+        translation = np.array([
+            transform.transform.translation.x,
+            transform.transform.translation.y,
+            transform.transform.translation.z,
         ])
+        return (rotation @ points.T).T + translation
 
-        # Check if LiDAR points fall within the object mask
-        self.check_lidar_in_mask(all_cam_data, lidar_msg)
+    def _publish_estimate(self, estimate: CoreTargetEstimate, stamp) -> None:
+        msg = TargetEstimate()
+        msg.header.frame_id = self.global_frame
+        msg.header.stamp = stamp
+        msg.pose.pose.position.x = float(estimate.position[0])
+        msg.pose.pose.position.y = float(estimate.position[1])
+        msg.pose.pose.position.z = float(estimate.position[2])
+        msg.pose.pose.orientation.w = 1.0
+        for row in range(3):
+            for col in range(3):
+                msg.pose.covariance[row * 6 + col] = float(estimate.covariance[row, col])
+        msg.confidence = float(estimate.confidence)
+        msg.source = int(estimate.source)
+        msg.stable = bool(estimate.stable)
+        msg.accepted_views = int(estimate.accepted_views)
+        msg.lidar_support = int(estimate.lidar_support)
+        msg.state = estimate.state
+        self.estimate_publisher.publish(msg)
 
-        # Triangulate using multiple views if LiDAR triangulation was not successful
-        if not self.found_lidar_in_mask:
-            if self.prev_view_pos is not None:
-                
-                dist = np.linalg.norm(cur_pos - self.prev_view_pos)
-                if dist < self.min_view_distance:
-                    self.get_logger().info(f"Current view is too close to previous view (distance: {dist:.2f}m), skipping...")
-                    return
+    def _publish_marker(self, estimate: CoreTargetEstimate, stamp) -> None:
+        self.marker_publisher.publish(
+            _target_marker(estimate, self.global_frame, stamp)
+        )
 
-            self.add_views(all_cam_data)
-            self.prev_view_pos = cur_pos
-            if len(self.views) >= 2:
-                self.triangulated_position = self.triangulator.triangulate(self.views)
-                self.get_logger().info(f"Triangulated position using multiple views: {self.triangulated_position}")
-            else:
-                self.get_logger().info("Not enough views for triangulation.")
-        else:
-            self.get_logger().info("Object LOCK using LiDAR!")
-        
-        # Publish triangulated position as a navigation goal
-        self.publish_navigation_goal_and_marker()
-        self.publish_goal_hypotheses()
-
-    def extract_data_from_obj_mask_msg(self, obj_mask_msg):
-        """
-        Extract relevant data from ObjectMaskWithTf message.
-        """
-        obj_mask = self.get_objmask_from_multiarray(obj_mask_msg.object_mask)
-        assert obj_mask.shape[0] == self.num_cameras, f"Expected {self.num_cameras} object masks, but got {obj_mask.shape[0]}"
-
-        camera_infos = obj_mask_msg.cam_infos
-        assert len(camera_infos) == self.num_cameras, f"Expected {self.num_cameras} camera infos, but got {len(camera_infos)}"
-
-        camera_tfs = obj_mask_msg.cam_transforms.transforms
-        assert len(camera_tfs) == self.num_cameras, f"Expected {self.num_cameras} camera transforms, but got {len(camera_tfs)}"
-
-        all_cam_data = []
-        for cam_id in range(self.num_cameras):
-            cam_data = {}
-            cam_frame = self.cam_tf_frame.format(CAMERA_MAPPING[cam_id])
-
-            assert camera_infos[cam_id].header.frame_id[1:] == cam_frame, \
-                f"CameraInfo frame_id {camera_infos[cam_id].header.frame_id} does not match expected {cam_frame}"
-            
-            assert camera_tfs[cam_id].child_frame_id == cam_frame, \
-                f"Camera TF child_frame_id {camera_tfs[cam_id].child_frame_id} does not match expected {cam_frame}"
-
-            cam_data["object_mask"] = obj_mask[cam_id, 0, :, :]  # HxW
-            cam_data["K"] = np.array(camera_infos[cam_id].k).reshape(3, 3)
-            cam_data["R_wc"] = R.from_quat([
-                camera_tfs[cam_id].transform.rotation.x,
-                camera_tfs[cam_id].transform.rotation.y,
-                camera_tfs[cam_id].transform.rotation.z,
-                camera_tfs[cam_id].transform.rotation.w
-            ]).as_matrix()
-            cam_data["t_wc"] = np.array([
-                camera_tfs[cam_id].transform.translation.x,
-                camera_tfs[cam_id].transform.translation.y,
-                camera_tfs[cam_id].transform.translation.z
-            ]).reshape(3, 1)
-            cam_data["width"] = camera_infos[cam_id].width
-            cam_data["height"] = camera_infos[cam_id].height
-            cam_data["frame_id"] = cam_frame
-            cam_data["camera_info"] = camera_infos[cam_id]
-            cam_data["camera_tf"] = camera_tfs[cam_id]
-        
-            all_cam_data.append(cam_data)
-
-        return all_cam_data
-
-    def check_lidar_in_mask(self, all_cam_data, lidar_msg):
-        """
-        Check if LiDAR points fall within the object mask.
-        """
-        
-        # Check if lidar points fall within the mask
-        lidar_points_3d = point_cloud2.read_points(lidar_msg, field_names=("x", "y", "z"), skip_nans=True)
-        lidar_points_3d = np.array([np.array(list(pt)) for pt in lidar_points_3d])  # Nx3
-
-        for cam_id in range(self.num_cameras):
-            
-            cam_name = CAMERA_MAPPING[cam_id]
-            cam_frame =  all_cam_data[cam_id]["frame_id"]
-            cam_obj_mask = all_cam_data[cam_id]["object_mask"]  # HxW
-            h = all_cam_data[cam_id]["height"]
-            w = all_cam_data[cam_id]["width"]
-            if cam_obj_mask.shape[0] != h or cam_obj_mask.shape[1] != w:
-                raise ValueError(f"Object mask shape {cam_obj_mask.shape} does not match expected {(h, w)} for camera {cam_name}")
-
-            if np.sum(cam_obj_mask) == 0:
-                self.get_logger().warn(f"No object detected in camera {cam_name}, skipping...")
-                continue
-
-            cam_from_lidar = self.tf_buffer.lookup_transform(
-                cam_frame,
-                self.lidar_tf_frame,
-                rclpy.time.Time(),
-                timeout=Duration(seconds=0.0)
-            )
-            R_cl = R.from_quat([
-                cam_from_lidar.transform.rotation.x,
-                cam_from_lidar.transform.rotation.y,
-                cam_from_lidar.transform.rotation.z,
-                cam_from_lidar.transform.rotation.w
-            ]).as_matrix()
-            t_cl = np.array([
-                cam_from_lidar.transform.translation.x,
-                cam_from_lidar.transform.translation.y,
-                cam_from_lidar.transform.translation.z
-            ]).reshape(3, 1)
-            K = all_cam_data[cam_id]["K"]
-
-            lidar_points_cam = (R_cl @ lidar_points_3d.T).T + t_cl.T  # Nx3
-            valid_points = lidar_points_cam[:, 2] > 0.1  # Keep points in front of the camera
-            lidar_points_cam = lidar_points_cam[valid_points]
-            if lidar_points_cam.shape[0] == 0:
-                continue
-
-            # Project to image plane
-            lidar_pix = K @ lidar_points_cam.T  # 3xN
-            lidar_pix = lidar_pix[:2, :] / lidar_pix[2, :]  # 2xN
-            lidar_pix = lidar_pix.T.astype(np.int32)  # Nx2
-
-            # consider points lying inside the image
-            inside_image = np.logical_and.reduce((
-                lidar_pix[:, 0] >= 0,
-                lidar_pix[:, 0] < w,
-                lidar_pix[:, 1] >= 0,
-                lidar_pix[:, 1] < h
-            ))
-            lidar_pix = lidar_pix[inside_image]
-            lidar_points_cam = lidar_points_cam[inside_image]
-
-            # consider points lying inside the object mask
-            inside_mask = cam_obj_mask[lidar_pix[:, 1], lidar_pix[:, 0]].astype(bool)
-            lidar_points_cam = lidar_points_cam[inside_mask]
-
-            if lidar_points_cam.shape[0] < self.min_lidar_points:
-                self.get_logger().info(f"Not enough lidar points found in object mask for camera {cam_name}, skipping...")
-                continue
-            
-            dists = np.linalg.norm(lidar_points_cam, axis=-1)
-            median_idx = np.argsort(dists)[len(dists)//2]
-            triangulated_position_cam = lidar_points_cam[median_idx]
-
-            R_wc = all_cam_data[cam_id]["R_wc"]
-            t_wc = all_cam_data[cam_id]["t_wc"]
-            triangulated_position_world = R_wc @ triangulated_position_cam.reshape(3, 1) + t_wc  # 3x1
-            self.triangulated_position = triangulated_position_world.flatten()
-
-            self.get_logger().info(f"Triangulated position using LiDAR points in camera {cam_name}: {self.triangulated_position}")
-            self.found_lidar_in_mask = True
-
-    def add_views(self, all_cam_data):
-        """
-        Add camera views for triangulation.
-        """
-        if len(self.views) >= self.max_views:
-            self.get_logger().info(f"Reached maximum number of views ({self.max_views}), not adding more.")
+    def _publish_particles(self, stamp) -> None:
+        particles = self.particle_filter.particles
+        if particles is None:
             return
+        header = Header(frame_id=self.global_frame, stamp=stamp)
+        fields = [
+            PointField(name="x", offset=0, datatype=PointField.FLOAT32, count=1),
+            PointField(name="y", offset=4, datatype=PointField.FLOAT32, count=1),
+            PointField(name="z", offset=8, datatype=PointField.FLOAT32, count=1),
+        ]
+        self.particle_publisher.publish(point_cloud2.create_cloud(header, fields, particles))
 
-        for cam_id in range(self.num_cameras):
-            cam_name = CAMERA_MAPPING[cam_id]
-            cam_data = all_cam_data[cam_id]
 
-            if np.sum(cam_data["object_mask"]) == 0:
-                self.get_logger().info(f"No object detected in camera {cam_name}, skipping...")
-                continue
-            
-            bbox = cv2.boundingRect(cam_data["object_mask"].astype(np.uint8))
-            x,y,w,h = bbox
-            bbox = np.array([x,y,x+w,y+h])
-            view = Camera(
-                camera_info=cam_data["camera_info"],
-                camera_tf=cam_data["camera_tf"],
-                bounding_box=bbox,
-                object_mask=cam_data["object_mask"],
-                image=None
-            )
-            view = BoundingBoxGenerator.generate_ray_from_bbox(view)
+def _mask_array(msg: ObjectMaskWithTf) -> np.ndarray:
+    dimensions = msg.object_mask.layout.dim
+    if len(dimensions) != 4:
+        raise ValueError("object_mask 必须是 B,1,H,W")
+    shape = tuple(int(dimension.size) for dimension in dimensions)
+    offset = int(msg.object_mask.layout.data_offset)
+    data = np.asarray(msg.object_mask.data[offset:], dtype=np.uint8)
+    if data.size != math.prod(shape):
+        raise ValueError("object_mask 数据长度和 shape 不一致")
+    return data.reshape(shape)
 
-            view = self.particle_generator.generate_particles(
-                view,
-                use_mask=self.use_mask_for_projection,
-                pcl_frame_id=self.global_frame
-            )
 
-            self.views.append(view)
+def _stamp_seconds(stamp) -> float:
+    return float(stamp.sec) + float(stamp.nanosec) * 1e-9
 
-    def get_objmask_from_multiarray(self, multiarray_msg):
-        """
-        Convert MultiArray message to binary object mask.
-        """
-        offset = multiarray_msg.layout.data_offset
-        obj_mask = np.array(multiarray_msg.data[offset:], dtype=np.uint8)
-        dims = multiarray_msg.layout.dim
-        assert len(dims) == 4, "Expected 4D MultiArray for object mask (Bx1xHxW)"
-        obj_mask = obj_mask.reshape((multiarray_msg.layout.dim[0].size,
-                                     multiarray_msg.layout.dim[1].size,
-                                     multiarray_msg.layout.dim[2].size,
-                                     multiarray_msg.layout.dim[3].size))
-        return obj_mask
-            
-    def publish_navigation_goal_and_marker(self):
-        if self.triangulated_position is None:
-            self.get_logger().info("No triangulated position available to publish.")
-            return
 
-        # Publish as a navigation goal
-        nav_goal = PoseStamped()
-        nav_goal.header.frame_id = self.global_frame
-        nav_goal.header.stamp = self.get_clock().now().to_msg()
-        nav_goal.pose.position.x = float(self.triangulated_position[0])
-        nav_goal.pose.position.y = float(self.triangulated_position[1])
-        nav_goal.pose.position.z = float(self.triangulated_position[2])
-        nav_goal.pose.orientation.w = 1.0  # Neutral orientation
-        self.nav_goal_publisher.publish(nav_goal)
-        self.get_logger().info(f"Published navigation goal at {self.triangulated_position}")
+def _target_surface_measurement(
+    points: np.ndarray,
+    minimum_support: int,
+) -> tuple[np.ndarray, int] | None:
+    """先移除局部地面, 再用最密集高点簇估计目标可见表面"""
+    points = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+    if points.shape[0] < minimum_support:
+        return None
 
-        # Publish as a visualization marker
-        marker = Marker()
-        marker.header.frame_id = self.global_frame
-        marker.header.stamp = self.get_clock().now().to_msg()
-        marker.type = Marker.SPHERE
-        marker.action = Marker.ADD
-        marker.ns = "triangulated_object"
-        marker.id = 0
-        marker.pose.position.x = float(self.triangulated_position[0])
-        marker.pose.position.y = float(self.triangulated_position[1])
-        marker.pose.position.z = float(self.triangulated_position[2])
-        marker.pose.orientation.w = 1.0
-        marker.scale.x = 1.2
-        marker.scale.y = 1.2
-        marker.scale.z = 1.2
-        marker.color.a = 1.0
-        marker.color.r = 0.0
+    ground_height = float(np.quantile(points[:, 2], 0.2))
+    elevated = points[
+        points[:, 2] >= ground_height + _MIN_TARGET_HEIGHT_ABOVE_GROUND
+    ]
+    elevated_minimum = max(6, minimum_support // 3)
+    candidates = elevated if elevated.shape[0] >= elevated_minimum else points
+
+    tree = cKDTree(candidates[:, :2])
+    neighborhoods = tree.query_ball_point(
+        candidates[:, :2],
+        r=_TARGET_CLUSTER_RADIUS,
+    )
+    densest_indices = max(neighborhoods, key=len)
+    required_cluster_size = min(elevated_minimum, candidates.shape[0])
+    if len(densest_indices) < required_cluster_size:
+        return None
+    cluster = candidates[np.asarray(densest_indices, dtype=np.int64)]
+    return np.median(cluster, axis=0), int(cluster.shape[0])
+
+
+def _target_marker(estimate: CoreTargetEstimate, frame_id: str, stamp) -> Marker:
+    """显示两视角粗目标和稳定目标, 单视角深度不确定时删除标记"""
+    marker = Marker()
+    marker.header.frame_id = frame_id
+    marker.header.stamp = stamp
+    marker.ns = "object_target_estimate"
+    marker.id = 0
+    marker.type = Marker.SPHERE
+    coarse_ready = estimate.state == "TRACKING" and estimate.accepted_views >= 2
+    if not estimate.stable and not coarse_ready:
+        marker.action = Marker.DELETE
+        return marker
+
+    marker.action = Marker.ADD
+    marker.pose.position.x = float(estimate.position[0])
+    marker.pose.position.y = float(estimate.position[1])
+    marker.pose.position.z = float(estimate.position[2])
+    marker.pose.orientation.w = 1.0
+    std = np.sqrt(np.maximum(np.diag(estimate.covariance), 0.0))
+    marker.scale.x = min(max(float(2.0 * std[0]), 0.3), _MAX_TARGET_MARKER_SCALE)
+    marker.scale.y = min(max(float(2.0 * std[1]), 0.3), _MAX_TARGET_MARKER_SCALE)
+    marker.scale.z = min(max(float(2.0 * std[2]), 0.3), _MAX_TARGET_MARKER_SCALE)
+    marker.color.a = 0.85
+    if estimate.stable:
+        marker.color.r = 0.1
         marker.color.g = 1.0
+        marker.color.b = 0.2
+    else:
+        marker.color.r = 1.0
+        marker.color.g = 0.75
         marker.color.b = 0.0
-        self.triangulated_obj_publisher.publish(marker)
+    return marker
 
-    def publish_goal_hypotheses(self):
-        # Combine the points from all the cameras into a single PointCloud message
-        combined_pcl_msg = self.triangulator.combine_points(self.views, pcl_frame_id=self.global_frame)
-        self.particle_viz_publisher.publish(combined_pcl_msg)
 
 def main(args=None):
     rclpy.init(args=args)
-    from ament_index_python.packages import get_package_share_directory
-    import os
+    node = ObjectMaskTriangulator()
+    try:
+        rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
+    finally:
+        try:
+            node.destroy_node()
+        except KeyboardInterrupt:
+            pass
+        if rclpy.ok():
+            rclpy.shutdown()
 
-    package_share_directory = Path(get_package_share_directory('visual_navigation'))
-    conf = package_share_directory / "configs" / "triangulation3d_objsearch_conf.yaml"
 
-    mask_triang_node = ObjectMaskTriangulator(OmegaConf.load(conf))
-    rclpy.spin(mask_triang_node)
-
-    mask_triang_node.destroy_node()
-    rclpy.shutdown()
-
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
