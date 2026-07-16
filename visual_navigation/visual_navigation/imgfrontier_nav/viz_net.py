@@ -4,7 +4,6 @@ from rclpy.node import Node
 from sensor_msgs.msg import CompressedImage, Image as ImageMsg
 from cv_bridge import CvBridge
 
-from pathlib import Path
 from omegaconf import OmegaConf
 import numpy as np
 import torch
@@ -18,9 +17,9 @@ from matplotlib.gridspec import GridSpec
 
 from explorfm import ExploRFMInference
 from visual_navigation.utils.viz import overlay_heatmap
+from visual_navigation.utils.paths import repository_root
 
-# HOME_DIR = Path.home()
-HOME_DIR = Path("/home/ks-server3/han/wildos_ws/src/nebula2-wildos/")
+HOME_DIR = repository_root()
 CAMERA_MAPPING = {
     0: "front",
     1: "left",

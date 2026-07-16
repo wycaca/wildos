@@ -1021,10 +1021,6 @@ Planner::PlanningResult Planner::plan_to_goal(
           base_shortest_paths.at(std::get<0>(rhs)).total_weight + std::get<1>(rhs);
       });
     PathMetadata metadata = describe_path(base_shortest_paths.at(std::get<0>(*best_goal_edge)));
-    if (append_virtual_goal_to_path_)
-    {
-      metadata.points.push_back(planning_goal);
-    }
     const bool route_unchanged = is_route_suffix(
       metadata.node_uuids,
       direct_path_node_uuids_);

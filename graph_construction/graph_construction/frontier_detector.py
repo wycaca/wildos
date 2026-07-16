@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from math import ceil, hypot, isfinite
 from typing import Dict, Iterable, List, Sequence, Tuple
 
@@ -9,15 +8,6 @@ from graph_construction.grid_types import ClassifiedGrid
 
 
 GridIndex = Tuple[int, int]
-
-
-@dataclass
-class FrontierAssignmentStats:
-    """记录 frontier 分配前后的数量, 便于定位候选过密问题"""
-
-    raw_cell_count: int = 0
-    candidate_cell_count: int = 0
-    assigned_point_count: int = 0
 
 
 class FrontierDetector:
@@ -60,7 +50,7 @@ class FrontierDetector:
         graph: GraphState,
         grid: ClassifiedGrid,
         frontier_cells: Sequence[GridIndex],
-    ) -> FrontierAssignmentStats:
+    ) -> None:
         """验证当前可见 Frontier, 再把新边界分配给稳定 owner
 
         Frontier 只表达当前地图的 free/unknown 边界, 窗口外分支由 planner 单独记忆
@@ -80,7 +70,6 @@ class FrontierDetector:
             if not node.is_robot_anchor
         ]
         node_index = _NodeSpatialIndex(assignable_nodes, self.frontier_assign_radius)
-        assigned_point_count = 0
 
         for ix, iy in candidate_cells:
             frontier_point = grid.grid_to_world(ix, iy)
@@ -104,7 +93,6 @@ class FrontierDetector:
                 continue
             owner.frontier_points.append(frontier_point)
             assigned_frontier_keys.add(frontier_key)
-            assigned_point_count += 1
 
         # 历史 owner 已经通过往帧观测确认, 不因当前窗口只剩少量可见点而失忆
         # 新 owner 仍使用数量和跨度过滤当前帧产生的孤立噪声
@@ -123,11 +111,6 @@ class FrontierDetector:
             if not node.is_frontier:
                 node.frontier_points.clear()
 
-        return FrontierAssignmentStats(
-            raw_cell_count=len(frontier_cells),
-            candidate_cell_count=len(candidate_cells),
-            assigned_point_count=assigned_point_count,
-        )
 
     def _validate_historical_frontiers(
         self,

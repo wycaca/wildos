@@ -6,7 +6,6 @@ import torch.nn.functional as F
 
 from builtin_interfaces.msg import Time
 from geometry_msgs.msg import TransformStamped
-from nav_msgs.msg import Odometry
 from object_search_msgs.msg import ObjectMaskWithTf
 from sensor_msgs.msg import CameraInfo
 from std_msgs.msg import Header, MultiArrayDimension, UInt8MultiArray
@@ -75,10 +74,8 @@ def convert_maskmsg_to_multiarray(mask_msg: np.ndarray) -> UInt8MultiArray:
 def get_objectmask_msg(
     binary_mask: np.ndarray,
     cam_inverted: bool,
-    odom_msg: Odometry,
     tf_data: List[TransformStamped],
     cam_info_msgs: List[CameraInfo],
-    query: str = "",
     camera_scores: List[float] | None = None,
     measurement_header: Header | None = None,
 ) -> ObjectMaskWithTf:
@@ -87,7 +84,6 @@ def get_objectmask_msg(
 
     :param binary_mask: (3, 1, H, W) Binary mask of the detected object.
     :param cam_inverted: Whether the camera is inverted.
-    :param odom_msg: Odometry message for the robot's pose.
     :param tf_data: List of TF data for frame transformations from camera to odom.
     :param cam_info_msgs: List of CameraInfo messages for the cameras.
 
@@ -98,13 +94,13 @@ def get_objectmask_msg(
         binary_mask = np.rot90(binary_mask, k=2, axes=(2, 3))
 
     obj_mask_msg = ObjectMaskWithTf()
-    obj_mask_msg.header = measurement_header or odom_msg.header
+    if measurement_header is None:
+        raise ValueError("measurement_header is required")
+    obj_mask_msg.header = measurement_header
 
-    obj_mask_msg.odom = odom_msg
     obj_mask_msg.cam_infos = cam_info_msgs
     obj_mask_msg.object_mask = convert_maskmsg_to_multiarray(binary_mask)
     obj_mask_msg.cam_transforms = TFMessage(transforms=tf_data)
-    obj_mask_msg.query = query
     obj_mask_msg.camera_scores = list(camera_scores or [])
 
     return obj_mask_msg

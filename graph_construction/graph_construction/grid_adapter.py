@@ -6,39 +6,9 @@ from typing import List, Set, Tuple
 
 from grid_map_msgs.msg import GridMap
 import numpy as np
-from nav_msgs.msg import OccupancyGrid
 from std_msgs.msg import Float32MultiArray
 
 from graph_construction.grid_types import ClassifiedGrid, GridIndex
-
-
-def classify_occupancy_grid(
-    msg: OccupancyGrid,
-    free_threshold: int,
-    obstacle_threshold: int,
-) -> ClassifiedGrid:
-    """将 OccupancyGrid 数值转换为 free, obstacle, unknown 掩码
-
-    OccupancyGrid 中 -1 表示 unknown
-    小于 free_threshold 的非负值视为 free
-    大于 obstacle_threshold 的值视为 obstacle
-    中间灰区暂时不作为可通行区域使用, 避免第一版生成过于激进的边
-    """
-    data = np.asarray(msg.data, dtype=np.int16).reshape((msg.info.height, msg.info.width))
-    unknown = data < 0
-    free = np.logical_and(data >= 0, data <= free_threshold)
-    obstacle = data >= obstacle_threshold
-    return ClassifiedGrid(
-        width=msg.info.width,
-        height=msg.info.height,
-        resolution=msg.info.resolution,
-        origin_x=msg.info.origin.position.x,
-        origin_y=msg.info.origin.position.y,
-        frame_id=msg.header.frame_id,
-        free=free,
-        obstacle=obstacle,
-        unknown=unknown,
-    )
 
 
 def classify_grid_map(
@@ -51,16 +21,11 @@ def classify_grid_map(
     normalize_low_quantile: float,
     normalize_high_quantile: float,
     z_offset: float,
-    enable_postprocess: bool,
     min_free_component_cells: int,
     fill_hole_max_cells: int,
     fill_hole_min_free_neighbor_ratio: float,
     majority_fill_iterations: int,
     majority_fill_min_neighbors: int,
-    transpose: bool,
-    flip_x: bool,
-    flip_y: bool,
-    fill_elevation_holes: bool = True,
     fill_elevation_radius_cells: int = 5,
 ) -> ClassifiedGrid:
     """把 elevation GridMap layer 转成 graph 分类格式"""
@@ -83,11 +48,6 @@ def classify_grid_map(
         low_quantile=normalize_low_quantile,
         high_quantile=normalize_high_quantile,
     )
-    trav = orient_grid_map_array(trav, transpose=transpose, flip_x=flip_x, flip_y=flip_y)
-    valid = orient_grid_map_array(valid, transpose=transpose, flip_x=flip_x, flip_y=flip_y)
-    if elevation is not None:
-        elevation = orient_grid_map_array(elevation, transpose=transpose, flip_x=flip_x, flip_y=flip_y)
-
     free = valid & (trav >= free_threshold)
     obstacle = valid & (trav <= obstacle_threshold)
     unknown = ~valid | (valid & ~(free | obstacle))
@@ -98,7 +58,6 @@ def classify_grid_map(
         free,
         obstacle,
         unknown,
-        enabled=enable_postprocess,
         min_free_component_cells=min_free_component_cells,
         fill_hole_max_cells=fill_hole_max_cells,
         fill_hole_min_free_neighbor_ratio=fill_hole_min_free_neighbor_ratio,
@@ -106,7 +65,7 @@ def classify_grid_map(
         majority_fill_min_neighbors=majority_fill_min_neighbors,
     )
     elevation_filled_count = 0
-    if elevation is not None and fill_elevation_holes:
+    if elevation is not None:
         elevation, elevation_filled_count = fill_elevation_for_free_cells(
             elevation,
             free,
@@ -152,7 +111,6 @@ def postprocess_classification(
     free: np.ndarray,
     obstacle: np.ndarray,
     unknown: np.ndarray,
-    enabled: bool,
     min_free_component_cells: int,
     fill_hole_max_cells: int,
     fill_hole_min_free_neighbor_ratio: float,
@@ -160,9 +118,6 @@ def postprocess_classification(
     majority_fill_min_neighbors: int,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """在 graph 采样前清理 GridMap 分类拓扑"""
-    if not enabled:
-        return free, obstacle, unknown
-
     free_value = 1
     obstacle_value = 2
     unknown_value = 0
@@ -220,23 +175,6 @@ def normalize_grid_map_layer(
 
     normalized = (layer - low) / (high - low)
     return np.clip(normalized, 0.0, 1.0).astype(np.float32)
-
-
-def orient_grid_map_array(
-    array: np.ndarray,
-    transpose: bool,
-    flip_x: bool,
-    flip_y: bool,
-) -> np.ndarray:
-    """应用 debug projection adapter 使用的相同朝向控制"""
-    oriented = array
-    if transpose:
-        oriented = oriented.T
-    if flip_x:
-        oriented = np.flip(oriented, axis=1)
-    if flip_y:
-        oriented = np.flip(oriented, axis=0)
-    return oriented
 
 
 def fill_elevation_for_free_cells(

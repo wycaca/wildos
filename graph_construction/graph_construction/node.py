@@ -8,15 +8,15 @@ from typing import Any, Dict, Mapping
 from ament_index_python.packages import get_package_share_directory
 from grid_map_msgs.msg import GridMap
 from graphnav_msgs.msg import NavigationGraph
-from nav_msgs.msg import OccupancyGrid, Odometry
+from nav_msgs.msg import Odometry
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from std_msgs.msg import Header
 from visualization_msgs.msg import MarkerArray
 
-from graph_construction.graph_builder import GraphBuilder, GraphBuilderConfig
-from graph_construction.grid_adapter import classify_grid_map, classify_occupancy_grid
+from graph_construction.graph_builder import GraphBuilderConfig, SparseGraphBuilder
+from graph_construction.grid_adapter import classify_grid_map
 from graph_construction.msg_utils import graph_to_msg
 from graph_construction.viz import GraphVisualizer
 
@@ -24,14 +24,10 @@ from graph_construction.viz import GraphVisualizer
 DEFAULT_CONFIG: Dict[str, Any] = {
     "global_frame": "map",
     "odom_topic": "/odom",
-    "grid_input_type": "occupancy_grid",
-    "grid_topic": "/spot1/traversability_grid",
     "grid_map_topic": "/elevation_mapping_node/elevation_map_raw",
     "nav_graph_topic": "/spot1/nav_graph",
     "viz_topic": "/spot1/graph_construction_viz",
     "publish_rate_hz": 2.0,
-    "free_threshold": 20,
-    "obstacle_threshold": 65,
     "grid_map_traversability_layer": "traversability",
     "grid_map_elevation_layer": "elevation",
     "grid_map_free_threshold": 0.2,
@@ -43,13 +39,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "grid_map_min_free_component_cells": 25,
     "grid_map_fill_hole_max_cells": 90,
     "grid_map_fill_hole_min_free_neighbor_ratio": 0.65,
-    "grid_map_fill_elevation_holes": True,
     "grid_map_fill_elevation_radius_cells": 5,
     "grid_map_majority_fill_iterations": 1,
     "grid_map_majority_fill_min_neighbors": 6,
 }
 
-GRID_INPUT_TYPES = {"occupancy_grid", "grid_map"}
 TRAVERSABILITY_CLASS = "default"
 
 
@@ -64,12 +58,11 @@ class GraphConstructionNode(Node):
     def __init__(self, config: Dict[str, Any]) -> None:
         super().__init__("graph_construction")
         self.config = _resolve_config(config)
-        self.builder = GraphBuilder(_builder_config(self.config))
+        self.builder = SparseGraphBuilder(_builder_config(self.config))
         self.visualizer = GraphVisualizer()
 
         self.latest_grid = None
         self.latest_odom = None
-        self.grid_input_type = str(self.config["grid_input_type"])
         self._logged_first_grid = False
         self._logged_first_odom = False
         self._logged_first_publish = False
@@ -81,22 +74,12 @@ class GraphConstructionNode(Node):
         )
         self.viz_pub = self.create_publisher(MarkerArray, self.config["viz_topic"], 10)
 
-        if self.grid_input_type == "grid_map":
-            self.create_subscription(
-                GridMap,
-                self.config["grid_map_topic"],
-                self._on_grid_map,
-                10,
-            )
-            input_topic = self.config["grid_map_topic"]
-        else:
-            self.create_subscription(
-                OccupancyGrid,
-                self.config["grid_topic"],
-                self._on_grid,
-                10,
-            )
-            input_topic = self.config["grid_topic"]
+        self.create_subscription(
+            GridMap,
+            self.config["grid_map_topic"],
+            self._on_grid_map,
+            10,
+        )
 
         self.create_subscription(
             Odometry,
@@ -109,18 +92,9 @@ class GraphConstructionNode(Node):
         self.create_timer(1.0 / publish_rate, self._on_timer)
 
         self.get_logger().info(
-            f"Graph construction 已启动, input_type={self.grid_input_type}, grid={input_topic}, "
+            f"Graph construction 已启动, grid_map={self.config['grid_map_topic']}, "
             f"odom={self.config['odom_topic']}"
         )
-
-    def _on_grid(self, msg: OccupancyGrid) -> None:
-        """缓存最新 grid, 避免在 subscriber 回调里做重计算"""
-        self.latest_grid = msg
-        if not self._logged_first_grid:
-            self.get_logger().info(
-                f"收到第一帧 grid, frame={msg.header.frame_id}, size={msg.info.width}x{msg.info.height}"
-            )
-            self._logged_first_grid = True
 
     def _on_grid_map(self, msg: GridMap) -> None:
         """缓存最新 GridMap, 用 elevation 和 traversability layer 构建图"""
@@ -200,34 +174,22 @@ class GraphConstructionNode(Node):
         GridMap 的 rolling buffer 已由 grid_adapter 解包, 这里固定启用经过验证的
         拓扑后处理和标准轴约定, 避免重新开放会破坏坐标一致性的历史调试开关
         """
-        if self.grid_input_type == "grid_map":
-            return classify_grid_map(
-                self.latest_grid,
-                traversability_layer=self.config["grid_map_traversability_layer"],
-                elevation_layer=self.config["grid_map_elevation_layer"],
-                free_threshold=self.config["grid_map_free_threshold"],
-                obstacle_threshold=self.config["grid_map_obstacle_threshold"],
-                normalize_traversability=self.config["grid_map_normalize_traversability"],
-                normalize_low_quantile=self.config["grid_map_normalize_low_quantile"],
-                normalize_high_quantile=self.config["grid_map_normalize_high_quantile"],
-                z_offset=self.config["grid_map_z_offset"],
-                enable_postprocess=True,
-                min_free_component_cells=self.config["grid_map_min_free_component_cells"],
-                fill_hole_max_cells=self.config["grid_map_fill_hole_max_cells"],
-                fill_hole_min_free_neighbor_ratio=self.config["grid_map_fill_hole_min_free_neighbor_ratio"],
-                majority_fill_iterations=self.config["grid_map_majority_fill_iterations"],
-                majority_fill_min_neighbors=self.config["grid_map_majority_fill_min_neighbors"],
-                transpose=False,
-                flip_x=False,
-                flip_y=False,
-                fill_elevation_holes=self.config["grid_map_fill_elevation_holes"],
-                fill_elevation_radius_cells=self.config["grid_map_fill_elevation_radius_cells"],
-            )
-
-        return classify_occupancy_grid(
+        return classify_grid_map(
             self.latest_grid,
-            free_threshold=self.config["free_threshold"],
-            obstacle_threshold=self.config["obstacle_threshold"],
+            traversability_layer=self.config["grid_map_traversability_layer"],
+            elevation_layer=self.config["grid_map_elevation_layer"],
+            free_threshold=self.config["grid_map_free_threshold"],
+            obstacle_threshold=self.config["grid_map_obstacle_threshold"],
+            normalize_traversability=self.config["grid_map_normalize_traversability"],
+            normalize_low_quantile=self.config["grid_map_normalize_low_quantile"],
+            normalize_high_quantile=self.config["grid_map_normalize_high_quantile"],
+            z_offset=self.config["grid_map_z_offset"],
+            min_free_component_cells=self.config["grid_map_min_free_component_cells"],
+            fill_hole_max_cells=self.config["grid_map_fill_hole_max_cells"],
+            fill_hole_min_free_neighbor_ratio=self.config["grid_map_fill_hole_min_free_neighbor_ratio"],
+            majority_fill_iterations=self.config["grid_map_majority_fill_iterations"],
+            majority_fill_min_neighbors=self.config["grid_map_majority_fill_min_neighbors"],
+            fill_elevation_radius_cells=self.config["grid_map_fill_elevation_radius_cells"],
         )
 
     def _graph_header(self, input_header, fallback_frame: str):
@@ -251,15 +213,8 @@ def _resolve_config(config: Mapping[str, Any]) -> Dict[str, Any]:
         raise ValueError(f"Unknown graph construction config keys: {', '.join(unknown_keys)}")
 
     resolved = {**DEFAULT_CONFIG, **config}
-    grid_input_type = str(resolved["grid_input_type"])
-    if grid_input_type not in GRID_INPUT_TYPES:
-        raise ValueError(
-            f"grid_input_type must be one of {sorted(GRID_INPUT_TYPES)}, got '{grid_input_type}'"
-        )
     if float(resolved["publish_rate_hz"]) <= 0.0:
         raise ValueError("publish_rate_hz must be greater than 0")
-    if int(resolved["free_threshold"]) > int(resolved["obstacle_threshold"]):
-        raise ValueError("free_threshold must not exceed obstacle_threshold")
     if float(resolved["grid_map_obstacle_threshold"]) > float(resolved["grid_map_free_threshold"]):
         raise ValueError("grid_map_obstacle_threshold must not exceed grid_map_free_threshold")
 

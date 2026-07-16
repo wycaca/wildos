@@ -4,11 +4,10 @@ from std_msgs.msg import ColorRGBA
 
 import numpy as np
 import cv2
-import matplotlib.pyplot as plt
 
 from visual_navigation.geofrontier_nav.viz import VisualizeGeoFrontierScoring
 from visual_navigation.utils.viz import (
-    make_subplot_grid, overlay_heatmap, draw_point, draw_text, draw_path, make_colorbar, pad_image, show_mask
+    make_subplot_grid, overlay_heatmap, draw_point, draw_path, make_colorbar, show_mask
 )
 
 
@@ -367,69 +366,6 @@ class VisualizeGoalAgnosticGeoFrontierScoring(VisualizeGeoFrontierScoring):
 
         return marker_array
 
-    def visualize_object_search_target(self, candidate, detection_rays, frame_id, stamp, _query_text):
-        """发布目标搜索导航点和图像检测射线的 RViz marker"""
-        marker_array = MarkerArray()
-        self._append_delete_all(marker_array, frame_id, stamp, "object_search_clear")
-
-        if candidate is not None:
-            color = plt.cm.jet(float(np.clip(candidate["score"], 0.0, 1.0)))
-            node_pose = candidate["node"].pose
-
-            target_marker = Marker()
-            target_marker.header.frame_id = frame_id
-            target_marker.header.stamp = stamp
-            target_marker.ns = "object_search_target"
-            target_marker.id = 0
-            target_marker.type = Marker.SPHERE
-            target_marker.action = Marker.ADD
-            self._set_marker_pose(target_marker, node_pose, z_offset=0.45)
-            target_marker.scale.x = 0.75
-            target_marker.scale.y = 0.75
-            target_marker.scale.z = 0.35
-            target_marker.color.r = color[0]
-            target_marker.color.g = color[1]
-            target_marker.color.b = color[2]
-            target_marker.color.a = 1.0
-            marker_array.markers.append(target_marker)
-
-        for ray_id, ray in enumerate(detection_rays):
-            ray_marker = Marker()
-            ray_marker.header.frame_id = frame_id
-            ray_marker.header.stamp = stamp
-            ray_marker.ns = "object_search_detection_ray"
-            ray_marker.id = ray_id
-            ray_marker.type = Marker.LINE_STRIP
-            ray_marker.action = Marker.ADD
-            ray_marker.points.append(Point(x=ray["start"][0], y=ray["start"][1], z=ray["start"][2]))
-            ray_marker.points.append(Point(x=ray["end"][0], y=ray["end"][1], z=ray["end"][2]))
-            ray_marker.scale.x = 0.06
-            ray_marker.color.r = 1.0
-            ray_marker.color.g = 0.55
-            ray_marker.color.b = 0.0
-            ray_marker.color.a = 0.85
-            marker_array.markers.append(ray_marker)
-
-            ray_text = Marker()
-            ray_text.header.frame_id = frame_id
-            ray_text.header.stamp = stamp
-            ray_text.ns = "object_search_detection_text"
-            ray_text.id = ray_id
-            ray_text.type = Marker.TEXT_VIEW_FACING
-            ray_text.action = Marker.ADD
-            ray_text.pose.position.x = ray["end"][0]
-            ray_text.pose.position.y = ray["end"][1]
-            ray_text.pose.position.z = ray["end"][2] + 0.25
-            ray_text.scale.z = 0.24
-            ray_text.color.r = 1.0
-            ray_text.color.g = 0.75
-            ray_text.color.b = 0.25
-            ray_text.color.a = 1.0
-            ray_text.text = f"{ray['camera_name']} detected"
-            marker_array.markers.append(ray_text)
-
-        return marker_array
-
     @staticmethod
     def _append_delete_all(marker_array, frame_id, stamp, namespace):
         marker = Marker()
@@ -439,13 +375,6 @@ class VisualizeGoalAgnosticGeoFrontierScoring(VisualizeGeoFrontierScoring):
         marker.id = 0
         marker.action = Marker.DELETEALL
         marker_array.markers.append(marker)
-
-    @staticmethod
-    def _set_marker_pose(marker, pose, z_offset=0.0):
-        marker.pose.position.x = pose.position.x
-        marker.pose.position.y = pose.position.y
-        marker.pose.position.z = pose.position.z + z_offset
-        marker.pose.orientation = pose.orientation
 
     @staticmethod
     def _score_ring_color(score):
@@ -503,7 +432,6 @@ class VisualizeGoalAgnosticGeoFrontierScoring(VisualizeGeoFrontierScoring):
 
         fin_img_chosen = None
         if "object_mask" in nav_data[0] and nav_data[0]["object_mask"] is not None:
-            chosen_cam_idx = -1
             max_obj_pix = -1
             for i in range(self.num_cameras):
                 img = nav_data[i]["image"]
@@ -549,7 +477,6 @@ class VisualizeGoalAgnosticGeoFrontierScoring(VisualizeGeoFrontierScoring):
                 )
 
                 max_obj_pix = num_obj_pixels
-                chosen_cam_idx = i
                 fin_img_chosen = fin_img
 
             if fin_img_chosen is not None:

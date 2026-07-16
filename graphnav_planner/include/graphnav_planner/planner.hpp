@@ -224,7 +224,6 @@ private:
 class Planner
 {
 public:
-  using Polygon = std::vector<Eigen::Vector3f>;
 
   struct PlanningResult
   {
@@ -241,16 +240,12 @@ public:
   bool has_directional_exploration() const;
   void reset_exploration_state();
 
-  // void set_keep_in_polygons(std::vector<Polygon> &keep_in_polygons);
-  // void set_keep_out_polygons(std::vector<Polygon> &keep_out_polygons);
-  // void set_dynamic_obstacles(std::vector<Polygon> &obstacles);
   void update_graph(graphnav_msgs::msg::NavigationGraph::ConstSharedPtr graph);
   PlanningResult plan_to_goal(
     Eigen::Vector3d& goal,
     double goal_radius,
     rclcpp::Time current_time,
     const std::optional<Eigen::Vector3d>& robot_position = std::nullopt);
-  // std::vector<Eigen::Vector3d> plan_to_goal(Polygon &goal_area);
 
   grid_map_msgs::msg::GridMap get_unexplored_debug_map()
   {
@@ -368,7 +363,6 @@ public:
   double frontier_dist_cost_factor_ = 2.0;
   double goal_dist_cost_factor_ = 1.0;
   double frontier_score_factor_ = 10.0;
-  bool append_virtual_goal_to_path_ = false;
   double frontier_continuity_radius_ = 5.0;
   double frontier_progress_timeout_ = 12.0;
   double revisit_cost_factor_ = 1.0;

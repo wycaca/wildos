@@ -21,9 +21,9 @@ from visual_navigation.lrn.scoring import LRNScoring
 from visual_navigation.lrn.viz import LRNVisualizer
 from explorfm import ExploRFMInference
 from visual_navigation.utils.object_search_utils import localize_query, get_objectmask_msg
+from visual_navigation.utils.paths import repository_root
 
-# HOME_DIR = Path.home()
-HOME_DIR = Path("/home/ks-server3/han/wildos_ws/src/nebula2-wildos/")
+HOME_DIR = repository_root()
 CAMERA_MAPPING = {
     0: "front",
     1: "left",
@@ -361,7 +361,13 @@ class LRN(GoalNavigator):
             if np.sum(binary_mask) > 0:
                 tf_list = [tf_data[f"world_from_cam{i}"] for i in range(self.num_cameras)]
                 self.object_mask_publisher.publish(
-                    get_objectmask_msg(binary_mask, self.cam_inverted, odom_msg, tf_list, cam_info_msgs)
+                    get_objectmask_msg(
+                        binary_mask,
+                        self.cam_inverted,
+                        tf_list,
+                        cam_info_msgs,
+                        measurement_header=odom_msg.header,
+                    )
                 )
             else:
                 self.get_logger().warn("No object detected in the scene, skipping object mask publish.")

@@ -44,6 +44,7 @@ if [[ -n "${PYTHONPATH:-}" ]]; then
 else
   export PYTHONPATH="${REPO_ROOT}"
 fi
+export WILDOS_REPO_ROOT="${REPO_ROOT}"
 
 ROS_DOMAIN_LAUNCH_ARG=()
 if [[ -n "${ROS_DOMAIN_ID:-}" ]]; then
@@ -131,12 +132,12 @@ fix_executable_shebang "elevation_mapping_node.py"
 fix_executable_shebang "wildos"
 fix_executable_shebang "odom_frame_adapter"
 fix_executable_shebang "object_search_goal_mux"
-fix_executable_shebang "obj_mask_triangulation"
+fix_executable_shebang "object_target_fusion"
 
 if launch_arg_enabled "do_object_search" "$@"; then
   ensure_object_search_interfaces
   ensure_installed_executable "object_search_goal_mux" "visual_navigation"
-  ensure_installed_executable "obj_mask_triangulation" "visual_navigation"
+  ensure_installed_executable "object_target_fusion" "visual_navigation"
 fi
 
 echo "启动 WildOS elevation/2.5D, profile=${WILDOS_TOPIC_PROFILE}, python=${PYTHON_BIN}"

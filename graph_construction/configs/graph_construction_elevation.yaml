@@ -1,7 +1,6 @@
 # Elevation GridMap 主线, topic 和 frame 由 topic profile 覆盖
 global_frame: odom
 odom_topic: /spot1/odom_for_scoring
-grid_input_type: grid_map
 grid_map_topic: /elevation_mapping_node/elevation_map_raw
 nav_graph_topic: /spot1/nav_graph
 viz_topic: /spot1/graph_construction_viz

@@ -1,6 +1,5 @@
 import copy
 import math
-from typing import Any
 
 import rclpy
 from geometry_msgs.msg import PoseStamped
@@ -28,16 +27,14 @@ class ObjectSearchGoalMux(Node):
         self.declare_parameter("completion_topic", "/spot1/object_search_completed")
         self.declare_parameter("odom_topic", "/spot1/odom_for_scoring")
         self.declare_parameter("frame_id", "map")
-        self.declare_parameter("initial_goal_mode", "heading")
         self.declare_parameter("initial_goal_distance", 30.0)
         self.declare_parameter("initial_goal_heading_deg", 0.0)
         self.declare_parameter("publish_rate", 5.0)
         self.declare_parameter("object_reached_timeout_sec", 2.0)
-        self.declare_parameter("object_reached_require_target_distance", True)
         self.declare_parameter("object_reached_max_target_distance", 2.0)
         self.declare_parameter("coarse_target_min_views", 2)
         self.declare_parameter("coarse_target_min_confidence", 0.35)
-        self.declare_parameter("metric_target_update_distance", 0.75)
+        self.declare_parameter("target_update_min_distance", 0.75)
 
         self.output_goal_topic = self._param_str("output_goal_topic")
         self.goal_viz_topic = self._param_str("goal_viz_topic")
@@ -47,14 +44,10 @@ class ObjectSearchGoalMux(Node):
         self.completion_topic = self._param_str("completion_topic")
         self.odom_topic = self._param_str("odom_topic")
         self.frame_id = self._param_str("frame_id")
-        self.initial_goal_mode = self._param_str("initial_goal_mode")
         self.initial_goal_distance = self._param_float("initial_goal_distance")
         self.initial_goal_heading_deg = self._param_float("initial_goal_heading_deg")
         self.publish_rate = max(self._param_float("publish_rate"), 0.1)
         self.object_reached_timeout_sec = max(self._param_float("object_reached_timeout_sec"), 0.0)
-        self.object_reached_require_target_distance = self._param_bool(
-            "object_reached_require_target_distance"
-        )
         self.object_reached_max_target_distance = max(
             self._param_float("object_reached_max_target_distance"),
             0.1,
@@ -67,16 +60,10 @@ class ObjectSearchGoalMux(Node):
             self._param_float("coarse_target_min_confidence"),
             0.0,
         )
-        self.metric_target_update_distance = max(
-            self._param_float("metric_target_update_distance"),
+        self.target_update_min_distance = max(
+            self._param_float("target_update_min_distance"),
             0.0,
         )
-
-        if self.initial_goal_mode != "heading":
-            raise ValueError(
-                f"暂不支持 initial_goal_mode={self.initial_goal_mode}, "
-                "当前只支持 heading"
-            )
 
         self.latest_odom: Odometry | None = None
         self.metric_target: PoseStamped | None = None
@@ -90,7 +77,6 @@ class ObjectSearchGoalMux(Node):
         self.reached_latched = False
         self.reached_hold_goal: PoseStamped | None = None
         self._last_state = ""
-        self._last_status_text = ""
         self._warned_frame_mismatch = False
 
         self.goal_pub = self.create_publisher(PoseStamped, self.output_goal_topic, 10)
@@ -136,17 +122,6 @@ class ObjectSearchGoalMux(Node):
         except (TypeError, ValueError) as exc:
             raise ValueError(f"参数 {name} 必须是数字, 当前值={value}") from exc
 
-    def _param_bool(self, name: str) -> bool:
-        value: Any = self.get_parameter(name).value
-        if isinstance(value, bool):
-            return value
-        normalized = str(value).strip().lower()
-        if normalized in {"true", "1", "yes", "on"}:
-            return True
-        if normalized in {"false", "0", "no", "off"}:
-            return False
-        raise ValueError(f"参数 {name} 必须是布尔值, 当前值={value}")
-
     def _on_odom(self, msg: Odometry) -> None:
         self.latest_odom = msg
         if self.exploration_heading_yaw is None:
@@ -184,7 +159,7 @@ class ObjectSearchGoalMux(Node):
         moved_enough = (
             self.metric_target is None
             or self._pose_xy_distance(self.metric_target, target)
-            >= self.metric_target_update_distance
+            >= self.target_update_min_distance
         )
         if self.metric_target is not None and not (
             quality_improved or source_improved or confidence_improved or moved_enough
@@ -329,8 +304,6 @@ class ObjectSearchGoalMux(Node):
             > self.object_reached_timeout_sec
         ):
             return False
-        if not self.object_reached_require_target_distance:
-            return True
         target_pose = self._active_reached_target_pose()
         if target_pose is None:
             return False
@@ -389,10 +362,8 @@ class ObjectSearchGoalMux(Node):
         status.data = self._status_text(state, goal)
         self.status_pub.publish(status)
         if state == self._last_state:
-            self._last_status_text = status.data
             return
         self._last_state = state
-        self._last_status_text = status.data
         if goal is None:
             self.get_logger().info(f"目标搜索状态={state}")
             return

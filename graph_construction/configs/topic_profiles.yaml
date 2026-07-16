@@ -1,68 +1,36 @@
 # 参数分层说明:
-# - 日常切换优先改 topic_profile, 不要直接改大量单项参数
-# - 平台差异放在 profile, 算法细调优先放到对应节点 config
-# - elevation/2.5D 是论文和社区一致的主地图后端, 2D OccupancyGrid 仅作为 fallback
-# - grid_* 属于调试参数, 只有定位到对应问题时再改
+# - 平台差异放在 topic profile, 算法调优放到对应节点 config
+# - 当前唯一几何地图后端是 elevation/2.5D GridMap
 profiles:
   isaac:
     description: Isaac Sim 5.1 Go2 profile
 
-    # 运行域和 DDS, 用于隔离不同仿真或机器人 graph
+    # 运行环境和坐标系
     namespace: spot1
     ros_domain_id: "3"
-    rmw_implementation_2d: rmw_cyclonedds_cpp
-    rmw_implementation_3d: rmw_fastrtps_cpp
-
-    # 坐标系和传感器 frame, 修改前先确认 live TF tree
-    global_frame_2d: map
-    global_frame_3d: odom
-    grid_frame: map
+    rmw_implementation: rmw_fastrtps_cpp
+    global_frame: odom
     parent_frame: odom
     cam_frame: "{}_camera"
     odom_parent_frame: odom
     odom_child_frame: base_link
     base_frame: base_link
-    odom_pose_source_2d: tf
-    odom_fallback_to_message_2d: "false"
     camera_parent_frame: base_link
     camera_static_tf_convention: x_forward_y_left
     camera_image_flip_x: "false"
     lidar_parent_frame: base_link
     lidar_frame: lidar
-    lidar_assume_input_in_grid_frame: "false"
-    pointcloud_axis_mode_3d: isaac_lidar_to_base
-    pointcloud_output_frame_3d: base_link
+    pointcloud_axis_mode: isaac_lidar_to_base
+    pointcloud_output_frame: base_link
 
-    # 传感器和 odom 输入输出, 适配新仿真 topic 时优先改这里
-    lidar_topic: /unitree_go2/lidar/points
+    # 传感器和 odom
     pointcloud_input_topic: /unitree_go2/lidar/points
     aligned_lidar_topic: /unitree_go2/lidar/points_aligned
-    launch_livox_grid_builder: "true"
     odom_input_topic: /odom
     odom_output_topic: /spot1/odom_for_scoring
-    grid_odom_topic: /odom
 
-    # 2D grid builder 调参, 只在地图旋转, 空洞或障碍误检时改
-    grid_origin_mode: rolling
-    grid_resolution: "0.2"
-    grid_local_width: "30.0"
-    grid_local_height: "30.0"
-    grid_min_obstacle_height: "0.15"
-    grid_max_obstacle_height: "1.8"
-    grid_obstacle_inflation_radius: "0.3"
-    grid_origin_snap_to_resolution: "false"
-    grid_force_odd_grid_size: "false"
-    grid_robot_clear_radius: "0.0"
-    grid_obstacle_detection_mode: ray_height
-    grid_height_diff_mark_rays_free: "false"
-    grid_height_diff_fill_unobserved_as_free: "false"
-    grid_height_diff_unknown_border_width: "0.0"
-    grid_height_diff_obstacle_threshold: "0.05"
-    grid_high_obstacle_min_height: "0.3"
-
-    # graph, visual scoring 和 planner topic, 保持链路 topic 一致
+    # graph, visual scoring 和 planner topic
     planner_odom_topic: odom_for_scoring
-    traversability_grid_topic: /spot1/traversability_grid
     elevation_grid_map_topic: /elevation_mapping_node/elevation_map_raw
     nav_graph_topic: /spot1/nav_graph
     graph_construction_viz_topic: /spot1/graph_construction_viz
@@ -72,15 +40,13 @@ profiles:
     score_ring_topic: /spot1/score_rings
     graph_viz_topic: /spot1/nav_graph_viz
     object_mask_topic: /spot1/object_mask
-    object_target_pose_topic: /spot1/object_search_target_pose
     object_target_estimate_topic: /spot1/object_target_estimate
     object_target_estimate_viz_topic: /spot1/object_target_estimate_viz
     object_target_particles_topic: /spot1/object_target_particles
-    object_target_viz_topic: /spot1/object_search_target_viz
     object_reached_topic: /spot1/object_search_reached
     object_search_completed_topic: /spot1/object_search_completed
 
-    # object search 基础策略, 常用调参是 mask threshold 和 visual frontier 阈值
+    # object search 策略
     object_search_initial_goal_distance: "30.0"
     object_search_initial_goal_heading_deg: "0.0"
     object_search_mask_threshold: "0.09"
@@ -91,20 +57,16 @@ profiles:
     visual_frontiers_range: "9.0"
     visual_frontier_threshold: "0.6"
     object_search_detection_debug_interval: "20"
-    object_search_target_log_period_sec: "2.0"
     object_search_goal_publish_rate: "5.0"
     object_search_object_reached_timeout_sec: "2.0"
-    object_search_object_reached_require_target_distance: "true"
     object_search_object_reached_max_target_distance: "2.0"
-
-    # 到达确认, 用目标 mask 判断是否接近可观察位置
     object_search_reached_mask_fraction: "0.01"
     object_search_reached_min_pixel_count: "1200"
     object_search_reached_confirm_frames: "2"
     object_search_goal_viz_topic: /spot1/object_search_goal_viz
     object_search_status_topic: /spot1/object_search_status
 
-    # planner 输出和三相机 topic
+    # planner 输入和三相机 topic
     goal_pose_topic: /goal_pose
     camera_img_topic: /unitree_go2/{}_cam/color_image
     camera_info_topic: /unitree_go2/{}_cam/info
@@ -112,62 +74,32 @@ profiles:
   unity:
     description: Unity simulation profile
 
-    # 运行域和 DDS, Unity 当前默认走 zenoh
+    # 运行环境和坐标系
     namespace: spot1
     ros_domain_id: "89"
-    rmw_implementation_2d: rmw_zenoh_cpp
-    rmw_implementation_3d: rmw_zenoh_cpp
-
-    # 坐标系和传感器 frame, Unity elevation 和 2D fallback 都以 odom_3D 为稳定参考
-    global_frame_2d: odom_3D
-    global_frame_3d: odom_3D
-    grid_frame: odom_3D
+    rmw_implementation: rmw_zenoh_cpp
+    global_frame: odom_3D
     parent_frame: odom_3D
     cam_frame: "{}_camera"
     odom_parent_frame: odom_3D
     odom_child_frame: base_link
     base_frame: base_link
-    odom_pose_source_2d: tf
-    odom_fallback_to_message_2d: "true"
     camera_parent_frame: base_link
     camera_static_tf_convention: x_forward_y_left
     camera_image_flip_x: "false"
     lidar_parent_frame: base_link
     lidar_frame: livox_frame
-    lidar_assume_input_in_grid_frame: "true"
-    pointcloud_axis_mode_3d: identity
-    pointcloud_output_frame_3d: livox_frame
+    pointcloud_axis_mode: identity
+    pointcloud_output_frame: livox_frame
 
-    # 传感器和 odom 输入输出, elevation 使用原始点云, 2D fallback 使用 /mapokk 对照点云
-    lidar_topic: /mapokk
+    # 传感器和 odom
     pointcloud_input_topic: /livox/lidar
     aligned_lidar_topic: /livox/lidar_aligned
-    launch_livox_grid_builder: "true"
     odom_input_topic: /unity/odom
     odom_output_topic: /spot1/odom_for_scoring
-    grid_odom_topic: /unity/odom
 
-    # 2D grid builder 调参, Unity 地图旋转或路线跳变时优先检查本组
-    grid_origin_mode: rolling
-    grid_resolution: "0.1"
-    grid_local_width: "14.0"
-    grid_local_height: "14.0"
-    grid_min_obstacle_height: "-0.2"
-    grid_max_obstacle_height: "1.8"
-    grid_obstacle_inflation_radius: "0.25"
-    grid_origin_snap_to_resolution: "true"
-    grid_force_odd_grid_size: "true"
-    grid_robot_clear_radius: "0.2"
-    grid_obstacle_detection_mode: height_diff
-    grid_height_diff_mark_rays_free: "true"
-    grid_height_diff_fill_unobserved_as_free: "true"
-    grid_height_diff_unknown_border_width: "1.2"
-    grid_height_diff_obstacle_threshold: "0.04"
-    grid_high_obstacle_min_height: "0.12"
-
-    # graph, visual scoring 和 planner topic, 自研导航消费 planner 原始路径
+    # graph, visual scoring 和 planner topic
     planner_odom_topic: odom_for_scoring
-    traversability_grid_topic: /spot1/traversability_grid
     elevation_grid_map_topic: /elevation_mapping_node/elevation_map_raw
     nav_graph_topic: /spot1/nav_graph
     graph_construction_viz_topic: /spot1/graph_construction_viz
@@ -177,15 +109,13 @@ profiles:
     score_ring_topic: /spot1/score_rings
     graph_viz_topic: /spot1/nav_graph_viz
     object_mask_topic: /spot1/object_mask
-    object_target_pose_topic: /spot1/object_search_target_pose
     object_target_estimate_topic: /spot1/object_target_estimate
     object_target_estimate_viz_topic: /spot1/object_target_estimate_viz
     object_target_particles_topic: /spot1/object_target_particles
-    object_target_viz_topic: /spot1/object_search_target_viz
     object_reached_topic: /spot1/object_search_reached
     object_search_completed_topic: /spot1/object_search_completed
 
-    # object search 基础策略, Unity 当前略放宽 visual frontier 候选
+    # object search 策略
     object_search_initial_goal_distance: "30.0"
     object_search_initial_goal_heading_deg: "0.0"
     object_search_mask_threshold: "0.10"
@@ -196,20 +126,16 @@ profiles:
     visual_frontiers_range: "11.0"
     visual_frontier_threshold: "0.55"
     object_search_detection_debug_interval: "20"
-    object_search_target_log_period_sec: "2.0"
     object_search_goal_publish_rate: "5.0"
     object_search_object_reached_timeout_sec: "5.0"
-    object_search_object_reached_require_target_distance: "true"
     object_search_object_reached_max_target_distance: "2.0"
-
-    # 到达确认, 用目标 mask 判断是否接近可观察位置
     object_search_reached_mask_fraction: "0.01"
     object_search_reached_min_pixel_count: "1200"
     object_search_reached_confirm_frames: "2"
     object_search_goal_viz_topic: /spot1/object_search_goal_viz
     object_search_status_topic: /spot1/object_search_status
 
-    # planner 输入和三相机 topic, Unity 避开 nav_slam/astar 订阅的公共 /goal_pose
+    # planner 输入和三相机 topic
     goal_pose_topic: /spot1/graphnav_goal_pose
     camera_img_topic: /camera/{}/color/image/compressed
     camera_info_topic: /camera/{}/color/camera_info
@@ -217,62 +143,32 @@ profiles:
   robot:
     description: Real robot profile placeholder
 
-    # 运行域和 DDS, 真实狗 profile 仍是占位默认
+    # 运行环境和坐标系
     namespace: spot1
     ros_domain_id: "3"
-    rmw_implementation_2d: rmw_cyclonedds_cpp
-    rmw_implementation_3d: rmw_cyclonedds_cpp
-
-    # 坐标系和传感器 frame, 真实狗默认保留 spot1 前缀
-    global_frame_2d: spot1/odom
-    global_frame_3d: spot1/odom
-    grid_frame: spot1/odom
+    rmw_implementation: rmw_cyclonedds_cpp
+    global_frame: spot1/odom
     parent_frame: spot1/odom
     cam_frame: spot1/realsense/{}_color_optical_frame
     odom_parent_frame: spot1/odom
     odom_child_frame: spot1/base_link
     base_frame: spot1/base_link
-    odom_pose_source_2d: message
-    odom_fallback_to_message_2d: "true"
     camera_parent_frame: spot1/base_link
     camera_static_tf_convention: x_forward_y_left
     camera_image_flip_x: "false"
     lidar_parent_frame: spot1/base_link
     lidar_frame: spot1/ouster_front
-    lidar_assume_input_in_grid_frame: "true"
-    pointcloud_axis_mode_3d: identity
-    pointcloud_output_frame_3d: spot1/ouster_front
+    pointcloud_axis_mode: identity
+    pointcloud_output_frame: spot1/ouster_front
 
-    # 传感器和 odom 输入输出, 接真实狗时优先替换这组 topic
-    lidar_topic: /spot1/ouster/front/points_filtered
+    # 传感器和 odom
     pointcloud_input_topic: /spot1/ouster/front/points_filtered
     aligned_lidar_topic: /spot1/ouster/front/points_aligned
-    launch_livox_grid_builder: "true"
     odom_input_topic: /spot1/odom
     odom_output_topic: /spot1/odom_for_scoring
-    grid_odom_topic: /spot1/odom
-
-    # 2D grid builder 调参, 当前沿用 Isaac baseline
-    grid_origin_mode: rolling
-    grid_resolution: "0.2"
-    grid_local_width: "30.0"
-    grid_local_height: "30.0"
-    grid_min_obstacle_height: "0.15"
-    grid_max_obstacle_height: "1.8"
-    grid_obstacle_inflation_radius: "0.3"
-    grid_origin_snap_to_resolution: "false"
-    grid_force_odd_grid_size: "false"
-    grid_robot_clear_radius: "0.0"
-    grid_obstacle_detection_mode: ray_height
-    grid_height_diff_mark_rays_free: "false"
-    grid_height_diff_fill_unobserved_as_free: "false"
-    grid_height_diff_unknown_border_width: "0.0"
-    grid_height_diff_obstacle_threshold: "0.05"
-    grid_high_obstacle_min_height: "0.3"
 
     # graph, visual scoring 和 planner topic
     planner_odom_topic: odom_for_scoring
-    traversability_grid_topic: /spot1/traversability_grid
     elevation_grid_map_topic: /elevation_mapping_node/elevation_map_raw
     nav_graph_topic: /spot1/nav_graph
     graph_construction_viz_topic: /spot1/graph_construction_viz
@@ -282,15 +178,13 @@ profiles:
     score_ring_topic: /spot1/score_rings
     graph_viz_topic: /spot1/nav_graph_viz
     object_mask_topic: /spot1/object_mask
-    object_target_pose_topic: /spot1/object_search_target_pose
     object_target_estimate_topic: /spot1/object_target_estimate
     object_target_estimate_viz_topic: /spot1/object_target_estimate_viz
     object_target_particles_topic: /spot1/object_target_particles
-    object_target_viz_topic: /spot1/object_search_target_viz
     object_reached_topic: /spot1/object_search_reached
     object_search_completed_topic: /spot1/object_search_completed
 
-    # object search 基础策略, 真实狗 profile 当前沿用 Isaac 阈值
+    # object search 策略
     object_search_initial_goal_distance: "30.0"
     object_search_initial_goal_heading_deg: "0.0"
     object_search_mask_threshold: "0.09"
@@ -301,20 +195,16 @@ profiles:
     visual_frontiers_range: "9.0"
     visual_frontier_threshold: "0.6"
     object_search_detection_debug_interval: "20"
-    object_search_target_log_period_sec: "2.0"
     object_search_goal_publish_rate: "5.0"
     object_search_object_reached_timeout_sec: "2.0"
-    object_search_object_reached_require_target_distance: "true"
     object_search_object_reached_max_target_distance: "2.0"
-
-    # 到达确认, 用目标 mask 判断是否接近可观察位置
     object_search_reached_mask_fraction: "0.01"
     object_search_reached_min_pixel_count: "1200"
     object_search_reached_confirm_frames: "2"
     object_search_goal_viz_topic: /spot1/object_search_goal_viz
     object_search_status_topic: /spot1/object_search_status
 
-    # planner 输出和三相机 topic
+    # planner 输入和三相机 topic
     goal_pose_topic: /goal_pose
     camera_img_topic: /spot1/realsense/{}/color/image_raw/compressed
     camera_info_topic: /spot1/realsense/{}/color/camera_info

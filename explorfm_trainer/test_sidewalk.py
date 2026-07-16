@@ -3,6 +3,7 @@ import torch
 import cv2
 import numpy as np
 import typing
+from pathlib import Path
 from PIL import Image
 from src.models.components.radio_cnn import RADIO_CNN
 from torchvision import transforms
@@ -62,7 +63,8 @@ def predict_sidewalk(img_path):
     fusion = cv2.addWeighted(original_bgr, 0.5, heatmap_resized, 0.5, 0)
 
     # 保存热力图结果 (确保目录存在)
-    output_path = "/home/ks-server3/han/wildos_ws/src/nebula2-wildos/test/outputs/sidewalk_test_seg/sidewalk_02.png"
+    repo_root = Path(__file__).resolve().parents[1]
+    output_path = repo_root / "test/outputs/sidewalk_test_seg/sidewalk_02.png"
     output_dir = os.path.dirname(output_path)
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
@@ -72,5 +74,5 @@ def predict_sidewalk(img_path):
     print(f"热力图已生成！最大概率: {probs.max():.4f}, 最小概率: {probs.min():.4f}")
 
 # 测试机器狗视角图
-predict_sidewalk("/home/ks-server3/han/wildos_ws/src/nebula2-wildos/test/imgs/road_test/road_10.jpg")
+predict_sidewalk(Path(__file__).resolve().parents[1] / "test/imgs/road_test/road_10.jpg")
 # predict_sidewalk("/mnt/hhd/han/dataset/cityscapes/leftImg8bit/train/aachen/aachen_000000_000019_leftImg8bit.png")

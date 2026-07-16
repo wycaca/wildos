@@ -1,65 +1,47 @@
-# Triangulation3D — Multi-View Target Fusion
+# Triangulation3D Target Particle Filter
 
-This package contains the pure particle filter used to remember one target from multiple camera views.
+This ROS 2 Python package contains the pure recursive particle filter used by WildOS target fusion
 
-## Overview
+## Current Scope
 
-The current target fusion process is:
+The package intentionally keeps one implementation:
 
-1. Sample a fixed number of 3D particles from a confirmed object Mask
-2. Reweight the same particles with later camera views
-3. Reject repeated views and observations that disagree with a stable target
-4. Publish a coarse visual goal after two distinct views
-5. Use consistent LiDAR measurements only as an optional refinement
-
-The paper method does not require LiDAR for long-range localization. LiDAR points that project into the target Mask can provide a faster near-range lock, while pure multi-view vision remains the primary path.
-
-## Key Files
-
-| File | Description |
-|---|---|
-| `target_particle_filter.py` | Current fixed-size recursive target filter |
-| `triangulator.py` | Legacy batch triangulation used by demos |
-| `particle_generator.py` | Legacy particle sampling used by demos |
-
-## Usage
-
-### Multi-Camera Triangulation
-
-To visualize multi-camera triangulation, where each camera position is randomly generated, run in separate terminals:
-
-```bash
-ros2 run triangulation3d triangulation_visualizer
+```text
+triangulation3d/target_particle_filter.py
 ```
 
-The `triangulation_visualizer` node will publish random camera positions and the object in space, along with the triangulated position and the particles projected from each camera which can be visualized in RViz:
+`TargetParticleFilter`:
 
-![triangulation_rviz](assets/multicam_viz.png)
+1. Initializes a fixed particle set from one confirmed camera mask
+2. Reweights the same particles with distinct later views
+3. Rejects repeated or inconsistent observations
+4. Produces a tracking estimate after sufficient visual support
+5. Produces a stable visual estimate after convergence
+6. Accepts consistent LiDAR support as optional near-range refinement
 
-### Single Camera Triangulation with Teleoperation
+Multi-view vision is the primary method. LiDAR support is not required for a visual target estimate
 
-To teleoperate the camera and triangulate the detected object, run in separate terminals:
+## ROS Integration
 
-```bash
-ros2 run triangulation3d teleop_triangulation
-ros2 run triangulation3d teleop_twist_keyboard
+The ROS adapter is:
+
+```text
+visual_navigation/visual_navigation/object_target_fusion.py
 ```
 
-In the terminal running `teleop_twist_keyboard`, use the following keys to control the camera:
+It consumes `ObjectMaskWithTf`, updates the particle filter, and publishes `TargetEstimate` plus visualization data
 
-| Key | Action |
-|---|---|
-| `w` / `s` | Move forward / backward |
-| `a` / `d` | Move left / right |
-| `q` / `e` | Move up / down |
-| `p` / `l` | Pitch up / down |
-| `o` / `k` | Roll right / left |
-| `i` / `j` | Yaw right / left |
+The package itself does not install a console script. Start target fusion through the current integrated launch or the visual component launch:
 
-Press `Ctrl+C` to stop the teleoperation.
+```bash
+./scripts/start_wildos_elevation.sh do_object_search:=true
+ros2 launch visual_navigation wildos_component.launch.py do_object_search:=true
+```
 
-![teleop_rviz](assets/teleop_viz.png)
+## Tests
 
-## Integration with WildOS
+```bash
+python3 -m pytest triangulation3d/test/test_target_particle_filter.py
+```
 
-During WildOS deployment, triangulation is handled by `visual_navigation/explorfm_triangulation/obj_mask_triangulation.py`, which receives object masks from the WildOS navigation node and uses the triangulation logic from this package to estimate goal positions.
+Legacy batch triangulation, random-camera demos, teleoperation, particle generators, and point-cloud helpers were removed because they were not used by the current recursive fusion path

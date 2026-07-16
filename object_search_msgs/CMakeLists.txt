@@ -12,7 +12,6 @@ find_package(ament_cmake REQUIRED)
 # find_package(<dependency> REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(std_msgs REQUIRED)
-find_package(nav_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(tf2_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
@@ -20,7 +19,7 @@ find_package(geometry_msgs REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ObjectMaskWithTf.msg"
   "msg/TargetEstimate.msg"
-  DEPENDENCIES std_msgs nav_msgs sensor_msgs tf2_msgs geometry_msgs
+  DEPENDENCIES std_msgs sensor_msgs tf2_msgs geometry_msgs
 )
 
 if(BUILD_TESTING)

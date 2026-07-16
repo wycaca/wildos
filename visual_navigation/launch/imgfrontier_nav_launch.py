@@ -24,7 +24,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'do_object_search',
             default_value='false',
-            description='Enable object search and launch obj_mask_triangulation node'
+            description='Enable object search and launch object_target_fusion node'
         ),
         DeclareLaunchArgument(
             'log_level',
@@ -51,10 +51,10 @@ def generate_launch_description():
             ]
         ),
 
-        # Conditionally launch obj_mask_triangulation
+        # Launch the current target fusion adapter only during object search
         Node(
             package='visual_navigation',
-            executable='obj_mask_triangulation',
+            executable='object_target_fusion',
             output='screen',
             arguments=[
                 '--ros-args', '--log-level', log_level

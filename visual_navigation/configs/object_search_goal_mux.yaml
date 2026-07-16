@@ -1,4 +1,4 @@
-object_search_goal_mux:
+/**:
   ros__parameters:
     # 输入输出 topic, 平台差异优先由 topic_profiles.yaml 覆盖
     output_goal_topic: /spot1/graphnav_goal_pose
@@ -11,15 +11,13 @@ object_search_goal_mux:
     frame_id: map
 
     # 启动时根据首帧 odom 计算一次固定粗目标, 后续转向和移动不会重算
-    initial_goal_mode: heading
     initial_goal_distance: 30.0
     initial_goal_heading_deg: 0.0
 
     # 论文式两视角视觉粗定位先替换初始探索 goal, 稳定估计随后提升精度
     publish_rate: 5.0
     object_reached_timeout_sec: 2.0
-    object_reached_require_target_distance: true
     object_reached_max_target_distance: 2.0
     coarse_target_min_views: 2
     coarse_target_min_confidence: 0.35
-    metric_target_update_distance: 0.75
+    target_update_min_distance: 0.75

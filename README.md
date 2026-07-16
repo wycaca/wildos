@@ -75,12 +75,13 @@ When modifying this repository, keep implementation notes synchronized with the 
 
 ## 🧪 Current Simulation Notes
 
-The current Unity simulation separates geometric mapping from visual scoring:
+The current simulation uses the elevation/2.5D GridMap pipeline as its only geometric backend:
 
 ```text
 /livox/lidar
-  -> LiDAR geometric map backend
-  -> /spot1/traversability_grid
+  -> pointcloud_axis_adapter
+  -> elevation_mapping_cupy
+  -> GridMap
   -> graph_construction
 
 /camera/front, /camera/left, /camera/right
@@ -88,29 +89,23 @@ The current Unity simulation separates geometric mapping from visual scoring:
   -> /spot1/scored_nav_graph
 ```
 
-Use the 2D LiDAR baseline as the default full simulation pipeline:
+Use the consolidated startup script:
 
 ```bash
-./scripts/start_wildos_2d.sh
+./scripts/start_wildos_elevation.sh
 ```
 
-Use the 3D elevation mapping backend for elevation-based graph construction:
-
-```bash
-./scripts/start_wildos_3d.sh
-```
-
-Both scripts launch the full chain: mapping backend, graph construction, odometry adapter, camera TF fallback, WildOS visual scoring, graphnav planner, and path follower.
+The script launches the mapping backend, graph construction, odometry adapter, camera TF fallback, WildOS visual scoring, target fusion, goal mux, and graph planner. The optional `path_follower_node` is not part of this default chain.
 
 Topic and frame names are selected by profile. Built-in profiles live in `graph_construction/configs/topic_profiles.yaml`:
 
 ```bash
-WILDOS_TOPIC_PROFILE=isaac ./scripts/start_wildos_2d.sh
-WILDOS_TOPIC_PROFILE=unity ./scripts/start_wildos_2d.sh
-WILDOS_TOPIC_PROFILE=robot ./scripts/start_wildos_2d.sh
+WILDOS_TOPIC_PROFILE=isaac ./scripts/start_wildos_elevation.sh
+WILDOS_TOPIC_PROFILE=unity ./scripts/start_wildos_elevation.sh
+WILDOS_TOPIC_PROFILE=robot ./scripts/start_wildos_elevation.sh
 ```
 
-Individual launch arguments still override profile values, for example `lidar_topic:=/custom/lidar`.
+Individual launch arguments still override profile values, for example `pointcloud_input_topic:=/custom/lidar`.
 
 <br>
 
@@ -118,7 +113,7 @@ Individual launch arguments still override profile values, for example `lidar_to
 
 ### Prerequisites
 
-- **ROS 2 Jazzy** (tested)
+- **ROS 2 Humble** (current integration environment)
 - **Python >= 3.10**
 - **[uv](https://docs.astral.sh/uv/getting-started/installation/)** — Python package manager
 - **CUDA-capable GPU** (ExploRFM trained on *NVIDIA GeForce RTX 4090*, deployed on *NVIDIA Jetson AGX Orin* GPU)
@@ -158,7 +153,7 @@ uv tool install huggingface_hub[cli]
 
 ```bash
 # From your colcon workspace (with this repo cloned/symlinked into src/)
-colcon build --packages-select graphnav_msgs object_search_msgs gps_visualization graphnav_planner triangulation3d visual_navigation
+colcon build --packages-up-to object_search_msgs triangulation3d visual_navigation graph_construction graphnav_planner
 source install/setup.bash
 ```
 
@@ -188,7 +183,7 @@ Pre-trained head checkpoints are included in `ckpts/`:
    huggingface-cli download google/siglip2-so400m-patch16-naflex --cache-dir ckpts/siglip2
    ```
 
-> **Path configuration**: All nodes in `visual_navigation` expect the `ckpts/` folder to be at `Path.home() / ckpts`.
+> **Path configuration**: Navigation nodes resolve `ckpts/` from the repository root. Set `WILDOS_REPO_ROOT` when running from a copied install tree.
 
 ### Verify Installation
 
@@ -214,11 +209,8 @@ Adaptor features shape: torch.Size([1, 1152, 22, 40])
 ### Launch WildOS (Full Pipeline)
 
 ```bash
-# Launch WildOS with open-vocabulary object search
-ros2 launch visual_navigation wildos_launch.py ns:=spot1 do_object_search:=true
-
-# Launch the graph planner
-ros2 launch graphnav_planner graphnav_planner.launch.yml ns:=spot1
+# Launch the current elevation pipeline with open-vocabulary object search
+./scripts/start_wildos_elevation.sh do_object_search:=true
 ```
 
 ### Launch Baselines
@@ -234,8 +226,11 @@ ros2 launch visual_navigation lrn_launch.py ns:=spot1 do_object_search:=false
 ### Standalone Tools
 
 ```bash
-# Standalone ExploRFM triangulation (for testing, with teleoperation)
-ros2 launch visual_navigation explorfm_triangulation_launch.py robot_namespace:=spot1
+# Launch only WildOS and the current target fusion adapter
+ros2 launch visual_navigation wildos_component.launch.py do_object_search:=true
+
+# Launch the optional path-to-goal adapter
+ros2 launch graphnav_planner path_follower.launch.py
 
 # Visualize ExploRFM outputs (debugging)
 ros2 run visual_navigation viz_net
@@ -261,8 +256,8 @@ The following packages must be running alongside WildOS:
 | [`nvidia_radio/`](nvidia_radio/) | Modified [RADIO](https://github.com/NVlabs/RADIO) backbone with NACLIP + SigLIP2 language alignment | [README](nvidia_radio/README.md) |
 | [`explorfm/`](explorfm/) | ExploRFM model — predicts traversability, visual frontiers, and object similarity | [README](explorfm/README.md) |
 | [`explorfm_trainer/`](explorfm_trainer/) | Lightning + Hydra training pipeline for ExploRFM heads | [README](explorfm_trainer/README.md) |
-| [`visual_navigation/`](visual_navigation/) | ROS 2 navigation: WildOS pipeline, baselines (LRN, ImgFrontierNav), scoring, triangulation | [README](visual_navigation/README.md) |
-| [`triangulation3d/`](triangulation3d/) | Particle-filter-based 3D object triangulation | [README](triangulation3d/README.md) |
+| [`visual_navigation/`](visual_navigation/) | ROS 2 navigation: WildOS, target fusion adapter, goal mux, and research baselines | [README](visual_navigation/README.md) |
+| [`triangulation3d/`](triangulation3d/) | Recursive target particle filter | [README](triangulation3d/README.md) |
 | [`graphnav_planner/`](graphnav_planner/) | C++ graph-based path planner | — |
 | [`graphnav_msgs/`](graphnav_msgs/) | ROS 2 message definitions for navigation graph | — |
 | [`object_search_msgs/`](object_search_msgs/) | ROS 2 message definitions for object search | — |

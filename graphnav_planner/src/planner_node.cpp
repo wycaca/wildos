@@ -27,8 +27,7 @@ public:
   {
     this->declare_parameter("frontier_dist_cost_factor", 2.0);
     this->declare_parameter("goal_dist_cost_factor", 1.0);
-    this->declare_parameter("frontier_score_factor", 10.0);
-    this->declare_parameter("append_virtual_goal_to_path", false);
+    this->declare_parameter("frontier_score_factor", 20.0);
     this->declare_parameter("frontier_continuity_radius", 5.0);
     this->declare_parameter("frontier_progress_timeout", 12.0);
     this->declare_parameter("revisit_cost_factor", 1.0);
@@ -44,13 +43,11 @@ public:
     planner_.frontier_dist_cost_factor_ = nonnegative_parameter("frontier_dist_cost_factor");
     planner_.goal_dist_cost_factor_ = nonnegative_parameter("goal_dist_cost_factor");
     planner_.frontier_score_factor_ = nonnegative_parameter("frontier_score_factor");
-    planner_.append_virtual_goal_to_path_ = this->get_parameter("append_virtual_goal_to_path").as_bool();
     planner_.frontier_continuity_radius_ = nonnegative_parameter("frontier_continuity_radius");
     planner_.frontier_progress_timeout_ = nonnegative_parameter("frontier_progress_timeout");
     planner_.revisit_cost_factor_ = nonnegative_parameter("revisit_cost_factor");
 
-    this->declare_parameter("trav_class", "default");
-    planner_.set_trav_class(this->get_parameter("trav_class").as_string());
+    planner_.set_trav_class("default");
 
     this->declare_parameter("goal_radius", 3.0);
     goal_radius_ = this->get_parameter("goal_radius").as_double();

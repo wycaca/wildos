@@ -79,16 +79,6 @@ def test_initial_coarse_goal_is_computed_once(mux_node):
     assert second_goal.pose.position.y == pytest.approx(first_goal.pose.position.y)
 
 
-def test_legacy_visual_target_topic_is_not_subscribed(mux_node):
-    """旧视觉目标只保留发布和显示, Mux 不允许订阅或控制导航"""
-    subscribed_topics = {
-        subscription.topic_name
-        for subscription in mux_node.subscriptions
-    }
-
-    assert "/spot1/object_search_target_pose" not in subscribed_topics
-
-
 def test_initial_goal_orientation_matches_configured_heading(mux_node):
     """粗目标姿态必须携带与目标位置一致的固定探索方向"""
     mux_node.initial_goal_heading_deg = 90.0

@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from math import hypot
 import math
-from time import perf_counter
-from typing import Dict, Tuple
+from typing import Tuple
 
 import numpy as np
 
@@ -40,32 +39,11 @@ class GraphBuilderConfig:
 
 
 @dataclass
-class GraphUpdateDiagnostics:
-    """单次图更新的纯算法诊断数据"""
-
-    stage_timings_ms: Dict[str, float] = field(default_factory=dict)
-    node_count: int = 0
-    edge_count: int = 0
-    frontier_node_count: int = 0
-    frontier_cell_count: int = 0
-    frontier_candidate_count: int = 0
-    connected_components: int = 0
-    current_component_size: int = 0
-    degree_min: int = 0
-    degree_max: int = 0
-    degree_avg: float = 0.0
-    current_node_id: int | None = None
-    current_node_status: str = "missing"
-
-
-@dataclass
 class GraphUpdateResult:
     """返回给 ROS 适配层的纯图更新结果"""
 
     graph: GraphState
     classified_grid: ClassifiedGrid
-    frontier_cell_count: int
-    diagnostics: GraphUpdateDiagnostics = field(default_factory=GraphUpdateDiagnostics)
 
 
 class SparseGraphBuilder:
@@ -148,20 +126,13 @@ class SparseGraphBuilder:
         robot_position: Tuple[float, float, float],
         stamp_seconds: float,
     ) -> GraphUpdateResult:
-        stage_timings_ms: Dict[str, float] = {}
-        total_start = perf_counter()
-
-        stage_start = perf_counter()
         self._sanitize_grid_surface(grid)
 
         robot_ground_position, robot_ground_projected = (
             grid.project_to_elevation_with_status(robot_position)
         )
         reachable_free = self._reachable_free_mask(grid, robot_ground_position)
-        stage_timings_ms["prepare_grid"] = _elapsed_ms(stage_start)
-
         # 距离场用于节点 clearance 和 frontier 生命周期判断
-        stage_start = perf_counter()
         sdf_obstacle = distance_to_mask(grid.obstacle, grid.resolution)
         # rolling GridMap 外部必须视为 unknown, 否则全 known 局部图会产生无限探索半径
         sdf_unknown = distance_to_mask(
@@ -169,15 +140,10 @@ class SparseGraphBuilder:
             grid.resolution,
             include_grid_exterior=True,
         )
-        stage_timings_ms["distance_fields"] = _elapsed_ms(stage_start)
-
         # 先刷新旧节点, 再采样和建边
-        stage_start = perf_counter()
         self._update_existing_nodes(grid, sdf_obstacle, sdf_unknown, stamp_seconds)
-        stage_timings_ms["update_nodes"] = _elapsed_ms(stage_start)
 
         # 在当前观测到的 free 区域补充稀疏节点
-        stage_start = perf_counter()
         self._sample_new_nodes(
             grid,
             sdf_obstacle,
@@ -185,30 +151,22 @@ class SparseGraphBuilder:
             stamp_seconds,
             reachable_free,
         )
-        stage_timings_ms["sample_nodes"] = _elapsed_ms(stage_start)
-
         # frontier cell 需要绑定到附近可用图节点
-        stage_start = perf_counter()
         frontier_cells = self.frontier_detector.detect_frontier_cells(grid)
-        frontier_assignment = self.frontier_detector.assign_frontiers(
+        self.frontier_detector.assign_frontiers(
             self.graph,
             grid,
             frontier_cells,
         )
-        stage_timings_ms["update_frontiers"] = _elapsed_ms(stage_start)
 
-        stage_start = perf_counter()
-        current_node_status = self._update_current_node(
+        self._update_current_node(
             grid,
             robot_position,
             robot_ground_position,
             robot_ground_projected,
             stamp_seconds,
         )
-        stage_timings_ms["current_node"] = _elapsed_ms(stage_start)
-
         # current node 确定后重建边, 便于优先保留机器人附近连接
-        stage_start = perf_counter()
         next_edges = self.edge_builder.build_edges(
             self.graph,
             grid,
@@ -240,21 +198,10 @@ class SparseGraphBuilder:
                 )
             )
         self.graph.set_edges(next_edges)
-        stage_timings_ms["build_edges"] = _elapsed_ms(stage_start)
-        stage_timings_ms["total"] = _elapsed_ms(total_start)
-        diagnostics = _build_graph_update_diagnostics(
-            self.graph,
-            stage_timings_ms,
-            frontier_cell_count=len(frontier_cells),
-            frontier_candidate_count=frontier_assignment.candidate_cell_count,
-            current_node_status=current_node_status,
-        )
 
         return GraphUpdateResult(
             graph=self.graph,
             classified_grid=grid,
-            frontier_cell_count=len(frontier_cells),
-            diagnostics=diagnostics,
         )
 
     def _update_existing_nodes(
@@ -367,22 +314,17 @@ class SparseGraphBuilder:
         robot_ground_position: Tuple[float, float, float],
         robot_ground_projected: bool,
         stamp_seconds: float,
-    ) -> str:
+    ) -> None:
         """把机器人当前位置映射到 NavigationGraph.current_node_idx"""
         best_node = self._nearest_collision_free_node(grid, robot_ground_position)
-        current_node_status = "reachable" if best_node is not None else "missing"
         if best_node is None:
             best_node = self._ensure_robot_anchor_node(
                 grid,
                 robot_ground_position,
                 stamp_seconds,
             )
-            if best_node is not None:
-                current_node_status = "robot_anchor"
         if best_node is None:
             best_node = self.graph.nearest_node(robot_ground_position)
-            if best_node is not None:
-                current_node_status = "geometry_fallback"
         self.graph.current_node_id = best_node.node_id if best_node is not None else None
         self.graph.update_robot_position(
             robot_position,
@@ -393,7 +335,6 @@ class SparseGraphBuilder:
                 robot_ground_position,
                 0.25,
             )
-        return current_node_status
 
     def _reachable_free_mask(
         self,
@@ -522,9 +463,6 @@ class SparseGraphBuilder:
                 return node
         return None
 
-GraphBuilder = SparseGraphBuilder
-
-
 def _adaptive_lattice_multiple(free_radius: float, base_spacing: float) -> int:
     """选择不超过局部自由半径的二次幂网格倍数"""
     safe_base_spacing = max(float(base_spacing), 1e-6)
@@ -557,83 +495,3 @@ def _world_lattice_bounds(
         int(math.ceil((min_y - offset) / spacing)),
         int(math.floor((max_y - offset) / spacing)),
     )
-
-
-def _elapsed_ms(start_time: float) -> float:
-    """计算阶段耗时, 单位毫秒"""
-    return (perf_counter() - start_time) * 1000.0
-
-
-def _build_graph_update_diagnostics(
-    graph: GraphState,
-    stage_timings_ms: Dict[str, float],
-    frontier_cell_count: int,
-    frontier_candidate_count: int,
-    current_node_status: str,
-) -> GraphUpdateDiagnostics:
-    """汇总图规模, 连通性和度数统计, 供 ROS 层打印日志"""
-    node_ids = set(graph.nodes.keys())
-    degrees = {node_id: 0 for node_id in node_ids}
-    adjacency = {node_id: set() for node_id in node_ids}
-
-    for edge in graph.edges.values():
-        if edge.from_id not in node_ids or edge.to_id not in node_ids:
-            continue
-        degrees[edge.from_id] += 1
-        degrees[edge.to_id] += 1
-        adjacency[edge.from_id].add(edge.to_id)
-        adjacency[edge.to_id].add(edge.from_id)
-
-    component_sizes, current_component_size = _component_sizes(adjacency, graph.current_node_id)
-    degree_values = list(degrees.values())
-    degree_min = min(degree_values) if degree_values else 0
-    degree_max = max(degree_values) if degree_values else 0
-    degree_avg = sum(degree_values) / len(degree_values) if degree_values else 0.0
-
-    return GraphUpdateDiagnostics(
-        stage_timings_ms=dict(stage_timings_ms),
-        node_count=len(graph.nodes),
-        edge_count=len(graph.edges),
-        frontier_node_count=sum(1 for node in graph.nodes.values() if node.is_frontier),
-        frontier_cell_count=frontier_cell_count,
-        frontier_candidate_count=frontier_candidate_count,
-        connected_components=len(component_sizes),
-        current_component_size=current_component_size,
-        degree_min=degree_min,
-        degree_max=degree_max,
-        degree_avg=degree_avg,
-        current_node_id=graph.current_node_id,
-        current_node_status=current_node_status,
-    )
-
-
-def _component_sizes(
-    adjacency: Dict[int, set[int]],
-    current_node_id: int | None,
-) -> tuple[list[int], int]:
-    """计算无向图连通分量数量和 current node 所在分量大小"""
-    visited = set()
-    sizes = []
-    current_component_size = 0
-
-    for node_id in adjacency:
-        if node_id in visited:
-            continue
-        stack = [node_id]
-        visited.add(node_id)
-        component = []
-        while stack:
-            current = stack.pop()
-            component.append(current)
-            for neighbor in adjacency[current]:
-                if neighbor in visited:
-                    continue
-                visited.add(neighbor)
-                stack.append(neighbor)
-
-        component_size = len(component)
-        sizes.append(component_size)
-        if current_node_id in component:
-            current_component_size = component_size
-
-    return sizes, current_component_size

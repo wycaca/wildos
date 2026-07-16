@@ -8,8 +8,9 @@ import torch
 from explorfm.explorfm_model import ExploRFMInference
 
 
-INPUT_DIR = Path("/home/ks-server3/han/wildos_ws/src/nebula2-wildos/test/imgs/road_test")
-OUT_DIR = Path("test/outputs/road_test_seg")
+REPO_ROOT = Path(__file__).resolve().parent
+INPUT_DIR = REPO_ROOT / "test/imgs/road_test"
+OUT_DIR = REPO_ROOT / "test/outputs/road_test_seg"
 
 TRAVERSABILITY_THRESHOLD = 0.5
 FRONTIER_THRESHOLD = 0.5

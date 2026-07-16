@@ -9,15 +9,11 @@ import numpy as np
 
 try:
     from grid_map_msgs.msg import GridMap
-    from nav_msgs.msg import OccupancyGrid
     from std_msgs.msg import Float32MultiArray
 except ImportError:
     sys.modules.setdefault("grid_map_msgs", types.ModuleType("grid_map_msgs"))
     sys.modules.setdefault("grid_map_msgs.msg", types.ModuleType("grid_map_msgs.msg"))
     sys.modules["grid_map_msgs.msg"].GridMap = object
-    sys.modules.setdefault("nav_msgs", types.ModuleType("nav_msgs"))
-    sys.modules.setdefault("nav_msgs.msg", types.ModuleType("nav_msgs.msg"))
-    sys.modules["nav_msgs.msg"].OccupancyGrid = object
     sys.modules.setdefault("std_msgs", types.ModuleType("std_msgs"))
     sys.modules.setdefault("std_msgs.msg", types.ModuleType("std_msgs.msg"))
     sys.modules["std_msgs.msg"].Float32MultiArray = object
@@ -63,15 +59,11 @@ def test_grid_map_coordinate_round_trip_without_yaw():
         normalize_low_quantile=0.05,
         normalize_high_quantile=0.95,
         z_offset=0.0,
-        enable_postprocess=False,
         min_free_component_cells=1,
         fill_hole_max_cells=0,
         fill_hole_min_free_neighbor_ratio=0.0,
         majority_fill_iterations=0,
         majority_fill_min_neighbors=1,
-        transpose=False,
-        flip_x=False,
-        flip_y=False,
     )
 
     assert grid.grid_to_world(0, 0)[:2] == (11.5, 21.0)
@@ -92,15 +84,11 @@ def test_grid_map_coordinate_round_trip_with_yaw():
         normalize_low_quantile=0.05,
         normalize_high_quantile=0.95,
         z_offset=0.0,
-        enable_postprocess=False,
         min_free_component_cells=1,
         fill_hole_max_cells=0,
         fill_hole_min_free_neighbor_ratio=0.0,
         majority_fill_iterations=0,
         majority_fill_min_neighbors=1,
-        transpose=False,
-        flip_x=False,
-        flip_y=False,
     )
 
     x, y, _ = grid.grid_to_world(0, 0)
@@ -125,16 +113,11 @@ def test_grid_map_postprocess_fills_elevation_for_small_free_hole():
         normalize_low_quantile=0.05,
         normalize_high_quantile=0.95,
         z_offset=0.08,
-        enable_postprocess=True,
         min_free_component_cells=1,
         fill_hole_max_cells=4,
         fill_hole_min_free_neighbor_ratio=0.5,
         majority_fill_iterations=0,
         majority_fill_min_neighbors=1,
-        transpose=False,
-        flip_x=False,
-        flip_y=False,
-        fill_elevation_holes=True,
         fill_elevation_radius_cells=1,
     )
 

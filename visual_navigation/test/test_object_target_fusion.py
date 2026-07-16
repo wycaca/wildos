@@ -6,7 +6,7 @@ from visualization_msgs.msg import Marker
 
 from object_search_msgs.msg import ObjectMaskWithTf
 from triangulation3d.target_particle_filter import TargetEstimate
-from visual_navigation.explorfm_triangulation.obj_mask_triangulation import (
+from visual_navigation.object_target_fusion import (
     _mask_array,
     _target_surface_measurement,
     _target_marker,

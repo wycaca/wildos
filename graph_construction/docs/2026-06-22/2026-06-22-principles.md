@@ -1,404 +1,207 @@
-# Graph Construction 原理和当前代码对应
+# WildOS 当前实现原理
 
-日期: 2026-06-22
+> 文档日期保留为原始设计日期，内容已按 2026-07-16 当前代码校正
 
-修订: 2026-07-13
+## 1. 几何地图原则
 
-目标: 用当前代码逻辑解释 WildOS Graph Construction 的算法原则, 图论对象, 关键字段和模块边界
+当前唯一几何输入是 elevation mapping 发布的 `GridMap`
 
-## 核心原则
+`grid_adapter.py` 负责:
 
-Graph Construction 的任务是把机器人局部看到的几何地图转换成能长期记忆, 能扩展, 能规划的稀疏导航图
+1. 根据 GridMap layout 和 circular buffer 起点恢复二维 layer
+2. 读取 traversability、elevation、variance 和辅助 layer
+3. 将 layer 统一分类为 free、obstacle 和 unknown
+4. 对固定的小孔洞做后处理
+5. 生成带 origin、resolution、frame 和高度查询能力的 `ClassifiedGrid`
 
-当前默认输入是 elevation/2.5D GridMap:
+不再支持:
+
+- `OccupancyGrid` 输入
+- free 和 obstacle 的 2D 数值阈值
+- transpose 或 flip 兼容开关
+- 关闭当前必要后处理的兼容分支
+
+## 2. 稀疏图构建
+
+`SparseGraphBuilder.update` 的核心过程:
 
 ```text
-elevation GridMap
-  -> ClassifiedGrid
-  -> free nodes
-  -> frontier nodes
-  -> safe edges
-  -> NavigationGraph
+ClassifiedGrid
+  -> distance fields
+  -> current node sampling
+  -> historical node validation
+  -> edge building and validation
+  -> frontier detection and assignment
+  -> robot anchor update
+  -> GraphUpdateResult
 ```
 
-2D OccupancyGrid 是 fallback:
+`GraphUpdateResult` 只返回当前 graph 和 classified grid，不携带 stage timing 或统计诊断对象
+
+### 2.1 节点
+
+节点使用世界坐标对齐的自适应 lattice 采样:
+
+- unknown 附近保持更密集
+- 已充分探索区域减少重复节点
+- `min_node_separation` 防止滚动窗口产生近距离副本
+- 历史节点通过稳定 ID 保留
+
+机器人当前位置使用独立 anchor node 表达，不与持久 graph 节点身份混合
+
+### 2.2 边
+
+边必须满足:
+
+- 两端节点距离在连接半径内
+- 线段在当前可见地图中 collision free
+- corridor clearance 满足 obstacle 和 unknown 约束
+- 历史边在局部窗口变 unknown 时不会被误删
+- 当前可见障碍明确阻断时会失效
+
+### 2.3 Frontier
+
+frontier 是 free cell 与 unknown 邻域的边界，不是每个 cell 都创建 graph node
+
+处理过程:
+
+1. 扫描有效 free cell
+2. 过滤 rolling grid 外边缘
+3. 按米制 spacing 选代表 cell
+4. 将候选分配给附近 collision-free graph owner
+5. 按点数、跨度和历史 owner 规则过滤噪声
+
+历史窗口外分支由 planner 的 deferred branch 逻辑处理，不继续伪装成活动 frontier
+
+## 3. 视觉评分
+
+WildOS 对三路相机做 ExploRFM 推理，获得:
+
+- frontier confidence
+- traversability confidence
+- spatial feature
+- query similarity mask
+
+几何 frontier 投影到各相机后，视觉评分写入 `NavigationGraph` 的 frontier score 字段
+
+当前 `frontier_scores` 的维护位置是:
 
 ```text
-PointCloud2 or aligned PointCloud2
-  -> livox_grid_builder
-  -> OccupancyGrid
-  -> ClassifiedGrid
-  -> NavigationGraph
-```
-
-这张 graph 后续会被 WildOS 视觉模块加上 frontier scores, 再交给 `graphnav_planner` 做高层路径搜索
-
-## 图论对象
-
-论文中的导航图:
-
-```text
-G_nav_t = (V_t, E_t)
-```
-
-当前代码中的对应关系:
-
-- `G_nav_t`, `GraphState`
-- `V_t`, `InternalNode`
-- `E_t`, `InternalEdge`
-- `F_geo_t`, `is_frontier=true` 的 node 集合
-- `current_node_idx`, 机器人当前所在 graph node 或 robot anchor node
-
-可以把它理解为:
-
-```text
-node = 机器人可以站的位置
-edge = 两个 node 之间的安全连接
-edge cost = graph planner 使用的代价
-frontier node = 附近存在 free / unknown 边界的 node
-frontier point = frontier node 关联的未知边界采样点
-```
-
-## 代码入口
-
-当前 ROS 入口在:
-
-```text
-graph_construction/graph_construction/node.py
-```
-
-`node.py` 只负责 ROS 适配:
-
-- 声明和读取参数
-- 订阅 GridMap 或 OccupancyGrid
-- 查询 odom / TF
-- 调用 `SparseGraphBuilder`
-- 发布 `NavigationGraph`
-- 发布可视化 `MarkerArray`
-- 输出诊断日志
-
-纯算法入口在:
-
-```text
-graph_construction/graph_construction/graph_builder.py
-```
-
-`SparseGraphBuilder` 接收:
-
-- `ClassifiedGrid`
-- robot position
-- stamp seconds
-
-它不直接依赖 ROS message
-
-## Grid 分类原则
-
-所有地图输入先转成 `ClassifiedGrid`
-
-对应文件:
-
-```text
-grid_adapter.py
-grid_types.py
-```
-
-当前支持:
-
-- `OccupancyGrid`, 2D fallback
-- `grid_map_msgs/GridMap`, elevation 主线
-
-分类结果至少需要表达:
-
-- free, 可通行区域
-- obstacle, 明确障碍
-- unknown, 未观测区域
-- elevation, elevation path 中 node 和 path 的 z 来源
-- distance fields, edge clearance 和 free radius 的几何依据
-
-elevation path 的当前处理:
-
-- 直接消费 `/elevation_mapping_node/elevation_map_raw`
-- 用 traversability layer 和 elevation layer 分类
-- 对被 free 包围的小洞做 free 后处理
-- 只为已判定 free 的小型 NaN elevation cell 补 elevation
-- 不修改原始 GridMap topic
-
-## Node 更新原则
-
-node 是稀疏 graph 的长期记忆单位
-
-对应文件:
-
-```text
-graph_memory.py
-graph_builder.py
-```
-
-每个 node 需要维护:
-
-- stable UUID
-- pose
-- free radius
-- explored radius
-- frontier points
-- frontier 标记
-- robot anchor 标记
-
-当前原则:
-
-- 新 node 从当前 free cells 中采样
-- 候选点固定在世界坐标对齐的嵌套网格上, rolling GridMap 移动不改变排列相位
-- `sample_stride` 定义最细网格间距, free radius 越大则选择越粗的二次幂网格层级
-- 障碍物和 unknown 附近使用细网格, 开阔区域使用粗网格
-- `min_node_separation` 防止重复补点, 同时用于 robot anchor breadcrumb 固化阈值
-- 已有 node 跨帧保留, 避免 UUID 抖动
-- 明确落入障碍或不可用区域的 node 会被移除或失效
-- 当前局部地图外的历史 node 可作为 graph memory 保留
-- `prune_disconnected_nodes` 默认关闭, 避免 current node 短时误判时清空大部分 graph
-
-## Robot Anchor 原则
-
-脚下点云缺失时, robot pose 对应 cell 可能是 unknown
-
-如果强行要求机器人当前位置到 graph node 的整条线都 known free, planner 可能找不到可用起点
-
-当前做法:
-
-- `ensure_robot_anchor_node=true`
-- current node 找不到 collision-free graph node 时创建 robot anchor
-- robot anchor 不参与 frontier assignment
-- robot anchor 只连接近邻 graph node
-- unknown 不会直接否决 anchor 边
-- 当前可见 obstacle 会否决 anchor 边
-
-这不是把脚下 unknown 改成 free, 而是给 planner 一个临时 graph 起点
-
-## Frontier 检测原则
-
-frontier 的基本定义:
-
-```text
-frontier cell = free cell next to unknown cell
-```
-
-对应文件:
-
-```text
-frontier_detector.py
-```
-
-当前逻辑:
-
-- 在 `ClassifiedGrid` 中检测 free / unknown 边界
-- 忽略局部地图边缘噪声
-- 以 `frontier_candidate_spacing` 降采样候选点
-- 将 frontier points 分配给可安全到达的 owner node
-- 用 `frontier_min_points` 和 `frontier_min_span` 过滤孤立噪声
-- 更新 node 的 `is_frontier` 和 `frontier_points`
-
-frontier point 不直接作为 graph node, 它是 frontier node 的几何属性
-
-这样可以把密集未知边界压缩成少量可评分, 可规划的 graph frontier
-
-## Edge 构建原则
-
-edge 表示两个 node 之间可以安全通行
-
-对应文件:
-
-```text
-edge_builder.py
-grid_types.py
-```
-
-当前 edge 规则:
-
-- 只在 `edge_radius` 内搜索候选
-- 每个 node 只保留最近的 `max_edge_neighbors`
-- 当前 node 可以使用更大的 `current_node_max_edge_neighbors`
-- edge line 不能穿过 obstacle
-- edge line 不能穿过 unknown
-- edge line 需要满足 `min_obstacle_clearance`
-- edge cost 默认以几何距离为主
-
-这避免局部 free space 内出现近似全连接, 也避免 RViz 中路线或 graph edge 贴墙, 切角或穿障碍
-
-## Historical Edge 原则
-
-局部地图是滑窗, 机器人转向或移动后, 已走过区域可能暂时变成 unknown 或离开当前地图
-
-如果每帧只按当前局部地图重建 edge, graph topology 会剧烈抖动
-
-当前做法:
-
-- `validate_historical_edges=true`
-- 新 edge 仍要求整条线段 known free 且 clearance 足够
-- 历史 edge 只用当前可见段做证伪
-- 当前不可见或 unknown 的历史段不会直接删除旧边
-- 当前可见段出现 obstacle 或 clearance 不足时删除旧边
-
-这样保持空间记忆, 同时不会忽略新出现的障碍
-
-## 从 G_nav 到 G_score
-
-`graph_construction` 输出的是几何 graph:
-
-```text
-G_nav_t = (V_t, E_t)
-```
-
-WildOS 视觉模块会把它变成 scored graph:
-
-```text
-G_score_t = (V_t, E_t, S_t, D_t)
-```
-
-对应字段:
-
-```text
-key = frontier_scores
-value = [score_bin_0, score_bin_1, ..., score_bin_15]
-
-key = is_default_scored
-value = [0.0] 或 [1.0]
-```
-
-`frontier_scores` 属于 `visual_navigation/wildos/nav.py`, 不属于 `graph_construction`
-
-因此 graph construction 的关键是提供稳定 frontier geometry, 不生成语义分数
-
-## Object Search 原则
-
-当前目标搜索不再只是“初始方向 goal”
-
-对应文件:
-
-```text
-visual_navigation/visual_navigation/object_search_goal_mux.py
-visual_navigation/visual_navigation/stable_frontier_selector.py
 visual_navigation/visual_navigation/wildos/nav.py
 ```
 
-当前策略:
+它不属于 `graph_construction`
 
-- 无目标时从 scored graph 选择稳定 frontier
-- 默认优先 odom 前方 frontier
-- 前方没有候选时回退到任意 frontier
-- graph frontier UUID 抖动时按位置继承近邻 frontier
-- 目标出现时优先发布目标方向上的安全 graph frontier
-- 目标短时遮挡时可用 target latch 继续保持目标方向
-- 目标到达或视觉近距离确认后进入 reached latch
-- reached latch 持续发布当前位置 hold goal
+## 4. 目标检测和到达证据
 
-这让目标搜索在“无目标探索, 目标记忆, 目标到达停止”之间稳定切换
+目标检测必须先通过:
 
-## Planner 原则
+- peak score 阈值
+- connected component 像素数和面积占比
+- 连续帧确认
 
-`graphnav_planner` 在 scored graph 上求路径
+确认后的 mask 才会发布为 `ObjectMaskWithTf`
 
-对应文件:
+近距离完成证据使用独立的 mask fraction、pixel count 和连续帧规则，并发布到 `object_reached_topic`
 
-```text
-graphnav_planner/src/planner.cpp
-graphnav_planner/src/planner_node.cpp
-graphnav_planner/src/path_follower_node.cpp
-```
+视觉评分、目标位置融合和最终完成是三个不同职责，不能合并成一个布尔 latch
 
-当前原则:
+## 5. 目标位置融合
 
-- 输入 `graphnav_msgs/NavigationGraph`
-- 输入 profile 配置的 goal pose topic
-- 使用 `traversability_cost` 作为 graph edge 权重
-- virtual goal 只参与搜索
-- 默认不把 virtual goal 加入可执行 path
-- 默认不把 unknown frontier point 加入可执行 path
-- 探索分支保存完整有序路径, 候选必须经过已提交尾部并继续向前延伸
-- Graph 更新只验证或延伸当前提交路线, 不能因公共路径前缀或瞬时 Frontier 分数切换分支
-- 路径进度使用单调弧长, 横移和回退不重置死路计时
-- 只有提交路线变化、真实目标路线拓扑变化或路线失效时发布新 Path
-- 到达 goal 半径内时发布当前位置单点 path
-- `path_follower_node` 输出 `/spot1/tracking_goal_pose`
-
-这保证 planner 选择目标时能利用 frontier score, 但最终 path 仍优先由安全 graph node 组成
-
-## 当前完整算法流程
-
-当前实现可以概括为:
+当前融合入口:
 
 ```text
-function GraphConstructionStep(input_map, robot_pose, previous_graph):
-    classified_grid = DecodeAndClassify(input_map)
-
-    graph = previous_graph
-    graph = RemoveInvalidVisibleNodes(graph, classified_grid)
-
-    new_nodes = SampleFreeNodes(classified_grid, graph)
-    graph = MergeStableNodes(graph, new_nodes)
-
-    frontier_cells = DetectFreeUnknownBoundary(classified_grid)
-    graph = AssignFrontierPoints(graph, frontier_cells, classified_grid)
-
-    current_node = FindCollisionFreeCurrentNode(graph, robot_pose, classified_grid)
-    if current_node is missing and ensure_robot_anchor_node:
-        current_node = CreateOrUpdateRobotAnchor(graph, robot_pose)
-
-    new_edges = BuildVisibleSafeEdges(graph, classified_grid)
-    graph.edges = MergeHistoricalEdges(graph.edges, new_edges, classified_grid)
-
-    graph.current_node_idx = current_node.index
-    return graph
+visual_navigation/visual_navigation/object_target_fusion.py
 ```
 
-这个流程的核心不是单次 frontier detection, 而是跨帧稳定 graph memory
-
-## 当前难点
-
-工程难点集中在:
-
-- UUID 稳定性, 同一个物理区域不应每帧生成新 node
-- frontier 生命周期, 已探索或消失的 frontier 要及时移除
-- historical edge validation, 不能把当前看不到误判成不能走
-- current node 匹配, 脚下 unknown 时要通过 robot anchor 接回 graph
-- GridMap rolling buffer, row / column 和 frame 映射必须正确
-- edge clearance, 避免路线贴墙, 切角或穿障碍
-- frontier 密度, 节点太密会拖慢更新和规划, 节点太稀会断图
-- object search 稳定性, 无目标时要避免 goal 每帧跳变或回头
-
-## 当前配置落点
+纯算法:
 
 ```text
-graph_construction/configs/graph_construction_elevation.yaml
-  elevation 主线 graph 参数
-
-graph_construction/configs/graph_construction.yaml
-  2D fallback graph 参数
-
-graph_construction/configs/topic_profiles.yaml
-  profile 级 topic, frame, path, goal 和 object search 参数
-
-visual_navigation/configs/object_search_goal_mux.yaml
-  object search goal mux 默认参数
-
-graphnav_planner/launch/graphnav_planner.launch.yml
-  planner 和 path follower 参数
+triangulation3d/triangulation3d/target_particle_filter.py
 ```
 
-## 当前启动落点
+融合过程:
 
-推荐入口:
+1. 第一张确认 mask 沿相机射线初始化固定数量粒子
+2. 后续不同视角根据 mask 投影一致性递归更新权重
+3. 重复视角和与稳定目标冲突的观测被拒绝
+4. 两个有效视角后可以形成视觉跟踪目标
+5. 视角数、有效粒子和方差满足条件后形成稳定视觉目标
+6. LiDAR 投影支持足够时可形成可选细化锁定
 
-```bash
-./scripts/start_wildos_elevation.sh
+LiDAR 不是多视角视觉融合成立的前提
+
+## 6. Goal Mux 状态所有权
+
+`ObjectSearchGoalMux` 是 goal 和完成状态的唯一 owner
+
+优先级:
+
+```text
+completion latch
+  > stable target estimate
+  > initial heading exploration goal
 ```
 
-Unity 目标搜索:
+关键约束:
 
-```bash
-WILDOS_TOPIC_PROFILE=unity ./scripts/start_wildos_elevation.sh do_object_search:=true
+- 初始探索目标只基于首帧 odom 和配置 heading 计算一次
+- 单视角 pending 估计不能替换初始目标
+- 稳定融合目标可以更新导航目标
+- 小于 `target_update_min_distance` 的抖动不会移动目标
+- `object_reached` 只有在稳定目标距离满足约束时才能触发完成
+- 完成后持续发布当前位置停止目标和 completed 状态
+
+## 7. Graph Planner
+
+`graphnav_planner` 消费:
+
+- scored navigation graph
+- odom
+- high-level goal pose
+- object search status
+
+planner 内部固定使用当前 traversability class，virtual goal 只参与搜索，不追加到可执行 path
+
+算法参数统一位于:
+
+```text
+graphnav_planner/config/planner.yaml
 ```
 
-2D fallback:
+`path_follower_node` 保留为可选的 path-to-goal 适配器，通过独立 launch 启动，不属于默认集成链路
 
-```bash
-ros2 launch graph_construction wildos_2d_sim.launch.py topic_profile:=unity
-```
+## 8. 平台适配
+
+平台差异通过 topic profile 注入，不复制主 launch
+
+profile 负责:
+
+- domain 和 RMW
+- point cloud axis mode 和 frame
+- odom 输入、输出和 pose source
+- 相机 topic 和静态 TF 约定
+- graph、目标搜索和 planner topic
+
+核心算法不得读取固定机器绝对路径
+
+模型和仓库资源由 `repository_root()` 解析，可通过 `WILDOS_REPO_ROOT` 显式覆盖
+
+## 9. 研究基线原则
+
+研究仓库保留 LRN、ImgFrontier 和 GeoFrontier 等 baseline
+
+基线和当前主线共享消息与工具时，公共契约修改必须同步所有调用方
+
+基线可以有独立 launch 和算法配置，但不能复制或接管默认 elevation 集成入口
+
+## 10. 验证原则
+
+每次结构清理至少验证:
+
+- Python 和 launch 静态编译
+- YAML 可解析
+- graph、frontier、目标融合和 Goal Mux 单元测试
+- `object_search_msgs` 到 `visual_navigation` 的消息构建
+- `graphnav_planner` C++ 干净构建
+- 旧 entrypoint、旧参数和旧 topic 的静态残留扫描

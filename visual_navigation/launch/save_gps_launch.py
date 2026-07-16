@@ -1,8 +1,7 @@
 from launch import LaunchDescription
 from launch_ros.actions import Node
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, TextSubstitution
+from launch.substitutions import LaunchConfiguration
 from launch.actions import DeclareLaunchArgument
-from launch.conditions import IfCondition
 
 def generate_launch_description():
     use_sim_time = LaunchConfiguration('use_sim_time')
@@ -16,9 +15,14 @@ def generate_launch_description():
             description='Use simulation clock if true'
         ),
         DeclareLaunchArgument(
-            'save_path',
+            'gps_save_path',
             default_value='gps_path.json',
             description='Path to save GPS coordinates'
+        ),
+        DeclareLaunchArgument(
+            'metrics_path',
+            default_value='metrics.json',
+            description='Path to save navigation metrics'
         ),
 
         Node(

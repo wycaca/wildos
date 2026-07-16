@@ -29,8 +29,10 @@ from .radio.siglip2_adaptor import SigLIP2Adaptor
 from .radio.open_clip_adaptor import OpenCLIP_RADIO
 
 from pathlib import Path
-# home_dir = Path.home()
-home_dir = Path("/home/ks-server3/han/wildos_ws/src/nebula2-wildos/")
+
+home_dir = Path(
+    os.environ.get("WILDOS_REPO_ROOT", Path(__file__).resolve().parents[1])
+)
 
 def radio_model(
     version: str = "",

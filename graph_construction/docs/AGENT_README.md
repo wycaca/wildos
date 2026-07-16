@@ -1,66 +1,63 @@
 # Agent README
 
-目的: 帮助开发人员和 agent 快速理解 WildOS 当前项目目标, 运行架构, 模块职责和文件夹结构
+本文帮助开发人员和 agent 快速确认 WildOS 的当前目标、有效主链路、参数边界和研究基线
 
-## 项目目标
+本轮清理的逐文件执行结果见 `docs/2026-07-15/2026-07-15-current-code-cleanup-audit.md`
 
-本仓库当前目标是把 WildOS 的开词汇目标搜索系统接入 Isaac, Unity 和真实机器人候选环境
+## 项目定位
 
-系统核心能力:
+本仓库按研究仓库维护，包含当前 WildOS 主线、可复现实验基线和少量独立调试工具
 
-- 从局部几何地图生成稀疏 `NavigationGraph`
-- 用 graph memory 保留历史节点、edge、探索覆盖和机器人当前位置
-- 用三相机视觉模型给 graph frontier 做语义评分
-- 在没有目标检测时使用首帧 odom heading 和活动分支锁定持续向前探索
-- 在看到目标后选择安全的目标导航点, 并通过 graph planner 输出路径
-- 在目标到达或视觉近距离确认后锁存停止状态, 避免继续规划旧路径
+当前主线能力:
 
-系统不负责:
+- 从 elevation/2.5D GridMap 构建带高度的稀疏 `NavigationGraph`
+- 持久化 graph 节点、边、探索覆盖、frontier 和机器人锚点
+- 使用三相机 ExploRFM 结果给 graph frontier 评分
+- 使用多视角粒子滤波融合目标位置，可选使用 LiDAR 近距离细化
+- 由 `ObjectSearchGoalMux` 统一选择探索目标、融合目标和停止目标
+- 由 `graphnav_planner` 输出可执行路径
 
-- 训练 ExploRFM 或 RADIO backbone
-- 直接发布底盘 `cmd_vel`
-- 替代局部控制器或 Nav2
-- 把语义目标点当成精确物体坐标
+当前主线不包含:
 
-## 当前主链路
+- 自研 2D `OccupancyGrid` 建图 fallback
+- 旧视觉射线粗定位和 `/spot1/object_search_target_pose`
+- 旧 batch triangulation 演示实现
+- 底盘 `cmd_vel` 控制
 
-默认主线是 elevation/2.5D GridMap 后端, 这和论文及社区参考实现一致:
+## 唯一集成主链路
 
 ```text
 PointCloud2
   -> pointcloud_axis_adapter
   -> elevation_mapping_cupy
-  -> /elevation_mapping_node/elevation_map_raw
-  -> graph_construction, GridMap path
+  -> GridMap
+  -> graph_construction
   -> /spot1/nav_graph
-  -> visual_navigation WildOS scoring
-     -> /spot1/scored_nav_graph -> graphnav_planner
-     -> /spot1/object_mask -> object_target_fusion -> /spot1/object_target_estimate -> object_search_goal_mux
-     -> /spot1/object_search_target_pose -> red marker debug only
-  -> path output
+  -> WildOS visual scoring
+     -> /spot1/scored_nav_graph -> graphnav_planner -> path
+     -> /spot1/object_mask -> object_target_fusion
+        -> /spot1/object_target_estimate -> object_search_goal_mux
+  -> goal_pose
 ```
 
-2D OccupancyGrid 只是 fallback, 用于隔离 `livox_grid_builder`, 对照 `/combined_grid`, 或在 elevation 后端不可用时调试:
+职责边界:
 
-```text
-PointCloud2 or aligned PointCloud2
-  -> livox_grid_builder
-  -> /spot1/traversability_grid
-  -> graph_construction, OccupancyGrid path
-  -> /spot1/nav_graph
-```
+- `graph_construction` 只消费 GridMap，不再支持 `OccupancyGrid`
+- `wildos` 负责视觉评分、目标 mask 和到达证据，不发布独立粗目标 pose
+- `object_target_fusion` 是唯一目标位置融合 ROS 节点
+- `TargetParticleFilter` 是唯一保留的纯目标融合算法
+- `ObjectSearchGoalMux` 是最终完成状态的唯一 owner
+- `path_follower_node` 保留为可选实验组件，不在默认集成 launch 中启动
 
-视觉链路只影响 semantic scoring 和 object search goal selection, 不直接修改 elevation GridMap 或 2D fallback grid
+## 启动入口
 
-## 当前启动入口
-
-当前仓库里的唯一脚本入口是:
+默认入口:
 
 ```bash
 ./scripts/start_wildos_elevation.sh
 ```
 
-常用启动方式:
+常用方式:
 
 ```bash
 ./scripts/start_wildos_elevation.sh
@@ -68,36 +65,25 @@ WILDOS_TOPIC_PROFILE=unity ./scripts/start_wildos_elevation.sh do_object_search:
 WILDOS_TOPIC_PROFILE=robot ./scripts/start_wildos_elevation.sh do_object_search:=true
 ```
 
-脚本会处理:
+脚本最终启动:
 
-- source `/opt/ros/humble/setup.bash`, 可用 `ROS_SETUP` 覆盖
-- source workspace `install/setup.bash`, 可用 `INSTALL_SETUP` 覆盖
-- 自动激活 `.venv` 或 `wildos_venv`, 可用 `VENV_ACTIVATE` 覆盖
-- 设置 `PYTHONNOUSERSITE=1`
-- 将仓库根目录加入 `PYTHONPATH`
-- 检查 `elevation_mapping_cupy`
-- 启用目标搜索时检查 `TargetEstimate` 和两个目标搜索节点是否已安装
-- 修正部分已安装 Python entrypoint 的 shebang
-- 调用 `graph_construction/launch/elevation_visual_navigation_sim.launch.py`
-
-修改目标融合消息或节点后需要重新构建完整链路:
-
-```bash
-cd /mnt/hhd/han/wildos_ws
-colcon build --packages-select object_search_msgs triangulation3d visual_navigation graph_construction --symlink-install
+```text
+graph_construction/launch/elevation_visual_navigation_sim.launch.py
 ```
 
-2D fallback 仍保留 launch 文件, 但当前没有对应启动脚本:
+单组件调试入口:
 
 ```bash
-ros2 launch graph_construction wildos_2d_sim.launch.py topic_profile:=unity
+ros2 launch visual_navigation wildos_component.launch.py do_object_search:=true
+ros2 launch graphnav_planner graphnav_planner.launch.py
+ros2 launch graphnav_planner path_follower.launch.py
 ```
 
-不要引用旧的 `scripts/start_wildos_2d.sh` 或 `scripts/start_wildos_3d.sh`, 当前 source tree 中不存在这两个脚本
+`path_follower.launch.py` 只能在明确需要 `path -> goal_pose` 适配时单独启动，默认集成链路不使用它
 
 ## Topic Profile
 
-平台差异集中在:
+平台差异统一维护在:
 
 ```text
 graph_construction/configs/topic_profiles.yaml
@@ -105,313 +91,135 @@ graph_construction/configs/topic_profiles.yaml
 
 内置 profile:
 
-- `isaac`, Isaac Sim 5.1 Go2, 默认 `ROS_DOMAIN_ID=3`, raw LiDAR `/unitree_go2/lidar/points`, planner path `/spot1/graphnav_planner/path`, goal `/goal_pose`
-- `unity`, Unity 仿真, 默认 `ROS_DOMAIN_ID=89`, RMW `rmw_zenoh_cpp`, elevation 输入 `/livox/lidar`, 2D fallback 输入 `/mapokk`, planner path `/spot1/graphnav_planner/path`, goal `/spot1/graphnav_goal_pose`
-- `robot`, 真实机器人占位 profile, 需要按现场 topic 和 TF 更新
+- `isaac`, Isaac Sim 5.1 Go2，默认 domain 3
+- `unity`, Unity 仿真，默认 domain 89
+- `robot`, 真实机器人占位配置
 
-Unity 的重要约束:
+profile 只保存平台相关内容:
 
-- elevation 主线使用 raw `/livox/lidar`
-- 2D fallback 使用已经对齐到 `odom_3D` 的 `/mapokk`
-- Unity 2D fallback 必须保持 `lidar_assume_input_in_grid_frame=true`
-- 不要把 raw `/livox/lidar` 直接替换成 2D fallback 输入, 否则会重新引入地图随机器人朝向旋转的问题
-- Unity 高层 goal topic 使用 `/spot1/graphnav_goal_pose`, 避免触发外部 `nav_slam/astar` 的公共 `/goal_pose`
-- Unity 自研导航直接消费 `/spot1/graphnav_planner/path` 并发布 `/corrected_path`
-- 集成 launch 不启动 `path_follower_node`, 避免重复消费自研导航输出
+- ROS domain 和 RMW
+- namespace、frame 和 TF 约定
+- 点云、odom、相机、graph、目标搜索和 planner topic
+- 平台相关的 object search 策略覆盖
 
-## Graph Construction 架构
+不要向 profile 重新加入 2D grid、旧粗目标 pose 或 planner 内部算法参数
 
-`graph_construction` 的职责是把局部几何地图变成稳定稀疏 graph:
+## 参数单一来源
+
+| 范围 | 单一来源 |
+|---|---|
+| 平台 topic、frame、通信环境 | `graph_construction/configs/topic_profiles.yaml` |
+| GridMap 解码和 graph ROS 适配 | `graph_construction/configs/graph_construction_elevation.yaml` |
+| 稀疏图算法默认值 | `GraphBuilderConfig` |
+| WildOS 视觉算法 | `visual_navigation/configs/wildos_nav_*.yaml` |
+| Goal Mux 策略 | `visual_navigation/configs/object_search_goal_mux.yaml` |
+| Planner 算法 | `graphnav_planner/config/planner.yaml` |
+
+已固化、不再暴露的旧参数:
+
+- `grid_input_type`
+- `free_threshold` 和 `obstacle_threshold`
+- GridMap transpose 和 flip 开关
+- `initial_goal_mode`
+- `object_reached_require_target_distance`
+- `append_virtual_goal_to_path`
+- `trav_class`
+
+## Graph Construction 结构
 
 ```text
-node.py
-  ROS 配置, topic, QoS, timer, 发布和首帧状态日志
-
-grid_adapter.py
-  OccupancyGrid / GridMap 解码为 ClassifiedGrid
-
-grid_types.py
-  ClassifiedGrid, 坐标转换, elevation 查询, collision line, distance field
-
-graph_builder.py
-  SparseGraphBuilder, 纯算法入口, 不直接依赖 ROS
-
-graph_memory.py
-  GraphState, InternalNode, InternalEdge, UUID 和历史记忆
-
-frontier_detector.py
-  free / unknown 边界检测和 frontier owner 分配
-
-edge_builder.py
-  当前边生成, historical edge validation, robot anchor 连边
-
-msg_utils.py
-  GraphState 转 graphnav_msgs/NavigationGraph
-
-viz.py
-  GraphState 和 ClassifiedGrid 转 MarkerArray
-
-livox_grid_builder.py
-  2D fallback 点云转 OccupancyGrid
-
-pointcloud_axis_adapter.py
-  elevation 主线点云轴向和 frame 适配
-
-grid_map_to_occupancy.py
-  GridMap debug projection, 不在主链路中使用
+graph_construction/graph_construction/
+  node.py                 ROS 参数、订阅、发布和 timer
+  grid_adapter.py         GridMap 解码和后处理
+  grid_types.py           ClassifiedGrid 和空间查询
+  graph_builder.py        稀疏图纯算法入口
+  graph_memory.py         持久 graph 状态
+  frontier_detector.py    frontier 检测和 owner 分配
+  edge_builder.py         当前边生成和历史边校验
+  msg_utils.py            GraphState 到 ROS message
+  viz.py                  graph 和地图 marker
+  pointcloud_axis_adapter.py
 ```
 
-关键实现原则:
+实现原则:
 
-- 纯算法层不导入 `rclpy` 或 ROS message package
+- 纯算法层不导入 `rclpy` 或 ROS message
 - ROS message 解码集中在 `grid_adapter.py`
 - ROS message 生成集中在 `msg_utils.py`
-- topic, frame, 参数和发布集中在 `node.py`
-- GridMap rolling buffer, row / column 映射和 frame 约定必须用测试或运行数据确认
+- rolling GridMap 的坐标、层布局和 frame 约定必须有测试或运行证据
+- 运行期诊断使用 ROS 日志和 topic 工具，不把内部 stage timing 混入核心返回类型
 
-## Graph Construction 参数约定
-
-Graph Construction 参数按职责分为三层:
-
-- `topic_profiles.yaml` 只保存平台相关 topic, frame, namespace 和通信环境
-- `node.py` 的 `DEFAULT_CONFIG` 只保存 ROS 适配和地图解码的稳定默认值
-- `GraphBuilderConfig` 是纯算法参数的唯一默认值来源
-- `graph_construction_elevation.yaml` 和 `graph_construction.yaml` 只保存后端差异及偏离算法默认值的调优项
-- 配置文件缺失, 未知字段或非法阈值会在启动时直接报错, 不允许静默回退
-
-不要把同一个默认值同时复制到 Python 和 YAML, 需要调参时只在对应后端 YAML 中覆盖
-
-当前不开放以下历史调试开关:
-
-- GridMap 转置和轴翻转, 当前 rolling buffer 解码已有测试覆盖
-- 关闭 GridMap 后处理, 当前主线始终执行拓扑清理
-- graph `trav_class`, 当前消息固定使用 `default`
-- historical edge validation 和 robot anchor, 当前主线固定开启
-- disconnected graph pruning, 持久路线不允许按当前连通分量删除
-- node 周期耗时日志参数, 原调用长期关闭且算法层诊断仍由定向测试覆盖
-- `robot_namespace` 和 `debug_grid_topic`, Graph Construction 节点从未消费这两个字段
-
-## Graph 行为
-
-当前 graph 默认行为:
-
-- elevation path 直接消费 `/elevation_mapping_node/elevation_map_raw`
-- 小型 elevation NaN 洞会在 graph adapter 内为 free cell 补 elevation, 不修改原始 GridMap topic
-- 历史节点落入 unknown 或移出当前滚动窗口时继续保留, 只有可靠可见障碍才直接删除节点
-- 历史节点重新进入 free 区域时使用自身 cell 的 elevation 更新高度, 不与机器人当前高度比较
-- 低于新边 clearance 阈值的历史节点继续保留, 该阈值不再删除路线记忆
-- 历史 edge 固定保留, 只用当前可见障碍证伪
-- 普通节点使用世界坐标对齐的嵌套分层网格, rolling GridMap 移动时排列不漂移
-- `sample_stride` 定义最细网格, 局部 free radius 越大则使用越粗的二次幂网格层级
-- `min_node_separation` 同时防止重复补点, 开阔区域稀疏且障碍物和 unknown 附近保持较密节点
-- Frontier 只表示当前地图可验证的 free/unknown 边界, 移出滚动窗口后清除活动状态但保留 owner 节点
-- 当前可见 Frontier owner 使用世界坐标键稳定继承, 避免同一边界在相邻帧反复换 UUID
-- rolling GridMap 外部按 unknown 处理, free radius 和 explored radius 始终保持局部有限值
-- 新 Frontier 落入任一持久节点的有限 explored radius 时不再创建, 重复探索由稀疏图覆盖状态抑制
-- disconnected component 始终保留, current node 短时断边不会清空其他历史路线
-- 脚下点云缺失时启用 robot anchor current node, anchor 移动超过 `min_node_separation` 后固化旧位置为 breadcrumb
-- graph 数据 z 保持贴近 elevation surface, RViz marker 额外抬高显示
-- graph edge 要求 line 和 clearance 都安全, 避免路径贴墙或穿障碍
-
-## Object Search 架构
-
-目标搜索链路:
+## 目标搜索结构
 
 ```text
-front / left / right camera
-  -> visual_navigation.wildos.nav
-  -> /spot1/scored_nav_graph -> graphnav_planner
-  -> /spot1/object_mask -> object_target_fusion -> /spot1/object_target_estimate
-  -> /spot1/object_search_target_pose -> red marker debug only
-  -> /spot1/object_target_estimate -> visual_navigation.object_search_goal_mux
-  -> graphnav_planner goal topic
+wildos/nav.py
+  -> ObjectMaskWithTf
+  -> object_target_fusion.py
+     -> triangulation3d/target_particle_filter.py
+     -> TargetEstimate
+  -> object_search_goal_mux.py
+     -> exploration goal or stable target goal
+     -> completion latch
 ```
 
-当前策略:
+`ObjectMaskWithTf` 只携带融合实际需要的数据:
 
-- 目标检测必须同时满足相似度峰值, 连通区域面积和连续帧确认, 单像素弱响应不会发布目标点
-- 模型可视化第一行会同时叠加 graph 和确认后的 object mask, 不再用 graph 图覆盖 mask
-- `object_search_goal_mux` 不订阅 scored graph、视觉 Frontier Pose 或选择 frontier
-- 未检测到目标时, mux 根据首帧 odom 固定探索 heading, planner 沿该 heading 持续前移虚拟目标
-- 两个有效视觉视角形成粗目标后, mux 从初始探索 goal 切换到远距离粗目标
-- 稳定视觉或 LiDAR 增强目标出现后, mux 在原目标基础上提升定位精度
-- 视觉 reached 只有在机器人距稳定融合目标不超过 `2.0m` 时才会永久停止
-- `object_target_fusion` 按论文方案使用视觉粒子完成远距离粗定位, LiDAR 点云不是定位前置条件
-- LiDAR 点落入目标 Mask 时只作为近距离快速收紧和锁定增强
-- 红色旧视觉目标只保留发布和 RViz 对照, 不进入 Mux 或控制导航
-- 两视角 `TRACKING` 粗目标可控制导航, `STABLE_VISION` 或 `LIDAR_LOCKED` 再提升目标质量
-- 单视角 `PENDING` 只发布调试粒子, 不显示没有深度约束的位置 marker
-- 目标 Mask 使用图像中位时间查询相机 TF 和匹配 LiDAR, 不使用宽松同步后的 odom 时间
-- LiDAR 目标测量剔除 Mask 内地面点, 使用最密集高点簇对齐高程图障碍凸起
-- 多视角稳定要求有效横向视差, 沿目标射线直行不能制造虚假的深度收敛
-- WildOS reached 只产生当前视觉候选证据, 不拥有任务完成状态
-- 视觉 Frontier 分数每帧重建, 相机不可见后不继续发布旧视角分数
-- 未选择分支由 planner 保存稳定 owner UUID、位置、方向和发现顺序, 不把历史 Frontier 当成当前候选
-- frontier 选择、分支连续性、无进展屏蔽和回头代价统一由 `graphnav_planner` 负责
-- 粗目标和稳定目标由 Mux 持续锁定, 后续视觉短时遮挡不会退回初始探索 goal
-- Mux 同时确认稳定目标、`2.0m` 距离和视觉证据后永久发布当前位置 hold goal
-- `/spot1/object_search_completed` 由 Mux 发布, WildOS 和 Fusion 收到后才停止目标更新
-- `graphnav_planner` 到达 goal 半径内时发布当前位置单点 path, 让下游停止
+- mask image
+- measurement header
+- camera transform
+- camera intrinsics
+- per-camera score
 
-## Planner 架构
+目标融合状态语义:
 
-`graphnav_planner` 是 C++ graph planner:
+- 单视角只建立粒子，不替换初始探索目标
+- 两个有效视角后可发布视觉跟踪目标
+- 稳定多视角结果可成为导航目标
+- LiDAR 只做可选细化，不是视觉链路成立的前提
+- 完成事件必须同时满足稳定目标和距离约束
 
-- 输入 `graphnav_msgs/NavigationGraph`
-- 输入 goal pose topic, 不同 profile 可不同
-- 输入 Object Search 状态, 明确区分初始方向探索和真实目标导航
-- 使用 graph edge 做搜索, virtual goal 只参与搜索
-- 默认不把 virtual goal 或 unknown frontier point 追加进可执行 path
-- 使用显式 `ActiveBranch` 保存 Frontier、完整有序路径 UUID、尾部方向、弧长进度和最后有效高层路径
-- 同分支继承要求候选路径有序经过已提交尾节点并继续向前延伸, 共享机器人附近公共前缀不能继承
-- Frontier 短暂失配时复用最后有效路径后缀, 不立即切换其他分支
-- 未选择分支进入 `DeferredBranch` 记忆, 正常前进时不参与实时 Frontier 排序
-- 进度按机器人在已提交路径上的单调弧长计算, 横移和回退不能重置无进展计时
-- 当前路径 edge 确认失效或持续无路径进展后才释放活动分支, 并优先恢复最早保存的可达分支
-- 同一走廊仍有可达候选时禁止按瞬时视觉分数或总代价切换
-- 按稳定 UUID edge 二值记录是否经过, 已走边增加固定代价但不会被禁止
-- 初始 `30m` 粗目标只作为方向 lookahead, 越过该位置不会停止或反向规划
-- planner 通过私有 `~/path` 输出 `/spot1/graphnav_planner/path`
-- Graph 更新继续触发路线验证, 但只有提交分支延伸、目标路线拓扑变化、路线失效或恢复分支时发布新 Path
-- 集成 launch 只启动 planner, 路径细化和执行由自研导航负责
+## 研究基线
 
-## TODO 和 Roadmap
+以下目录保留，但不属于默认部署主线:
 
-### P0, Frontier 生命周期分层, 已完成
+- `visual_navigation/lrn/`
+- `visual_navigation/imgfrontier_nav/`
+- `visual_navigation/geofrontier_nav/`
+- `explorfm_trainer/`
+- `test_explorfm_folder.py`
+- GPS 记录和可视化工具
 
-- 持久图只保存节点、edge、explored radius 和访问状态
-- Frontier 移出当前滚动地图后立即取消活动状态, owner 节点和历史路线继续保留
-- `CurrentFrontierScores` 每帧聚合三相机当前证据, 不保留旧视角评分
-- 已探索区域通过持久节点有限 explored radius 阻止重复 Frontier, 非有限历史值不能参与覆盖
-- 实施记录见 `docs/2026-07-14/2026-07-14-frontier-lifecycle-and-deferred-branch.md`
-- 半径边界和自适应网格采样见 `docs/2026-07-14/2026-07-14-explored-radius-and-free-radius-sampling.md`
+维护要求:
 
-### P1, 活动分支锁定, 已完成
+- 基线必须保持可导入、可构建
+- 基线不得依赖固定机器路径
+- 基线入口不得混入默认 elevation 集成 launch
+- 公共消息变更时必须同步基线调用方
 
-- `graphnav_planner` 已增加显式 `ActiveBranch`, 保存有序路径 UUID、终点 Frontier、尾部方向、路径弧长进度和最后有效路径
-- 当前分支暂时失配时复用未执行路径后缀, 不能立即退回全局无记忆选择
-- 初始探索 heading 固定为首帧 odom 前方, 有效分支允许沿走廊自然拐弯
-- 候选只有有序经过当前尾节点并继续向前延伸时才能更新活动分支, 公共路径前缀不能触发切换
-- 当前路径 edge 失效或持续无路径弧长进展时确认分支失败, 失败后临时屏蔽该 Frontier 邻域
-- planner 只在提交路径版本变化时发布新 Path, Unity 自研导航不需要承担该层去抖
-- 实施记录见 `docs/2026-07-14/2026-07-14-committed-branch-and-path-debounce.md`
+## 构建和验证
 
-### P1, Deferred Branch 记忆, 已完成
+从工作区构建:
 
-- 保存未选择分支的稳定 owner UUID、位置、发现方向和发现顺序
-- 当前分支确认死路后优先恢复保存分支, 不重新执行每帧全局无记忆选择
-- deferred branch 只在当前活动分支持续无 odom 进展后启用, 正常前进时不能触发后方跳转
-
-### P1, 自研导航失败反馈
-
-- 接入局部路径不可达、执行拒绝和控制器停止反馈
-- 将底层失败反馈与持续无 odom 进展共同用于死路确认
-
-### P2, 多视角粒子目标融合, 代码已完成
-
-- `obj_mask_triangulation` 已重构为薄 ROS 节点, 粒子算法位于 `triangulation3d/target_particle_filter.py`
-- 前、左、右相机 Mask 和相机位姿进入固定数量递归粒子融合
-- LiDAR 使用独立时间缓存, 没有同步点云时仍执行纯视觉融合
-- 已增加重复视角抑制、异常方向门控和可选两帧 LiDAR lock
-- 两视角视觉粗 estimate 和稳定 estimate 均已接入 `object_search_goal_mux`
-- Mux 独占 reached 终态, 旧视觉目标不再作为 fallback
-- 待 Unity 验证目标误差、收敛时间、误锁次数和路径更新次数
-- 简明说明见 `docs/2026-07-15/2026-07-15-multiview-target-fusion.md`
-
-### P2, Nav2 接入
-
-- Unity 当前继续使用同事开发的自研导航直接消费 `/spot1/graphnav_planner/path`
-- Nav2 作为 Isaac 或真实机器人可选局部规划和控制后端接入, 不替换当前 Unity 链路
-- 接入前明确高层 graph path 到 Nav2 goal 或 action 的限流、抢占、失败恢复和停止协议
-- 保持 `path_follower_node` 与外部导航消费者互斥, 避免双重路径执行
-
-### P2, DLIO 接入
-
-- Unity 仿真继续使用仿真里程计, 不强制引入 DLIO
-- 真实机器人根据 LiDAR、IMU 和现有定位质量决定是否使用 DLIO
-- 接入时统一 odom topic、`odom -> base_link` TF、时间同步和重定位后的 graph frame 行为
-- DLIO 只提供 LiDAR-inertial odometry, 不负责局部规划或路径跟踪
-
-### P3, 真实机器狗平台接入
-
-- 完成 `robot` topic profile, 替换当前占位 topic 和 frame
-- 标定三相机、LiDAR、IMU 和 base frame 外参
-- 验证 elevation map、持久 graph、目标检测和高层路径在真实传感器噪声下的稳定性
-- 对接真实机器狗导航接口、急停、速度限制、跌倒保护和任务停止反馈
-- 在室内受控环境完成回放和低速闭环后, 再进入室外目标搜索测试
-
-## 文件夹结构
-
-```text
-graph_construction/
-  configs/        graph, grid, elevation, topic profile 配置
-  launch/         elevation 主线和 2D fallback launch
-  graph_construction/
-                  geometry map 到 navigation graph 的 Python 实现
-  test/           graph builder, grid adapter 和诊断测试
-  docs/           dated implementation notes 和本说明
-
-visual_navigation/
-  configs/        WildOS, object search goal mux 和 baseline 配置
-  launch/         WildOS 视觉节点和 baseline launch
-  visual_navigation/wildos/
-                  ExploRFM 推理, 当前帧 frontier scoring, object target selection
-  visual_navigation/object_search_goal_mux.py
-                  object search goal 状态机和 planner goal 输出
-  visual_navigation/utils/
-                  TF, odom adapter, goal navigator, scoring 和 buffer 工具
-
-graphnav_planner/
-  src/            planner node 和 path follower node
-  include/        planner C++ 接口
-  launch/         planner launch 配置
-
-graphnav_msgs/
-  msg/            NavigationGraph, Node, Edge 和 traversability 消息
-
-object_search_msgs/
-  msg/            object mask 与 TF 相关消息
-
-explorfm/
-  ExploRFM inference model
-
-nvidia_radio/
-  RADIO / NACLIP / SigLIP2 backbone 相关代码
-
-explorfm_trainer/
-  ExploRFM head 训练代码
-
-triangulation3d/
-  旧 3D object triangulation 和可视化工具
-
-external_references/
-  本地社区参考代码, 需要保留 COLCON_IGNORE
+```bash
+cd /mnt/hhd/han/wildos_ws
+source /opt/ros/humble/setup.bash
+colcon build --packages-up-to \
+  object_search_msgs triangulation3d visual_navigation \
+  graph_construction graphnav_planner --symlink-install
 ```
 
-## 主要配置文件
+核心单元测试覆盖:
 
-```text
-graph_construction/configs/topic_profiles.yaml
-  profile 级 topic, frame, RMW, goal, path 和目标检测默认参数
+- GridMap adapter
+- sparse graph、persistent graph 和 frontier
+- target particle filter
+- object detection filter 和 reached evidence
+- goal mux
+- object target fusion
 
-graph_construction/configs/graph_construction_elevation.yaml
-  elevation/2.5D GridMap 后端差异和调优覆盖
+## 文档规则
 
-graph_construction/configs/graph_construction.yaml
-  2D OccupancyGrid fallback 后端差异和调优覆盖
-
-graph_construction/configs/elevation_mapping_sim.yaml
-  elevation_mapping_cupy 静态仿真配置, 默认关闭 visibility cleanup 避免有效地面被射线清除
-
-graph_construction/configs/livox_grid_builder.yaml
-  2D fallback 点云转 OccupancyGrid 配置
-
-visual_navigation/configs/wildos_nav_sim_conf.yaml
-  WildOS 视觉评分仿真配置
-
-visual_navigation/configs/object_search_goal_mux.yaml
-  object search goal mux 独立默认配置
-
-graphnav_planner/launch/graphnav_planner.launch.yml
-  graph planner 和 path follower 参数
-```
+- 当前架构以本文件、两个 `2026-06-22` 原理文档和清理审计文档为准
+- 其他日期目录是历史实现记录，允许描述已经删除的 2D 或旧 triangulation 方案
+- 不要为了匹配当前代码回写历史 changelog
+- 修改代码后优先更新当前入口、参数单一来源和逐文件清单

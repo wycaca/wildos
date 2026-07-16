@@ -49,8 +49,6 @@ valid_geofrontiers_topic: /spot1/within_range_geofrontiers
 score_ring_topic: /spot1/score_rings
 graph_viz_topic: /spot1/nav_graph_viz
 object_mask_topic: /spot1/object_mask
-object_target_pose_topic: /spot1/object_search_target_pose
-object_target_viz_topic: /spot1/object_search_target_viz
 object_completed_topic: /spot1/object_search_completed
 
 # ROS2 subscriber params
@@ -71,8 +69,6 @@ object_search_config:
     detection_debug_interval: 20
     obj_frontier_score: 0.9
     obj_trav_score: 0.9
-    target_min_score: 0.2
-    target_ray_length: 8.0
 
 # TFLookup Config
 tf_lookup_config:

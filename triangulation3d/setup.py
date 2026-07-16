@@ -18,11 +18,5 @@ setup(
     description='Particle filter based 3D triangulation',
     license='Apache-2.0',
     tests_require=['pytest'],
-    entry_points={
-        'console_scripts': [
-            'triangulation_visualizer = triangulation3d.multicam_visualizer:main',
-            'teleop_triangulation = triangulation3d.teleop_triangulation:main',
-            'teleop_twist_keyboard = triangulation3d.teleop_twist_keyboard:main',
-        ],
-    },
+    entry_points={'console_scripts': []},
 )

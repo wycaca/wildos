@@ -1,51 +1,65 @@
 # Visual Navigation
 
-ROS 2 navigation package for WildOS and baseline implementations. This package contains the main navigation pipelines, scoring logic, and utility nodes.
+ROS 2 package for the current WildOS visual pipeline, object-search control, research baselines, and diagnostic tools
 
-## Modules
+## Current Pipeline
 
-| Module | Description |
+| File | Responsibility |
 |---|---|
-| `wildos/` | **WildOS** — Full navigation pipeline with ExploRFM inference, graph scoring, and object search |
-| `explorfm_triangulation/` | Particle-filter-based object triangulation nodes |
-| `imgfrontier_nav/` | Image frontier navigation baseline (vision-only, no geometry) |
-| `lrn/` | [LRN](https://arxiv.org/abs/2504.13149) baseline (vision-only, no geometry) |
-| `geofrontier_nav/` | Geometric frontier navigation with fixed goal scoring |
-| `gps/` | GPS visualization and metric logging nodes |
-| `utils/` | Shared scoring and utility functions |
+| `visual_navigation/wildos/nav.py` | ExploRFM inference, graph scoring, confirmed object masks, and reached evidence |
+| `visual_navigation/object_target_fusion.py` | ROS adapter for recursive multi-view target fusion |
+| `visual_navigation/object_search_goal_mux.py` | Exploration goal, stable target goal, and completion ownership |
+| `visual_navigation/object_detection_filter.py` | Connected-component and temporal detection filtering |
+| `visual_navigation/object_reached_evidence.py` | Near-range visual completion evidence |
+| `visual_navigation/utils/object_search_utils.py` | `ObjectMaskWithTf` construction and query localization |
+| `visual_navigation/utils/paths.py` | Repository resource path resolution |
 
-## Key Files
-
-| File | Description |
-|---|---|
-| `wildos/nav.py` | WildOS main node — runs ExploRFM inference and publishes scored navigation graph |
-| `wildos/goalagnostic_scoring.py` | Goal-agnostic frontier scoring combining traversability and frontier predictions |
-| `utils/scoring.py` | Graph scoring utilities shared across navigation methods |
-| `explorfm_triangulation/obj_mask_triangulation.py` | ROS adapter for multi-view target fusion |
-| `explorfm_triangulation/explorfm_triangulator.py` | Standalone ExploRFM triangulation node (for testing) |
-| `imgfrontier_nav/viz_net.py` | ExploRFM output visualization (debugging tool) |
-
-> See the [main README](../README.md) for launch commands and deployment instructions.
+The pure target filter is implemented in `triangulation3d/target_particle_filter.py`
 
 ## Configuration
 
-YAML config files for each exectuable are in `configs/`:
-
-| Config | Used By |
+| Config | Used by |
 |---|---|
-| `wildos_nav_conf.yaml` | WildOS navigation |
-| `imgfrontier_nav_conf.yaml` | Image frontier baseline |
-| `lrn_nav_conf.yaml` | LRN baseline |
-| `geofrontier_nav_conf.yaml` | Geometric frontier navigation |
-| `explorfm_triangulator_conf.yaml` | Standalone ExploRFM triangulation |
+| `configs/wildos_nav_conf.yaml` | Robot-oriented WildOS defaults |
+| `configs/wildos_nav_sim_conf.yaml` | Simulation WildOS defaults |
+| `configs/object_search_goal_mux.yaml` | Goal Mux strategy |
+| `configs/imgfrontier_nav_conf.yaml` | ImgFrontier baseline |
+| `configs/lrn_nav_conf.yaml` | LRN baseline |
+| `configs/geofrontier_nav_conf.yaml` | GeoFrontier baseline |
 
-## Method Details
+Platform topic and frame overrides live in `graph_construction/configs/topic_profiles.yaml`
 
-### WildOS
-WildOS scores frontier nodes of the navigation graph using ExploRFM predictions. When object search is enabled, WildOS publishes confirmed masks and the target fusion node performs paper-style multi-view visual triangulation. A two-view coarse estimate can guide long-range navigation, while stable vision or optional LiDAR support refines the goal. The goal mux is the only owner of final task completion.
+## Launch
 
-### Image Frontier Navigation (Baseline)
-Assumes a single geometric frontier at the center-bottom pixel of each camera image. Projects a path from the bottom-center pixel to the chosen visual frontier using the depth image and sends a goal at `lookahead_dist` along the projected path to the local planner.
+The full current system is launched from the repository root:
 
-### LRN (Baseline)
-A purely vision-based baseline that does not use geometric information for exploration. It scores angular bins around the robot using visual frontier scores and the goal heading.
+```bash
+./scripts/start_wildos_elevation.sh do_object_search:=true
+```
+
+Use the component launch only for isolated visual debugging:
+
+```bash
+ros2 launch visual_navigation wildos_component.launch.py do_object_search:=true
+```
+
+## Research Baselines
+
+The following modules are retained for research comparisons and are not launched by the default elevation pipeline:
+
+- `visual_navigation/lrn/`
+- `visual_navigation/imgfrontier_nav/`
+- `visual_navigation/geofrontier_nav/`
+- `visual_navigation/gps/`
+- `visual_navigation/imgfrontier_nav/viz_net.py`
+
+All navigation modules resolve model resources from the repository root. Set `WILDOS_REPO_ROOT` when the source location cannot be inferred from an install tree
+
+## Removed Legacy Paths
+
+The package no longer provides:
+
+- visual ray-based coarse target pose publication
+- `explorfm_triangulate`
+- standalone ExploRFM triangulation launch and config
+- the `explorfm_triangulation` Python package

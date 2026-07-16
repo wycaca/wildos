@@ -2,7 +2,6 @@ from dataclasses import dataclass
 from typing import List, Dict
 from abc import ABC, abstractmethod
 
-import rclpy
 from rclpy.qos import ReliabilityPolicy
 from rclpy.qos import DurabilityPolicy
 from rclpy.qos import HistoryPolicy

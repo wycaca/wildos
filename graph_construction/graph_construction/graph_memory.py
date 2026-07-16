@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from math import hypot
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 import uuid
 
 
@@ -143,14 +143,6 @@ class GraphState:
                 best_node = node
                 best_distance = distance
         return best_node
-
-    def node_ids_within(self, position: Point3, radius: float) -> Set[int]:
-        """返回 XY 平面指定半径内的所有节点 id"""
-        return {
-            node_id
-            for node_id, node in self.nodes.items()
-            if node.distance_xy(position) <= radius
-        }
 
     def update_robot_position(self, odom_position: Point3, ground_position: Optional[Point3]) -> None:
         """记录机器人原始 odom 位置和投影到高程图的地面位置"""

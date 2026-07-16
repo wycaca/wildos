@@ -23,7 +23,6 @@ def test_resolve_config_rejects_removed_or_misspelled_keys():
     [
         {"grid_input_type": "image"},
         {"publish_rate_hz": 0.0},
-        {"free_threshold": 70, "obstacle_threshold": 65},
         {"grid_map_free_threshold": 0.1, "grid_map_obstacle_threshold": 0.2},
         {"grid_map_normalize_low_quantile": 0.9, "grid_map_normalize_high_quantile": 0.1},
     ],

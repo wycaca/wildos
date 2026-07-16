@@ -19,9 +19,9 @@ from visual_navigation.utils.scoring import ScoringGeometricFrontiers
 from visual_navigation.geofrontier_nav.geofrontier_to_image import GeoFrontierToImage
 from visual_navigation.geofrontier_nav.viz import VisualizeGeoFrontierScoring
 from explorfm import ExploRFMInference
+from visual_navigation.utils.paths import repository_root
 
-# HOME_DIR = Path.home()
-HOME_DIR = Path("/home/ks-server3/han/wildos_ws/src/nebula2-wildos/")
+HOME_DIR = repository_root()
 CAMERA_MAPPING = {
     0: "front",
     1: "left",

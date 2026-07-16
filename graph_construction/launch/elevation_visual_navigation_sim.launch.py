@@ -74,10 +74,10 @@ def generate_launch_description():
                 default_value="",
                 description="Point cloud axis conversion mode, empty uses topic profile",
             ),
-            _profile_arg("global_frame", "global_frame_3d"),
+            _profile_arg("global_frame", "global_frame"),
             _profile_arg("pointcloud_input_topic", "pointcloud_input_topic"),
             _profile_arg("pointcloud_output_topic", "aligned_lidar_topic"),
-            _profile_arg("pointcloud_output_frame", "pointcloud_output_frame_3d"),
+            _profile_arg("pointcloud_output_frame", "pointcloud_output_frame"),
             _profile_arg("elevation_grid_map_topic", "elevation_grid_map_topic"),
             _profile_arg("odom_input_topic", "odom_input_topic"),
             _profile_arg("odom_output_topic", "odom_output_topic"),
@@ -113,11 +113,9 @@ def generate_launch_description():
             _profile_arg("score_ring_topic", "score_ring_topic"),
             _profile_arg("graph_viz_topic", "graph_viz_topic"),
             _profile_arg("object_mask_topic", "object_mask_topic"),
-            _profile_arg("object_target_pose_topic", "object_target_pose_topic"),
             _profile_arg("object_target_estimate_topic", "object_target_estimate_topic"),
             _profile_arg("object_target_estimate_viz_topic", "object_target_estimate_viz_topic"),
             _profile_arg("object_target_particles_topic", "object_target_particles_topic"),
-            _profile_arg("object_target_viz_topic", "object_target_viz_topic"),
             _profile_arg("object_reached_topic", "object_reached_topic"),
             _profile_arg("object_search_completed_topic", "object_search_completed_topic"),
             _profile_arg("object_search_initial_goal_distance", "object_search_initial_goal_distance"),
@@ -126,13 +124,8 @@ def generate_launch_description():
             _profile_arg("visual_frontiers_range", "visual_frontiers_range"),
             _profile_arg("visual_frontier_threshold", "visual_frontier_threshold"),
             _profile_arg("object_search_detection_debug_interval", "object_search_detection_debug_interval"),
-            _profile_arg("object_search_target_log_period_sec", "object_search_target_log_period_sec"),
             _profile_arg("object_search_goal_publish_rate", "object_search_goal_publish_rate"),
             _profile_arg("object_search_object_reached_timeout_sec", "object_search_object_reached_timeout_sec"),
-            _profile_arg(
-                "object_search_object_reached_require_target_distance",
-                "object_search_object_reached_require_target_distance",
-            ),
             _profile_arg(
                 "object_search_object_reached_max_target_distance",
                 "object_search_object_reached_max_target_distance",
@@ -160,7 +153,7 @@ def generate_launch_description():
                 description="Publish fallback static transforms for camera frames",
             ),
             _profile_arg("ros_domain_id", "ros_domain_id"),
-            _profile_arg("rmw_implementation", "rmw_implementation_3d"),
+            _profile_arg("rmw_implementation", "rmw_implementation"),
             DeclareLaunchArgument(
                 "fastdds_profile",
                 default_value="",
@@ -180,12 +173,12 @@ def _launch_setup(context):
     elevation_config = _arg(context, "elevation_config")
     graph_config = _arg(context, "graph_config")
     visual_config = _arg(context, "visual_config")
-    global_frame = _value(context, profile, "global_frame", "global_frame_3d")
+    global_frame = _value(context, profile, "global_frame", "global_frame")
     odom_output_topic = _value(context, profile, "odom_output_topic", "odom_output_topic")
     nav_graph_topic = _value(context, profile, "nav_graph_topic", "nav_graph_topic")
     aligned_lidar_topic = _value(context, profile, "pointcloud_output_topic", "aligned_lidar_topic")
-    pointcloud_axis_mode = _value(context, profile, "pointcloud_axis_mode", "pointcloud_axis_mode_3d")
-    pointcloud_output_frame = _value(context, profile, "pointcloud_output_frame", "pointcloud_output_frame_3d")
+    pointcloud_axis_mode = _value(context, profile, "pointcloud_axis_mode", "pointcloud_axis_mode")
+    pointcloud_output_frame = _value(context, profile, "pointcloud_output_frame", "pointcloud_output_frame")
 
     graph_overrides = _config_override_args(
         {
@@ -210,8 +203,6 @@ def _launch_setup(context):
             "score_ring_topic": _value(context, profile, "score_ring_topic", "score_ring_topic"),
             "graph_viz_topic": _value(context, profile, "graph_viz_topic", "graph_viz_topic"),
             "object_mask_topic": _value(context, profile, "object_mask_topic", "object_mask_topic"),
-            "object_target_pose_topic": _value(context, profile, "object_target_pose_topic", "object_target_pose_topic"),
-            "object_target_viz_topic": _value(context, profile, "object_target_viz_topic", "object_target_viz_topic"),
             "object_reached_topic": _value(context, profile, "object_reached_topic", "object_reached_topic"),
             "object_completed_topic": _value(context, profile, "object_search_completed_topic", "object_search_completed_topic"),
             "object_search_config.mask_threshold": _value(
@@ -261,12 +252,6 @@ def _launch_setup(context):
                 profile,
                 "object_search_detection_confirm_frames",
                 "object_search_detection_confirm_frames",
-            ),
-            "object_search_config.target_log_period_sec": _value(
-                context,
-                profile,
-                "object_search_target_log_period_sec",
-                "object_search_target_log_period_sec",
             ),
             "object_search_config.reached_mask_fraction": _value(
                 context,
@@ -401,7 +386,7 @@ def _launch_setup(context):
 
     object_target_fusion = Node(
         package="visual_navigation",
-        executable="obj_mask_triangulation",
+        executable="object_target_fusion",
         name="object_target_fusion",
         output="screen",
         parameters=[
@@ -422,6 +407,7 @@ def _launch_setup(context):
         executable="object_search_goal_mux",
         output="screen",
         parameters=[
+            _package_config_path("visual_navigation", "object_search_goal_mux.yaml"),
             {"use_sim_time": use_sim_time},
             {"output_goal_topic": goal_pose_topic},
             {"goal_viz_topic": _value(context, profile, "object_search_goal_viz_topic", "object_search_goal_viz_topic")},
@@ -464,14 +450,6 @@ def _launch_setup(context):
                 )
             },
             {
-                "object_reached_require_target_distance": _bool_value(
-                    context,
-                    profile,
-                    "object_search_object_reached_require_target_distance",
-                    "object_search_object_reached_require_target_distance",
-                )
-            },
-            {
                 "object_reached_max_target_distance": _float_value(
                     context,
                     profile,
@@ -494,7 +472,7 @@ def _launch_setup(context):
 
     return [
         SetEnvironmentVariable("ROS_DOMAIN_ID", _value(context, profile, "ros_domain_id", "ros_domain_id")),
-        SetEnvironmentVariable("RMW_IMPLEMENTATION", _value(context, profile, "rmw_implementation", "rmw_implementation_3d")),
+        SetEnvironmentVariable("RMW_IMPLEMENTATION", _value(context, profile, "rmw_implementation", "rmw_implementation")),
         SetEnvironmentVariable(
             "FASTDDS_DEFAULT_PROFILES_FILE",
             LaunchConfiguration("fastdds_profile"),
@@ -533,16 +511,8 @@ def _planner_node(
         output="screen",
         namespace=ns,
         parameters=[
+            str(Path(get_package_share_directory("graphnav_planner")) / "config" / "planner.yaml"),
             {"use_sim_time": use_sim_time},
-            {"frontier_dist_cost_factor": 2.0},
-            {"goal_dist_cost_factor": 1.0},
-            {"frontier_score_factor": 20.0},
-            {"frontier_continuity_radius": 5.0},
-            {"frontier_progress_timeout": 12.0},
-            {"revisit_cost_factor": 1.0},
-            {"trav_class": "default"},
-            {"goal_radius": 3.0},
-            {"append_virtual_goal_to_path": False},
         ],
         remappings=[
             ("~/nav_graph", scored_nav_graph_topic),

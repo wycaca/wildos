@@ -111,7 +111,7 @@ class GoalAgnosticScoring(ScoringGeometricFrontiers):
                     try:
                         best_index = (int(best_index[0]*self.reach_scale), int(best_index[1]*self.reach_scale))
                         path = np.array(mcp.traceback((best_index[0], best_index[1]))) * (1 / self.reach_scale)
-                    except Exception as e:
+                    except Exception:
                         path = np.array([geofrontier])
                     all_goal_paths.append(path)
 

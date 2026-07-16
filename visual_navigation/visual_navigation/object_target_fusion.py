@@ -32,7 +32,7 @@ _MIN_TARGET_HEIGHT_ABOVE_GROUND = 0.12
 _TARGET_CLUSTER_RADIUS = 0.75
 
 
-class ObjectMaskTriangulator(Node):
+class ObjectTargetFusion(Node):
     """用多视角 Mask 估计远距离粗目标, LiDAR 仅作为可选精度增强"""
 
     def __init__(self):
@@ -424,7 +424,7 @@ def _target_marker(estimate: CoreTargetEstimate, frame_id: str, stamp) -> Marker
 
 def main(args=None):
     rclpy.init(args=args)
-    node = ObjectMaskTriangulator()
+    node = ObjectTargetFusion()
     try:
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):

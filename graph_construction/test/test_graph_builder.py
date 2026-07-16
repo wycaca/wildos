@@ -93,52 +93,7 @@ def test_node_sampling_uses_world_aligned_adaptive_lattice():
     assert (6.5, 6.5) not in positions
 
 
-def test_graph_builder_returns_stage_timing_diagnostics():
-    """验证纯算法层会返回 stage timing 和 graph 统计"""
-    grid = ClassifiedGrid(
-        width=6,
-        height=6,
-        resolution=1.0,
-        origin_x=0.0,
-        origin_y=0.0,
-        frame_id="map",
-        free=np.ones((6, 6), dtype=bool),
-        obstacle=np.zeros((6, 6), dtype=bool),
-        unknown=np.zeros((6, 6), dtype=bool),
-        stats={"free": 36, "obstacle": 0, "unknown": 0},
-    )
-    builder = SparseGraphBuilder(
-        GraphBuilderConfig(
-            sample_stride=3,
-            min_node_separation=0.1,
-            min_obstacle_clearance=0.0,
-            edge_radius=10.0,
-        )
-    )
-
-    result = builder.update(grid, robot_position=(0.5, 0.5, 0.0), stamp_seconds=1.0)
-    diagnostics = result.diagnostics
-
-    assert diagnostics.node_count > 0
-    assert diagnostics.connected_components >= 1
-    assert diagnostics.degree_max >= diagnostics.degree_min
-    assert diagnostics.current_node_status in {"reachable", "geometry_fallback", "missing"}
-
-    expected_stages = {
-        "prepare_grid",
-        "distance_fields",
-        "update_nodes",
-        "sample_nodes",
-        "update_frontiers",
-        "current_node",
-        "build_edges",
-        "total",
-    }
-    assert expected_stages.issubset(diagnostics.stage_timings_ms)
-    assert all(diagnostics.stage_timings_ms[name] >= 0.0 for name in expected_stages)
-
-
-def test_frontier_candidate_spacing_reduces_assignment_work():
+def test_frontier_candidate_spacing_reduces_candidate_count():
     """验证 frontier 候选间距会减少进入 owner 分配的边界点"""
     free = np.ones((6, 20), dtype=bool)
     unknown = np.zeros((6, 20), dtype=bool)
@@ -168,10 +123,13 @@ def test_frontier_candidate_spacing_reduces_assignment_work():
         )
     )
 
-    result = builder.update(grid, robot_position=(0.5, 0.5, 0.0), stamp_seconds=1.0)
+    raw_frontiers = builder.frontier_detector.detect_frontier_cells(grid)
+    selected_frontiers = builder.frontier_detector._select_frontier_candidates(
+        grid,
+        raw_frontiers,
+    )
 
-    assert result.diagnostics.frontier_cell_count > result.diagnostics.frontier_candidate_count
-    assert result.diagnostics.frontier_candidate_count > 0
+    assert 0 < len(selected_frontiers) < len(raw_frontiers)
 
 
 def test_edge_builder_rejects_edges_without_corridor_clearance():
@@ -381,7 +339,6 @@ def test_graph_builder_adds_robot_anchor_when_robot_cell_is_unknown():
     current_id = result.graph.current_node_id
     assert current_id is not None
     assert result.graph.nodes[current_id].is_robot_anchor
-    assert result.diagnostics.current_node_status == "robot_anchor"
     assert any(
         edge.from_id == current_id or edge.to_id == current_id
         for edge in result.graph.edges.values()
@@ -488,8 +445,6 @@ def test_graph_builder_preserves_nodes_disconnected_from_current_component():
 
     result = builder.update(grid, robot_position=(0.5, 0.5, 0.0), stamp_seconds=1.0)
 
-    assert result.diagnostics.connected_components == 2
-    assert result.diagnostics.node_count > 0
     assert historical.node_id in result.graph.nodes
     assert any(node.position[0] < 4.0 for node in result.graph.nodes.values())
     assert any(node.position[0] >= 8.0 for node in result.graph.nodes.values())
