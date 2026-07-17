@@ -1,0 +1,53 @@
+ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:25.04-py3-igpu
+FROM ${BASE_IMAGE}
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+ARG GRAAF_COMMIT=2a4715ff46a25048e06078ea20afc325d59f987a
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=en_US.UTF-8 \
+    LC_ALL=en_US.UTF-8 \
+    ROS_DISTRO=humble \
+    WILDOS_IMAGE_ARCH=aarch64 \
+    WILDOS_TOPIC_PROFILE=robot \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=all
+
+COPY nebula2-wildos/docker/install_ros_humble.sh /tmp/install_ros_humble.sh
+RUN chmod +x /tmp/install_ros_humble.sh \
+    && /tmp/install_ros_humble.sh \
+    && rm /tmp/install_ros_humble.sh
+
+COPY nebula2-wildos/docker/requirements-runtime.txt /tmp/requirements-runtime.txt
+RUN /usr/bin/python3 -m pip install --no-cache-dir --upgrade pip \
+    && sed -i '/^transforms3d/d' /tmp/requirements-runtime.txt \
+    && /usr/bin/python3 -m pip install --no-cache-dir -r /tmp/requirements-runtime.txt \
+    && /usr/bin/python3 -m pip install --no-cache-dir --ignore-installed --no-deps transforms3d==0.4.2 \
+    && /usr/bin/python3 -m pip install --no-cache-dir pybase64==1.4.3 transformations==2025.1.1 \
+    && /usr/bin/python3 -m pip install --no-cache-dir --no-deps ros2-numpy==0.0.5 \
+    && rm /tmp/requirements-runtime.txt \
+    && /usr/bin/python3 -c "import torch, torchvision; assert torch.__version__.startswith('2.7.0a0'), torch.__version__"
+RUN /usr/bin/python3 -m pip install --no-cache-dir cupy-cuda12x==13.6.0
+
+WORKDIR /opt/wildos_ws/src
+COPY nebula2-wildos /opt/wildos_ws/src/nebula2-wildos
+COPY elevation_mapping_cupy /opt/wildos_ws/src/elevation_mapping_cupy
+COPY graaf_vendor /opt/wildos_ws/src/graaf_vendor
+
+RUN /usr/bin/python3 -m pip install --no-cache-dir -e /opt/wildos_ws/src/nebula2-wildos/nvidia_radio \
+    && /usr/bin/python3 -m pip install --no-cache-dir -e /opt/wildos_ws/src/nebula2-wildos/explorfm \
+    && ln -sfn frontier_ckpt_new.ckpt /opt/wildos_ws/src/nebula2-wildos/ckpts/frontier_head.ckpt \
+    && ln -sfn traversability_ckpt.ckpt /opt/wildos_ws/src/nebula2-wildos/ckpts/trav_head.ckpt \
+    && chmod +x \
+      /opt/wildos_ws/src/nebula2-wildos/docker/build_workspace.sh \
+      /opt/wildos_ws/src/nebula2-wildos/docker/entrypoint.sh \
+      /opt/wildos_ws/src/nebula2-wildos/docker/healthcheck.sh \
+      /opt/wildos_ws/src/nebula2-wildos/scripts/start_wildos_elevation.sh \
+    && /opt/wildos_ws/src/nebula2-wildos/docker/build_workspace.sh "${GRAAF_COMMIT}" \
+    && /usr/bin/python3 -c "import cupy, torch, torchvision; print(torch.__version__, torch.version.cuda, cupy.__version__)"
+
+WORKDIR /opt/wildos_ws
+ENTRYPOINT ["/opt/wildos_ws/src/nebula2-wildos/docker/entrypoint.sh"]
+CMD ["do_object_search:=true", "use_sim_time:=false", "launch_paper_rviz:=false"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=180s --retries=3 \
+  CMD ["/opt/wildos_ws/src/nebula2-wildos/docker/healthcheck.sh"]

@@ -99,6 +99,8 @@ The script launches the mapping backend, graph construction, odometry adapter, c
 
 Topic and frame names are selected by profile. Built-in profiles live in `graph_construction/configs/topic_profiles.yaml`:
 
+The default profile is `unity`, so the plain startup command uses `/livox/lidar`, ROS domain 89, and `rmw_zenoh_cpp`.
+
 ```bash
 WILDOS_TOPIC_PROFILE=isaac ./scripts/start_wildos_elevation.sh
 WILDOS_TOPIC_PROFILE=unity ./scripts/start_wildos_elevation.sh
@@ -158,6 +160,20 @@ source install/setup.bash
 ```
 
 > **Note**: WildOS was deployed inside a Docker container during field experiments. The dependencies above can be replicated in a virtual environment for development.
+
+### Docker Compose Deployment
+
+The current repository provides separate GPU images for x86_64 and NVIDIA Jetson AGX Orin:
+
+```bash
+docker compose -f compose.x86_64.yaml build
+docker compose -f compose.x86_64.yaml up -d
+
+docker compose -f compose.orin.yaml build
+docker compose -f compose.orin.yaml up -d
+```
+
+See [WildOS dual-architecture Docker deployment](graph_construction/docs/2026-07-16/2026-07-16-wildos-docker-deployment.md) for model prerequisites, JetPack compatibility, topic profiles, GPU validation, and RViz usage.
 
 <br>
 

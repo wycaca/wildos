@@ -1,0 +1,32 @@
+# ROS build compatibility
+catkin_pkg
+empy==3.3.4
+lark
+PyYAML
+setuptools<70
+wheel
+
+# WildOS inference and geometry
+numpy==1.26.4
+scipy==1.15.3
+scikit-image==0.25.2
+timm==1.0.15
+open-clip-torch==2.32.0
+transformers==4.51.3
+einops==0.8.1
+fairscale==0.4.4
+matplotlib
+omegaconf
+ruamel.yaml==0.18.11
+pillow
+huggingface_hub
+safetensors
+ftfy
+regex
+tqdm
+simple-parsing>=0.1.8
+transforms3d>=0.4.2
+shapely==2.1.2
+networkx==3.0
+folium
+selenium

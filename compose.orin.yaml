@@ -1,0 +1,38 @@
+name: wildos-orin
+
+services:
+  wildos:
+    image: wildos:${WILDOS_ORIN_IMAGE_TAG:-orin-jp62}
+    platform: linux/arm64
+    build:
+      context: ..
+      dockerfile: nebula2-wildos/docker/Dockerfile.orin
+      args:
+        BASE_IMAGE: ${WILDOS_ORIN_BASE_IMAGE:-nvcr.io/nvidia/pytorch:25.04-py3-igpu}
+    network_mode: host
+    ipc: host
+    runtime: nvidia
+    shm_size: 2gb
+    restart: unless-stopped
+    stop_grace_period: 30s
+    environment:
+      WILDOS_TOPIC_PROFILE: ${WILDOS_TOPIC_PROFILE:-robot}
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: all
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      DISPLAY: ${DISPLAY:-}
+    command:
+      - do_object_search:=${DO_OBJECT_SEARCH:-true}
+      - use_sim_time:=${USE_SIM_TIME:-false}
+      - launch_paper_rviz:=${LAUNCH_PAPER_RVIZ:-false}
+      - log_level:=${WILDOS_LOG_LEVEL:-INFO}
+    volumes:
+      - wildos_ros_logs:/root/.ros/log
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    ulimits:
+      memlock: -1
+      stack: 67108864
+
+volumes:
+  wildos_ros_logs:
