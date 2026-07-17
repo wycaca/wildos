@@ -8,25 +8,24 @@ from std_msgs.msg import ColorRGBA, Header
 from visualization_msgs.msg import Marker, MarkerArray
 
 from graph_construction.graph_memory import GraphState, InternalNode
-from graph_construction.grid_types import ClassifiedGrid
-
-
 class GraphVisualizer:
     """为构建出的导航图生成 RViz marker
 
     这些 marker 只用于调试 Graph Construction 自身
-    WildOS scoring 还会另外发布 nav_graph_viz, score_rings, model_visualization
+    WildOS scoring 还会另外发布 score_rings 和 model_visualization
     第一版可视化重点是检查节点, 边, frontier_points, radius 是否合理
     """
 
     MAX_RADIUS_MARKER = 20.0
     GRAPH_MARKER_Z_LIFT = 0.25
 
+    def __init__(self, show_radius_markers: bool = False) -> None:
+        self.show_radius_markers = bool(show_radius_markers)
+
     def build_markers(
         self,
         graph: GraphState,
         header: Header,
-        grid: Optional[ClassifiedGrid] = None,
     ) -> MarkerArray:
         """构建一帧完整 marker array"""
         markers = MarkerArray()
@@ -63,8 +62,8 @@ class GraphVisualizer:
                 marker_id=2,
                 namespace="memory_free_nodes",
                 nodes=memory_free_nodes,
-                color=ColorRGBA(r=0.0, g=0.35, b=0.0, a=0.25),
-                scale=0.18,
+                color=ColorRGBA(r=0.0, g=0.8, b=0.0, a=0.9),
+                scale=0.25,
             )
         )
         markers.markers.append(
@@ -90,9 +89,21 @@ class GraphVisualizer:
                     graph.latest_robot_ground_projected,
                 )
             )
-        if grid is not None:
-            markers.markers.append(self._grid_footprint_marker(header, grid))
+        if self.show_radius_markers:
+            self._append_radius_markers(markers, header, current_nodes)
 
+        if graph.current_node_id in graph.nodes:
+            markers.markers.append(self._current_node_marker(header, graph.nodes[graph.current_node_id]))
+
+        return markers
+
+    def _append_radius_markers(
+        self,
+        markers: MarkerArray,
+        header: Header,
+        current_nodes: Iterable[InternalNode],
+    ) -> None:
+        """半径圆只用于专项调试, 默认关闭以减少 RViz Marker 数量"""
         marker_id = 20
         for node in current_nodes:
             free_radius = self._safe_radius_for_marker(node.free_radius)
@@ -121,11 +132,6 @@ class GraphVisualizer:
                     )
                 )
             marker_id += 1
-
-        if graph.current_node_id in graph.nodes:
-            markers.markers.append(self._current_node_marker(header, graph.nodes[graph.current_node_id]))
-
-        return markers
 
     def _delete_all_marker(self, header: Header) -> Marker:
         """清理上一帧 marker, 避免删除节点后 RViz 残留旧图元"""
@@ -167,7 +173,7 @@ class GraphVisualizer:
         marker.id = 4
         marker.action = Marker.ADD
         marker.type = Marker.LINE_LIST
-        marker.scale.x = 0.02
+        marker.scale.x = 0.03
         marker.color = ColorRGBA(r=1.0, g=0.0, b=0.0, a=0.35)
         for edge in graph.edges.values():
             node_a = graph.nodes.get(edge.from_id)
@@ -293,40 +299,6 @@ class GraphVisualizer:
             marker.color = ColorRGBA(r=0.6, g=0.6, b=0.6, a=0.8)
         else:
             marker.color = ColorRGBA(r=1.0, g=0.0, b=0.0, a=1.0)
-        return marker
-
-    def _grid_footprint_marker(self, header: Header, grid: ClassifiedGrid) -> Marker:
-        """显示当前局部 grid footprint, 便于区分历史 graph memory"""
-        marker = Marker()
-        marker.header = header
-        marker.ns = "grid_footprint"
-        marker.id = 8
-        marker.action = Marker.ADD
-        marker.type = Marker.LINE_STRIP
-        marker.scale.x = 0.05
-        marker.color = ColorRGBA(r=0.0, g=1.0, b=1.0, a=0.8)
-        z = grid.z_offset + 0.03
-        if grid.grid_map_convention:
-            length_x = grid.grid_map_length_x or grid.height * grid.resolution
-            length_y = grid.grid_map_length_y or grid.width * grid.resolution
-            corners = (
-                (grid.origin_x, grid.origin_y, z),
-                (grid.origin_x - length_x, grid.origin_y, z),
-                (grid.origin_x - length_x, grid.origin_y - length_y, z),
-                (grid.origin_x, grid.origin_y - length_y, z),
-                (grid.origin_x, grid.origin_y, z),
-            )
-        else:
-            width = grid.width * grid.resolution
-            height = grid.height * grid.resolution
-            corners = (
-                (grid.origin_x, grid.origin_y, z),
-                (grid.origin_x + width, grid.origin_y, z),
-                (grid.origin_x + width, grid.origin_y + height, z),
-                (grid.origin_x, grid.origin_y + height, z),
-                (grid.origin_x, grid.origin_y, z),
-            )
-        marker.points = [self._point(corner) for corner in corners]
         return marker
 
     def _point(self, position: Tuple[float, float, float]) -> Point:
