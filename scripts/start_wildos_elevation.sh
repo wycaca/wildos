@@ -38,7 +38,7 @@ set -u
 
 INSTALL_ROOT="$(cd "$(dirname "${INSTALL_SETUP}")" && pwd)"
 export PYTHONNOUSERSITE="${PYTHONNOUSERSITE:-1}"
-export WILDOS_TOPIC_PROFILE="${WILDOS_TOPIC_PROFILE:-isaac}"
+export WILDOS_TOPIC_PROFILE="${WILDOS_TOPIC_PROFILE:-unity}"
 if [[ -n "${PYTHONPATH:-}" ]]; then
   export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH}"
 else
@@ -138,6 +138,13 @@ if launch_arg_enabled "do_object_search" "$@"; then
   ensure_object_search_interfaces
   ensure_installed_executable "object_search_goal_mux" "visual_navigation"
   ensure_installed_executable "object_target_fusion" "visual_navigation"
+fi
+
+if launch_arg_enabled "launch_paper_rviz" "$@"; then
+  if ! ros2 pkg prefix rviz2 >/dev/null 2>&1; then
+    echo "缺少 rviz2, 无法启动论文风格可视化" >&2
+    exit 1
+  fi
 fi
 
 echo "启动 WildOS elevation/2.5D, profile=${WILDOS_TOPIC_PROFILE}, python=${PYTHON_BIN}"

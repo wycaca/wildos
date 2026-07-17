@@ -127,9 +127,12 @@ triangulation3d/triangulation3d/target_particle_filter.py
 3. 重复视角和与稳定目标冲突的观测被拒绝
 4. 两个有效视角后可以形成视觉跟踪目标
 5. 视角数、有效粒子和方差满足条件后形成稳定视觉目标
-6. LiDAR 投影支持足够时可形成可选细化锁定
+6. LiDAR mask 内点先移除地面，再优先选择离相机最近的有效前景簇
+7. 已有视觉轨迹时，单帧 LiDAR 只记录候选，不改变位置、置信度或 source，连续两帧空间一致后才更新和锁定
 
 LiDAR 不是多视角视觉融合成立的前提
+
+Unity 场景的粒子射线最大深度为 `30m`，其他 profile 当前保持 `100m`
 
 ## 6. Goal Mux 状态所有权
 
@@ -140,6 +143,7 @@ LiDAR 不是多视角视觉融合成立的前提
 ```text
 completion latch
   > stable target estimate
+  > physically valid coarse target estimate
   > initial heading exploration goal
 ```
 
@@ -147,8 +151,10 @@ completion latch
 
 - 初始探索目标只基于首帧 odom 和配置 heading 计算一次
 - 单视角 pending 估计不能替换初始目标
-- 稳定融合目标可以更新导航目标
-- 小于 `target_update_min_distance` 的抖动不会移动目标
+- 粗目标必须通过 frame、距离、高度、水平标准差和置信度门控
+- 稳定目标也必须通过 frame 和高度门控
+- 稳定融合目标使用独立的小门槛持续纠偏
+- 普通目标小于 `target_update_min_distance` 的抖动不会移动目标
 - `object_reached` 只有在稳定目标距离满足约束时才能触发完成
 - 完成后持续发布当前位置停止目标和 completed 状态
 

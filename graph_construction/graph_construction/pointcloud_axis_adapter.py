@@ -20,8 +20,8 @@ class PointCloudAxisAdapter(Node):
     def __init__(self) -> None:
         super().__init__("pointcloud_axis_adapter")
 
-        self.declare_parameter("input_topic", "/unitree_go2/lidar/points")
-        self.declare_parameter("output_topic", "/unitree_go2/lidar/points_aligned")
+        self.declare_parameter("input_topic", "/livox/lidar")
+        self.declare_parameter("output_topic", "/livox/lidar_aligned")
         self.declare_parameter("output_frame", "base_link")
         self.declare_parameter("axis_mode", "isaac_lidar_to_base")
 

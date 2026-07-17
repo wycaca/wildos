@@ -24,8 +24,8 @@ profiles:
     pointcloud_output_frame: base_link
 
     # 传感器和 odom
-    pointcloud_input_topic: /unitree_go2/lidar/points
-    aligned_lidar_topic: /unitree_go2/lidar/points_aligned
+    pointcloud_input_topic: /livox/lidar
+    aligned_lidar_topic: /livox/lidar_aligned
     odom_input_topic: /odom
     odom_output_topic: /spot1/odom_for_scoring
 
@@ -38,7 +38,6 @@ profiles:
     model_viz_topic: /spot1/model_visualization
     valid_geofrontiers_topic: /spot1/within_range_geofrontiers
     score_ring_topic: /spot1/score_rings
-    graph_viz_topic: /spot1/nav_graph_viz
     object_mask_topic: /spot1/object_mask
     object_target_estimate_topic: /spot1/object_target_estimate
     object_target_estimate_viz_topic: /spot1/object_target_estimate_viz
@@ -54,6 +53,8 @@ profiles:
     object_search_detection_min_component_pixels: "300"
     object_search_detection_min_component_fraction: "0.0005"
     object_search_detection_confirm_frames: "2"
+    object_search_detection_confirm_window_frames: "3"
+    object_target_max_depth: "100.0"
     visual_frontiers_range: "9.0"
     visual_frontier_threshold: "0.6"
     object_search_detection_debug_interval: "20"
@@ -63,7 +64,6 @@ profiles:
     object_search_reached_mask_fraction: "0.01"
     object_search_reached_min_pixel_count: "1200"
     object_search_reached_confirm_frames: "2"
-    object_search_goal_viz_topic: /spot1/object_search_goal_viz
     object_search_status_topic: /spot1/object_search_status
 
     # planner 输入和三相机 topic
@@ -107,7 +107,6 @@ profiles:
     model_viz_topic: /spot1/model_visualization
     valid_geofrontiers_topic: /spot1/within_range_geofrontiers
     score_ring_topic: /spot1/score_rings
-    graph_viz_topic: /spot1/nav_graph_viz
     object_mask_topic: /spot1/object_mask
     object_target_estimate_topic: /spot1/object_target_estimate
     object_target_estimate_viz_topic: /spot1/object_target_estimate_viz
@@ -123,6 +122,8 @@ profiles:
     object_search_detection_min_component_pixels: "300"
     object_search_detection_min_component_fraction: "0.0005"
     object_search_detection_confirm_frames: "2"
+    object_search_detection_confirm_window_frames: "3"
+    object_target_max_depth: "30.0"
     visual_frontiers_range: "11.0"
     visual_frontier_threshold: "0.55"
     object_search_detection_debug_interval: "20"
@@ -132,7 +133,6 @@ profiles:
     object_search_reached_mask_fraction: "0.01"
     object_search_reached_min_pixel_count: "1200"
     object_search_reached_confirm_frames: "2"
-    object_search_goal_viz_topic: /spot1/object_search_goal_viz
     object_search_status_topic: /spot1/object_search_status
 
     # planner 输入和三相机 topic
@@ -176,7 +176,6 @@ profiles:
     model_viz_topic: /spot1/model_visualization
     valid_geofrontiers_topic: /spot1/within_range_geofrontiers
     score_ring_topic: /spot1/score_rings
-    graph_viz_topic: /spot1/nav_graph_viz
     object_mask_topic: /spot1/object_mask
     object_target_estimate_topic: /spot1/object_target_estimate
     object_target_estimate_viz_topic: /spot1/object_target_estimate_viz
@@ -192,6 +191,8 @@ profiles:
     object_search_detection_min_component_pixels: "300"
     object_search_detection_min_component_fraction: "0.0005"
     object_search_detection_confirm_frames: "2"
+    object_search_detection_confirm_window_frames: "3"
+    object_target_max_depth: "100.0"
     visual_frontiers_range: "9.0"
     visual_frontier_threshold: "0.6"
     object_search_detection_debug_interval: "20"
@@ -201,7 +202,6 @@ profiles:
     object_search_reached_mask_fraction: "0.01"
     object_search_reached_min_pixel_count: "1200"
     object_search_reached_confirm_frames: "2"
-    object_search_goal_viz_topic: /spot1/object_search_goal_viz
     object_search_status_topic: /spot1/object_search_status
 
     # planner 输入和三相机 topic

@@ -14,7 +14,7 @@ from graph_construction.topic_profiles import load_topic_profile, profile_key_de
 def generate_launch_description():
     return LaunchDescription(
         [
-            DeclareLaunchArgument("topic_profile", default_value="isaac", description="Topic profile: isaac, unity, robot"),
+            DeclareLaunchArgument("topic_profile", default_value="unity", description="Topic profile: unity, isaac, robot"),
             DeclareLaunchArgument(
                 "topic_profile_file",
                 default_value="",
@@ -37,6 +37,16 @@ def generate_launch_description():
                 description="Base config file installed by visual_navigation",
             ),
             DeclareLaunchArgument("do_object_search", default_value="false", description="Enable object search"),
+            DeclareLaunchArgument(
+                "launch_paper_rviz",
+                default_value="false",
+                description="Launch the paper-style RViz view and lightweight point cloud",
+            ),
+            DeclareLaunchArgument(
+                "paper_rviz_config",
+                default_value="wildos_paper.rviz",
+                description="RViz config name installed by graph_construction or an absolute path",
+            ),
             DeclareLaunchArgument("use_sim_time", default_value="true", description="Use simulation clock"),
             DeclareLaunchArgument(
                 "graph_start_delay",
@@ -111,7 +121,6 @@ def generate_launch_description():
             _profile_arg("model_viz_topic", "model_viz_topic"),
             _profile_arg("valid_geofrontiers_topic", "valid_geofrontiers_topic"),
             _profile_arg("score_ring_topic", "score_ring_topic"),
-            _profile_arg("graph_viz_topic", "graph_viz_topic"),
             _profile_arg("object_mask_topic", "object_mask_topic"),
             _profile_arg("object_target_estimate_topic", "object_target_estimate_topic"),
             _profile_arg("object_target_estimate_viz_topic", "object_target_estimate_viz_topic"),
@@ -121,6 +130,7 @@ def generate_launch_description():
             _profile_arg("object_search_initial_goal_distance", "object_search_initial_goal_distance"),
             _profile_arg("object_search_initial_goal_heading_deg", "object_search_initial_goal_heading_deg"),
             _profile_arg("object_search_mask_threshold", "object_search_mask_threshold"),
+            _profile_arg("object_target_max_depth", "object_target_max_depth"),
             _profile_arg("visual_frontiers_range", "visual_frontiers_range"),
             _profile_arg("visual_frontier_threshold", "visual_frontier_threshold"),
             _profile_arg("object_search_detection_debug_interval", "object_search_detection_debug_interval"),
@@ -143,7 +153,10 @@ def generate_launch_description():
                 "object_search_detection_min_component_fraction",
             ),
             _profile_arg("object_search_detection_confirm_frames", "object_search_detection_confirm_frames"),
-            _profile_arg("object_search_goal_viz_topic", "object_search_goal_viz_topic"),
+            _profile_arg(
+                "object_search_detection_confirm_window_frames",
+                "object_search_detection_confirm_window_frames",
+            ),
             _profile_arg("object_search_status_topic", "object_search_status_topic"),
             _profile_arg("planner_odom_topic", "planner_odom_topic"),
             _profile_arg("goal_pose_topic", "goal_pose_topic"),
@@ -201,7 +214,6 @@ def _launch_setup(context):
             "model_viz_topic": _value(context, profile, "model_viz_topic", "model_viz_topic"),
             "valid_geofrontiers_topic": _value(context, profile, "valid_geofrontiers_topic", "valid_geofrontiers_topic"),
             "score_ring_topic": _value(context, profile, "score_ring_topic", "score_ring_topic"),
-            "graph_viz_topic": _value(context, profile, "graph_viz_topic", "graph_viz_topic"),
             "object_mask_topic": _value(context, profile, "object_mask_topic", "object_mask_topic"),
             "object_reached_topic": _value(context, profile, "object_reached_topic", "object_reached_topic"),
             "object_completed_topic": _value(context, profile, "object_search_completed_topic", "object_search_completed_topic"),
@@ -252,6 +264,12 @@ def _launch_setup(context):
                 profile,
                 "object_search_detection_confirm_frames",
                 "object_search_detection_confirm_frames",
+            ),
+            "object_search_config.detection_confirm_window_frames": _value(
+                context,
+                profile,
+                "object_search_detection_confirm_window_frames",
+                "object_search_detection_confirm_window_frames",
             ),
             "object_search_config.reached_mask_fraction": _value(
                 context,
@@ -315,7 +333,7 @@ def _launch_setup(context):
         ],
         arguments=["--ros-args", "--log-level", log_level],
         remappings=[
-            ("/unitree_go2/lidar/points_aligned", aligned_lidar_topic),
+            ("/livox/lidar_aligned", aligned_lidar_topic),
         ],
     )
 
@@ -366,6 +384,23 @@ def _launch_setup(context):
         condition=IfCondition(LaunchConfiguration("launch_pointcloud_axis_adapter")),
     )
 
+    paper_rviz_config = Path(_arg(context, "paper_rviz_config"))
+    if not paper_rviz_config.is_absolute():
+        paper_rviz_config = (
+            Path(get_package_share_directory("graph_construction"))
+            / "rviz"
+            / paper_rviz_config
+        )
+    paper_rviz = Node(
+        package="rviz2",
+        executable="rviz2",
+        name="wildos_paper_rviz",
+        output="screen",
+        arguments=["-d", str(paper_rviz_config), "-f", global_frame],
+        parameters=[{"use_sim_time": use_sim_time}],
+        condition=IfCondition(LaunchConfiguration("launch_paper_rviz")),
+    )
+
     wildos = Node(
         package="visual_navigation",
         executable="wildos",
@@ -398,6 +433,14 @@ def _launch_setup(context):
             {"target_marker_topic": _value(context, profile, "object_target_estimate_viz_topic", "object_target_estimate_viz_topic")},
             {"particle_topic": _value(context, profile, "object_target_particles_topic", "object_target_particles_topic")},
             {"completion_topic": _value(context, profile, "object_search_completed_topic", "object_search_completed_topic")},
+            {
+                "max_depth": _float_value(
+                    context,
+                    profile,
+                    "object_target_max_depth",
+                    "object_target_max_depth",
+                )
+            },
         ],
         condition=IfCondition(LaunchConfiguration("do_object_search")),
     )
@@ -410,7 +453,6 @@ def _launch_setup(context):
             _package_config_path("visual_navigation", "object_search_goal_mux.yaml"),
             {"use_sim_time": use_sim_time},
             {"output_goal_topic": goal_pose_topic},
-            {"goal_viz_topic": _value(context, profile, "object_search_goal_viz_topic", "object_search_goal_viz_topic")},
             {"status_topic": _value(context, profile, "object_search_status_topic", "object_search_status_topic")},
             {"object_target_estimate_topic": _value(context, profile, "object_target_estimate_topic", "object_target_estimate_topic")},
             {"object_reached_topic": _value(context, profile, "object_reached_topic", "object_reached_topic")},
@@ -486,6 +528,7 @@ def _launch_setup(context):
         odom_adapter,
         _lidar_static_tf(context, profile),
         pointcloud_axis_adapter,
+        paper_rviz,
         _camera_static_tf("front", camera_parent_frame, camera_transforms["front"], publish_camera_static_tf),
         _camera_static_tf("left", camera_parent_frame, camera_transforms["left"], publish_camera_static_tf),
         _camera_static_tf("right", camera_parent_frame, camera_transforms["right"], publish_camera_static_tf),

@@ -26,7 +26,7 @@ elevation_mapping_node:
 
     subscribers:
       livox:
-        topic_name: /unitree_go2/lidar/points_aligned
+        topic_name: /livox/lidar_aligned
         data_type: pointcloud
 
     publishers:
