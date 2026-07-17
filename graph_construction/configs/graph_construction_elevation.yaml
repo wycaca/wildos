@@ -4,6 +4,7 @@ odom_topic: /spot1/odom_for_scoring
 grid_map_topic: /elevation_mapping_node/elevation_map_raw
 nav_graph_topic: /spot1/nav_graph
 viz_topic: /spot1/graph_construction_viz
+viz_show_radius_markers: false
 
 # GridMap 分类和小洞修复
 grid_map_free_threshold: 0.2
@@ -13,6 +14,12 @@ grid_map_fill_hole_max_cells: 90
 grid_map_fill_hole_min_free_neighbor_ratio: 0.65
 grid_map_fill_elevation_radius_cells: 5
 
+# 用周边地面修补机器人可占用的脚下雷达盲区
+robot_blind_zone_radius: 0.8
+robot_blind_zone_elevation_search_radius: 6.0
+robot_ground_height_offset: 0.22
+robot_ground_elevation_tolerance: 0.5
+
 # 仅保留偏离 GraphBuilderConfig 稳定默认值的调优项
 sample_stride: 6
 min_obstacle_clearance: 0.3
@@ -20,3 +27,4 @@ edge_radius: 6.0
 max_edge_neighbors: 4
 current_node_max_edge_neighbors: 12
 frontier_candidate_spacing: 0.5
+frontier_visited_corridor_radius: 0.65

@@ -27,6 +27,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "grid_map_topic": "/elevation_mapping_node/elevation_map_raw",
     "nav_graph_topic": "/spot1/nav_graph",
     "viz_topic": "/spot1/graph_construction_viz",
+    "viz_show_radius_markers": False,
     "publish_rate_hz": 2.0,
     "grid_map_traversability_layer": "traversability",
     "grid_map_elevation_layer": "elevation",
@@ -59,7 +60,11 @@ class GraphConstructionNode(Node):
         super().__init__("graph_construction")
         self.config = _resolve_config(config)
         self.builder = SparseGraphBuilder(_builder_config(self.config))
-        self.visualizer = GraphVisualizer()
+        self.visualizer = GraphVisualizer(
+            show_radius_markers=bool(
+                self.config.get("viz_show_radius_markers", False)
+            )
+        )
 
         self.latest_grid = None
         self.latest_odom = None
@@ -146,7 +151,6 @@ class GraphConstructionNode(Node):
             self.visualizer.build_markers(
                 update_result.graph,
                 header,
-                update_result.classified_grid,
             )
         )
 
@@ -243,7 +247,12 @@ def _format_grid_stats(stats: Any) -> str:
     return (
         f", 有效={stats.get('valid', 0)}, 原始free={stats.get('raw_free', 0)}, "
         f"原始obstacle={stats.get('raw_obstacle', 0)}, 原始unknown={stats.get('raw_unknown', 0)}, "
-        f"free={stats.get('free', 0)}, obstacle={stats.get('obstacle', 0)}, unknown={stats.get('unknown', 0)}"
+        f"free={stats.get('free', 0)}, obstacle={stats.get('obstacle', 0)}, "
+        f"unknown={stats.get('unknown', 0)}, "
+        f"脚下盲区修补={stats.get('robot_blind_zone_filled', 0)}, "
+        f"盲区状态={stats.get('robot_blind_zone_status', 'unknown')}, "
+        f"地面来源={stats.get('robot_blind_zone_ground_source', 'none')}, "
+        f"最近地面={stats.get('robot_blind_zone_nearest_ground', 'none')}m"
     )
 
 

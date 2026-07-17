@@ -38,6 +38,7 @@ def _frontier_detector() -> FrontierDetector:
         frontier_min_span=0.0,
         frontier_border_margin=0.0,
         frontier_candidate_spacing=0.0,
+        frontier_visited_corridor_radius=0.65,
     )
 
 
@@ -129,6 +130,68 @@ def test_nonfinite_explored_radius_does_not_hide_current_frontier():
     stale_node = graph.create_node(position=(0.5, 0.5, 0.0), stamp_seconds=1.0)
     stale_node.explored_radius = float("inf")
     owner = graph.create_node(position=(2.5, 2.5, 0.0), stamp_seconds=1.0)
+
+    _frontier_detector().assign_frontiers(
+        graph,
+        _grid(free=free, unknown=unknown),
+        frontier_cells=[(2, 2)],
+    )
+
+    assert owner.is_frontier
+    assert owner.frontier_points == [(2.5, 2.5, 0.0)]
+
+
+def test_frontier_inside_visited_trajectory_corridor_is_not_created():
+    """已走过平坦区域附近的 unknown 边缘不能重新成为活动 Frontier"""
+    free = np.ones((6, 6), dtype=bool)
+    unknown = np.zeros((6, 6), dtype=bool)
+    unknown[2, 3] = True
+    free[2, 3] = False
+    graph = GraphState()
+    owner = graph.create_node(position=(1.5, 2.5, 0.0), stamp_seconds=1.0)
+    graph.trajectory_points.append((2.5, 2.5, 0.0))
+
+    _frontier_detector().assign_frontiers(
+        graph,
+        _grid(free=free, unknown=unknown),
+        frontier_cells=[(2, 2)],
+    )
+
+    assert not owner.is_frontier
+    assert owner.frontier_points == []
+
+
+def test_historical_frontier_entering_visited_corridor_is_removed():
+    """机器人走过历史 Frontier 后必须清除对应紫色边界点"""
+    free = np.ones((6, 6), dtype=bool)
+    unknown = np.zeros((6, 6), dtype=bool)
+    unknown[2, 3] = True
+    free[2, 3] = False
+    graph = GraphState()
+    owner = graph.create_node(position=(1.5, 2.5, 0.0), stamp_seconds=1.0)
+    owner.frontier_points = [(2.5, 2.5, 0.0)]
+    owner.is_frontier = True
+    graph.trajectory_points.append((2.5, 2.5, 0.0))
+
+    _frontier_detector().assign_frontiers(
+        graph,
+        _grid(free=free, unknown=unknown),
+        frontier_cells=[(2, 2)],
+    )
+
+    assert not owner.is_frontier
+    assert owner.frontier_points == []
+
+
+def test_frontier_outside_visited_corridor_remains_available():
+    """轨迹走廊外的真实侧向分支仍应保留为活动 Frontier"""
+    free = np.ones((6, 6), dtype=bool)
+    unknown = np.zeros((6, 6), dtype=bool)
+    unknown[2, 3] = True
+    free[2, 3] = False
+    graph = GraphState()
+    owner = graph.create_node(position=(1.5, 2.5, 0.0), stamp_seconds=1.0)
+    graph.trajectory_points.append((2.5, 1.5, 0.0))
 
     _frontier_detector().assign_frontiers(
         graph,

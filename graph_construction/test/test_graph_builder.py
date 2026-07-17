@@ -345,6 +345,160 @@ def test_graph_builder_adds_robot_anchor_when_robot_cell_is_unknown():
     )
 
 
+def test_graph_builder_repairs_robot_blind_zone_from_nearby_ground():
+    """验证脚下 unknown 只用周边地面修补且不覆盖障碍物"""
+    free = np.ones((9, 9), dtype=bool)
+    obstacle = np.zeros((9, 9), dtype=bool)
+    unknown = np.zeros((9, 9), dtype=bool)
+    elevation = np.full((9, 9), 0.25, dtype=float)
+    free[3:6, 3:6] = False
+    unknown[3:6, 3:6] = True
+    elevation[3:6, 3:6] = np.nan
+    obstacle[4, 5] = True
+    unknown[4, 5] = False
+    grid = ClassifiedGrid(
+        width=9,
+        height=9,
+        resolution=0.5,
+        origin_x=0.0,
+        origin_y=0.0,
+        frame_id="map",
+        free=free,
+        obstacle=obstacle,
+        unknown=unknown,
+        elevation=elevation,
+        stats={},
+    )
+    builder = SparseGraphBuilder(
+        GraphBuilderConfig(
+            robot_blind_zone_radius=0.8,
+            robot_blind_zone_elevation_search_radius=2.0,
+            min_obstacle_clearance=0.0,
+        )
+    )
+
+    result = builder.update(grid, robot_position=(2.25, 2.25, 0.8), stamp_seconds=1.0)
+
+    center = result.classified_grid.world_to_grid(2.25, 2.25)
+    assert center is not None
+    assert result.classified_grid.is_free_index(center[0], center[1])
+    assert result.classified_grid.elevation_at_index(center[0], center[1]) == 0.25
+    assert result.classified_grid.is_obstacle_index(5, 4)
+    assert result.classified_grid.stats["robot_blind_zone_filled"] > 0
+    current = result.graph.nodes[result.graph.current_node_id]
+    assert current.is_robot_anchor
+    assert current.position == (2.25, 2.25, 0.25)
+
+
+def test_graph_builder_uses_robot_anchor_as_current_node_on_known_ground():
+    """验证已知地面也用精确机器人位置作为规划起点"""
+    grid = ClassifiedGrid(
+        width=7,
+        height=7,
+        resolution=1.0,
+        origin_x=0.0,
+        origin_y=0.0,
+        frame_id="map",
+        free=np.ones((7, 7), dtype=bool),
+        obstacle=np.zeros((7, 7), dtype=bool),
+        unknown=np.zeros((7, 7), dtype=bool),
+        elevation=np.zeros((7, 7), dtype=float),
+    )
+    builder = SparseGraphBuilder(
+        GraphBuilderConfig(min_obstacle_clearance=0.0, edge_radius=3.0)
+    )
+
+    result = builder.update(grid, robot_position=(3.2, 3.4, 0.8), stamp_seconds=1.0)
+
+    current = result.graph.nodes[result.graph.current_node_id]
+    assert current.is_robot_anchor
+    assert current.position == (3.2, 3.4, 0.0)
+
+
+def test_graph_builder_rejects_implausible_high_surface_near_blind_zone():
+    """验证墙面或高台高程不会被当成脚下地面"""
+    free = np.ones((15, 15), dtype=bool)
+    obstacle = np.zeros((15, 15), dtype=bool)
+    unknown = np.zeros((15, 15), dtype=bool)
+    elevation = np.full((15, 15), 1.3, dtype=float)
+    free[5:10, 5:10] = False
+    unknown[5:10, 5:10] = True
+    elevation[5:10, 5:10] = np.nan
+    grid = ClassifiedGrid(
+        width=15,
+        height=15,
+        resolution=0.2,
+        origin_x=0.0,
+        origin_y=0.0,
+        frame_id="map",
+        free=free,
+        obstacle=obstacle,
+        unknown=unknown,
+        elevation=elevation,
+        stats={},
+    )
+    builder = SparseGraphBuilder(
+        GraphBuilderConfig(
+            robot_blind_zone_radius=0.4,
+            robot_blind_zone_elevation_search_radius=3.0,
+            robot_ground_height_offset=0.22,
+            robot_ground_elevation_tolerance=0.5,
+            min_obstacle_clearance=0.0,
+        )
+    )
+
+    result = builder.update(grid, robot_position=(1.5, 1.5, 0.22), stamp_seconds=1.0)
+
+    center = result.classified_grid.world_to_grid(1.5, 1.5)
+    assert center is not None
+    assert result.classified_grid.elevation_at_index(center[0], center[1]) == 0.0
+    assert result.classified_grid.stats["robot_blind_zone_ground_source"] == "odom"
+
+
+def test_graph_builder_samples_outer_free_component_after_blind_zone_repair():
+    """验证脚下修补小岛不会阻断外围 free 分量采样"""
+    free = np.ones((31, 31), dtype=bool)
+    obstacle = np.zeros((31, 31), dtype=bool)
+    unknown = np.zeros((31, 31), dtype=bool)
+    elevation = np.zeros((31, 31), dtype=float)
+    free[9:22, 9:22] = False
+    unknown[9:22, 9:22] = True
+    elevation[9:22, 9:22] = np.nan
+    grid = ClassifiedGrid(
+        width=31,
+        height=31,
+        resolution=0.2,
+        origin_x=0.0,
+        origin_y=0.0,
+        frame_id="map",
+        free=free,
+        obstacle=obstacle,
+        unknown=unknown,
+        elevation=elevation,
+        stats={},
+    )
+    builder = SparseGraphBuilder(
+        GraphBuilderConfig(
+            robot_blind_zone_radius=0.5,
+            robot_blind_zone_elevation_search_radius=3.0,
+            sample_stride=4,
+            min_node_separation=0.2,
+            min_obstacle_clearance=0.0,
+            edge_radius=3.0,
+        )
+    )
+
+    result = builder.update(grid, robot_position=(3.1, 3.1, 0.22), stamp_seconds=1.0)
+
+    current_id = result.graph.current_node_id
+    assert current_id is not None
+    assert len(result.graph.nodes) > 2
+    assert any(
+        current_id in (edge.from_id, edge.to_id)
+        for edge in result.graph.edges.values()
+    )
+
+
 def test_graph_builder_bootstraps_free_component_across_large_unknown_footprint():
     """Unity 脚下大洞时从 anchor 连边半径内的最近 free 区域恢复采样"""
     free = np.ones((11, 11), dtype=bool)

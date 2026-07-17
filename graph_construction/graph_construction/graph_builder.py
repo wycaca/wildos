@@ -24,6 +24,12 @@ class GraphBuilderConfig:
     # 过滤局部高程尖峰和帘状面噪声
     grid_map_max_surface_step: float = 0.35
 
+    # 用周边可靠地面修补机器人脚下的雷达盲区
+    robot_blind_zone_radius: float = 0.8
+    robot_blind_zone_elevation_search_radius: float = 6.0
+    robot_ground_height_offset: float = 0.22
+    robot_ground_elevation_tolerance: float = 0.5
+
     sample_stride: int = 8
     min_node_separation: float = 1.0
     max_free_radius: float = 4.0
@@ -36,6 +42,7 @@ class GraphBuilderConfig:
     frontier_min_span: float = 0.6
     frontier_border_margin: float = 0.8
     frontier_candidate_spacing: float = 0.0
+    frontier_visited_corridor_radius: float = 0.65
 
 
 @dataclass
@@ -63,6 +70,7 @@ class SparseGraphBuilder:
             frontier_min_span=config.frontier_min_span,
             frontier_border_margin=config.frontier_border_margin,
             frontier_candidate_spacing=config.frontier_candidate_spacing,
+            frontier_visited_corridor_radius=config.frontier_visited_corridor_radius,
         )
         self.edge_builder = EdgeBuilder(
             edge_radius=config.edge_radius,
@@ -127,10 +135,13 @@ class SparseGraphBuilder:
         stamp_seconds: float,
     ) -> GraphUpdateResult:
         self._sanitize_grid_surface(grid)
+        self._repair_robot_blind_zone(grid, robot_position)
 
         robot_ground_position, robot_ground_projected = (
             grid.project_to_elevation_with_status(robot_position)
         )
+        if robot_ground_projected:
+            self.graph.append_trajectory_point(robot_ground_position, 0.25)
         reachable_free = self._reachable_free_mask(grid, robot_ground_position)
         # 距离场用于节点 clearance 和 frontier 生命周期判断
         sdf_obstacle = distance_to_mask(grid.obstacle, grid.resolution)
@@ -203,6 +214,110 @@ class SparseGraphBuilder:
             graph=self.graph,
             classified_grid=grid,
         )
+
+    def _repair_robot_blind_zone(
+        self,
+        grid: ClassifiedGrid,
+        robot_position: Tuple[float, float, float],
+    ) -> int:
+        """只修补机器人可物理占用的脚下 unknown 区域
+
+        高程取自盲区边缘最近的可靠地面中位数, 明确障碍物不会被清除
+        """
+        if grid.stats is None:
+            grid.stats = {}
+        grid.stats["robot_blind_zone_filled"] = 0
+        if grid.elevation is None or self.config.robot_blind_zone_radius <= 0.0:
+            grid.stats["robot_blind_zone_status"] = "disabled"
+            return 0
+
+        center = grid.world_to_grid(robot_position[0], robot_position[1])
+        if center is None:
+            grid.stats["robot_blind_zone_status"] = "outside_grid"
+            return 0
+        if grid.is_obstacle_index(center[0], center[1]):
+            grid.stats["robot_blind_zone_status"] = "center_obstacle"
+            return 0
+
+        resolution = max(grid.resolution, 1e-6)
+        search_radius = max(
+            self.config.robot_blind_zone_radius,
+            self.config.robot_blind_zone_elevation_search_radius,
+        )
+        search_cells = max(1, int(math.ceil(search_radius / resolution)))
+        samples = []
+        center_x, center_y = center
+        for offset_y in range(-search_cells, search_cells + 1):
+            for offset_x in range(-search_cells, search_cells + 1):
+                ix = center_x + offset_x
+                iy = center_y + offset_y
+                distance = hypot(offset_x * resolution, offset_y * resolution)
+                if distance > search_radius or not (
+                    0 <= ix < grid.width and 0 <= iy < grid.height
+                ):
+                    continue
+                if grid.is_obstacle_index(ix, iy):
+                    continue
+                elevation = float(grid.elevation[iy, ix])
+                if math.isfinite(elevation):
+                    samples.append((distance, elevation))
+        samples.sort(key=lambda item: item[0])
+        expected_ground = robot_position[2] - self.config.robot_ground_height_offset
+        plausible_samples = [
+            sample
+            for sample in samples
+            if abs(sample[1] + grid.z_offset - expected_ground)
+            <= self.config.robot_ground_elevation_tolerance
+        ]
+        ground_source = "map"
+        if plausible_samples:
+            samples = plausible_samples
+        else:
+            samples = [(0.0, expected_ground - grid.z_offset)]
+            ground_source = "odom"
+
+        nearest_distance = samples[0][0]
+        grid.stats["robot_blind_zone_nearest_ground"] = round(nearest_distance, 3)
+        grid.stats["robot_blind_zone_ground_source"] = ground_source
+        sample_band = nearest_distance + max(0.4, 2.0 * resolution)
+        ground_samples = [
+            elevation
+            for distance, elevation in samples
+            if distance <= sample_band
+        ][:32]
+        ground_elevation = float(np.median(ground_samples))
+
+        repair_cells = max(
+            1,
+            int(math.ceil(self.config.robot_blind_zone_radius / resolution)),
+        )
+        repaired = 0
+        for offset_y in range(-repair_cells, repair_cells + 1):
+            for offset_x in range(-repair_cells, repair_cells + 1):
+                if (
+                    hypot(offset_x * resolution, offset_y * resolution)
+                    > self.config.robot_blind_zone_radius
+                ):
+                    continue
+                ix = center_x + offset_x
+                iy = center_y + offset_y
+                if not (0 <= ix < grid.width and 0 <= iy < grid.height):
+                    continue
+                if grid.is_obstacle_index(ix, iy) or not grid.is_unknown_index(ix, iy):
+                    continue
+                grid.unknown[iy, ix] = False
+                grid.free[iy, ix] = True
+                grid.elevation[iy, ix] = ground_elevation
+                repaired += 1
+
+        if repaired > 0:
+            grid.stats["robot_blind_zone_filled"] = repaired
+            grid.stats["robot_blind_zone_status"] = "repaired"
+            grid.stats["free"] = int(np.count_nonzero(grid.free))
+            grid.stats["unknown"] = int(np.count_nonzero(grid.unknown))
+        else:
+            grid.stats["robot_blind_zone_status"] = "known_ground"
+        return repaired
 
     def _update_existing_nodes(
         self,
@@ -315,14 +430,14 @@ class SparseGraphBuilder:
         robot_ground_projected: bool,
         stamp_seconds: float,
     ) -> None:
-        """把机器人当前位置映射到 NavigationGraph.current_node_idx"""
-        best_node = self._nearest_collision_free_node(grid, robot_ground_position)
+        """用跟随机器人的 anchor 固定路径起点语义"""
+        best_node = self._ensure_robot_anchor_node(
+            grid,
+            robot_ground_position,
+            stamp_seconds,
+        )
         if best_node is None:
-            best_node = self._ensure_robot_anchor_node(
-                grid,
-                robot_ground_position,
-                stamp_seconds,
-            )
+            best_node = self._nearest_collision_free_node(grid, robot_ground_position)
         if best_node is None:
             best_node = self.graph.nearest_node(robot_ground_position)
         self.graph.current_node_id = best_node.node_id if best_node is not None else None
@@ -330,21 +445,15 @@ class SparseGraphBuilder:
             robot_position,
             robot_ground_position if robot_ground_projected else None,
         )
-        if robot_ground_projected:
-            self.graph.append_trajectory_point(
-                robot_ground_position,
-                0.25,
-            )
 
     def _reachable_free_mask(
         self,
         grid: ClassifiedGrid,
         robot_position: Tuple[float, float, float],
     ) -> np.ndarray:
-        """计算机器人脚下 free cell 的四连通分量
+        """计算机器人脚下及盲区外围的可达 free 分量
 
-        脚下 cell 为 unknown 或 obstacle 时返回空 mask, 本帧依靠持久图和 anchor
-        不从其他不连通 free 区域采样新节点
+        只允许跨越无明确障碍的 unknown 盲区选择最近外围分量
         """
         reachable = np.zeros((grid.height, grid.width), dtype=bool)
         start = grid.world_to_grid(robot_position[0], robot_position[1])
@@ -363,17 +472,41 @@ class SparseGraphBuilder:
         if start is None:
             return reachable
 
-        queue = deque([start])
-        reachable[start[1], start[0]] = True
-        while queue:
-            current_x, current_y = queue.popleft()
-            for offset_x, offset_y in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-                next_x = current_x + offset_x
-                next_y = current_y + offset_y
-                if not grid.is_free_index(next_x, next_y) or reachable[next_y, next_x]:
-                    continue
-                reachable[next_y, next_x] = True
-                queue.append((next_x, next_y))
+        queue = deque()
+
+        def flood_fill(seed: tuple[int, int]) -> None:
+            """从单个 seed 扩展完整 free 分量"""
+            queue.append(seed)
+            reachable[seed[1], seed[0]] = True
+            while queue:
+                current_x, current_y = queue.popleft()
+                for offset_x, offset_y in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                    next_x = current_x + offset_x
+                    next_y = current_y + offset_y
+                    if (
+                        not grid.is_free_index(next_x, next_y)
+                        or reachable[next_y, next_x]
+                    ):
+                        continue
+                    reachable[next_y, next_x] = True
+                    queue.append((next_x, next_y))
+
+        queue.clear()
+        flood_fill(start)
+
+        # 修补后的脚下小岛仍需跨 unknown 盲区引导采样外围 free 分量
+        max_radius_cells = max(
+            int(math.ceil(self.config.edge_radius / max(grid.resolution, 1e-6))),
+            1,
+        )
+        outer_start = self._nearest_free_neighbor(
+            grid,
+            start,
+            max_radius_cells=max_radius_cells,
+            excluded=reachable,
+        )
+        if outer_start is not None:
+            flood_fill(outer_start)
         return reachable
 
     def _nearest_free_neighbor(
@@ -381,6 +514,7 @@ class SparseGraphBuilder:
         grid: ClassifiedGrid,
         start: tuple[int, int],
         max_radius_cells: int,
+        excluded: np.ndarray | None = None,
     ) -> tuple[int, int] | None:
         """在 anchor 可连接范围内选择无明确障碍隔断的最近 free cell"""
         start_x, start_y = start
@@ -390,6 +524,8 @@ class SparseGraphBuilder:
                 next_x = start_x + offset_x
                 next_y = start_y + offset_y
                 if not grid.is_free_index(next_x, next_y):
+                    continue
+                if excluded is not None and excluded[next_y, next_x]:
                     continue
                 distance_sq = offset_x * offset_x + offset_y * offset_y
                 candidates.append((distance_sq, next_x, next_y))
@@ -462,6 +598,7 @@ class SparseGraphBuilder:
             ):
                 return node
         return None
+
 
 def _adaptive_lattice_multiple(free_radius: float, base_spacing: float) -> int:
     """选择不超过局部自由半径的二次幂网格倍数"""

@@ -30,6 +30,13 @@ public:
     this->declare_parameter("frontier_score_factor", 20.0);
     this->declare_parameter("frontier_continuity_radius", 5.0);
     this->declare_parameter("frontier_progress_timeout", 12.0);
+    this->declare_parameter("frontier_progress_start_grace", 20.0);
+    this->declare_parameter("directional_min_forward_progress", 0.5);
+    this->declare_parameter("directional_max_initial_backtrack", 2.0);
+    this->declare_parameter("directional_block_confirm_timeout", 5.0);
+    this->declare_parameter("frontier_failure_cooldown", 60.0);
+    this->declare_parameter("frontier_failure_merge_radius", 2.5);
+    this->declare_parameter("path_invalid_confirm_duration", 1.5);
     this->declare_parameter("revisit_cost_factor", 1.0);
 
     const auto nonnegative_parameter = [this](const std::string& name) {
@@ -45,6 +52,19 @@ public:
     planner_.frontier_score_factor_ = nonnegative_parameter("frontier_score_factor");
     planner_.frontier_continuity_radius_ = nonnegative_parameter("frontier_continuity_radius");
     planner_.frontier_progress_timeout_ = nonnegative_parameter("frontier_progress_timeout");
+    planner_.frontier_progress_start_grace_ = nonnegative_parameter("frontier_progress_start_grace");
+    planner_.directional_min_forward_progress_ =
+      nonnegative_parameter("directional_min_forward_progress");
+    planner_.directional_max_initial_backtrack_ =
+      nonnegative_parameter("directional_max_initial_backtrack");
+    planner_.directional_block_confirm_timeout_ =
+      nonnegative_parameter("directional_block_confirm_timeout");
+    planner_.frontier_failure_cooldown_ =
+      nonnegative_parameter("frontier_failure_cooldown");
+    planner_.frontier_failure_merge_radius_ =
+      nonnegative_parameter("frontier_failure_merge_radius");
+    planner_.path_invalid_confirm_duration_ =
+      nonnegative_parameter("path_invalid_confirm_duration");
     planner_.revisit_cost_factor_ = nonnegative_parameter("revisit_cost_factor");
 
     planner_.set_trav_class("default");
@@ -103,6 +123,31 @@ private:
     return status.substr(state_begin, separator - state_begin);
   }
 
+  static const char* object_search_state_name(const std::string& state)
+  {
+    if (state == "WAIT_FOR_ODOM")
+    {
+      return "等待里程计";
+    }
+    if (state == "SEARCHING_WITH_INITIAL_GOAL")
+    {
+      return "按初始方向探索";
+    }
+    if (state == "TARGET_APPROACH_COARSE")
+    {
+      return "接近视觉粗目标";
+    }
+    if (state == "TARGET_APPROACH_METRIC")
+    {
+      return "接近稳定融合目标";
+    }
+    if (state == "TARGET_REACHED_VIEWPOINT")
+    {
+      return "目标到达观察点";
+    }
+    return "未知状态";
+  }
+
   void on_object_search_status(const std_msgs::msg::String& msg)
   {
     const std::string state = object_search_state(msg.data);
@@ -119,9 +164,10 @@ private:
     planner_.reset_exploration_state();
     RCLCPP_INFO(
       this->get_logger(),
-      "目标搜索规划模式切换, state=%s, directional_exploration=%s",
+      "目标搜索规划模式切换, 状态=%s(%s), 路线类型=%s",
+      object_search_state_name(state),
       state.c_str(),
-      directional_exploration_mode_ ? "true" : "false");
+      directional_exploration_mode_ ? "初始方向探索" : "目标接近");
   }
 
   static bool same_goal_pose(
@@ -157,7 +203,7 @@ private:
       }
       catch (const tf2::TransformException& ex)
       {
-        RCLCPP_WARN(this->get_logger(), "Could not transform goal pose to graph frame: %s", ex.what());
+        RCLCPP_WARN(this->get_logger(), "目标位姿无法转换到导航图坐标系, 原因=%s", ex.what());
         return;
       }
       Eigen::Vector3d goal_vec(goal_in_graph_frame.pose.position.x, goal_in_graph_frame.pose.position.y,
@@ -199,7 +245,7 @@ private:
         }
         catch (const tf2::TransformException& ex)
         {
-          RCLCPP_WARN(this->get_logger(), "Could not transform robot pose to graph frame: %s", ex.what());
+          RCLCPP_WARN(this->get_logger(), "机器人位姿无法转换到导航图坐标系, 原因=%s", ex.what());
         }
       }
       const auto planning_result = planner_.plan_to_goal(
@@ -275,12 +321,12 @@ private:
                                    odom_->pose.pose.position.z);
           if (!directional_exploration_mode_ && (goal_vec - odom_vec).norm() < goal_radius_)
           {
-            goal_pose_.reset();  // clear goal
+            goal_pose_.reset();  // 清除已到达目标
           }
         }
         catch (const tf2::TransformException& ex)
         {
-          RCLCPP_WARN(this->get_logger(), "Could not transform goal pose to odom frame: %s", ex.what());
+          RCLCPP_WARN(this->get_logger(), "目标位姿无法转换到里程计坐标系, 原因=%s", ex.what());
         }
       }
     }

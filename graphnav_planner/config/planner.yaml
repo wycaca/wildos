@@ -5,5 +5,12 @@
     frontier_score_factor: 20.0
     frontier_continuity_radius: 5.0
     frontier_progress_timeout: 12.0
+    frontier_progress_start_grace: 20.0
+    directional_min_forward_progress: 0.5
+    directional_max_initial_backtrack: 2.0
+    directional_block_confirm_timeout: 5.0
+    frontier_failure_cooldown: 60.0
+    frontier_failure_merge_radius: 2.5
+    path_invalid_confirm_duration: 1.5
     revisit_cost_factor: 1.0
     goal_radius: 3.0

@@ -119,6 +119,65 @@ bool is_route_suffix(
   return std::equal(route.rbegin(), route.rend(), committed_route.rbegin());
 }
 
+bool route_has_repeated_nodes(const std::vector<std::string>& route)
+{
+  std::unordered_set<std::string> visited;
+  for (const auto& node_uuid : route)
+  {
+    if (!visited.insert(node_uuid).second)
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+const char* selection_reason_name(const std::string& reason)
+{
+  if (reason == "continuation")
+  {
+    return "延续当前走廊";
+  }
+  if (reason == "initial")
+  {
+    return "首次选择";
+  }
+  if (reason == "branch_recovery")
+  {
+    return "当前分支释放后恢复";
+  }
+  if (reason == "deferred_recovery")
+  {
+    return "恢复历史候选分支";
+  }
+  if (reason == "initial_forward_route")
+  {
+    return "选择初始前向路线";
+  }
+  if (reason == "directional_branch_recovery")
+  {
+    return "初始方向分支恢复";
+  }
+  if (reason == "confirmed_forward_blocked")
+  {
+    return "初始前向确认阻塞后改选";
+  }
+  return "未分类原因";
+}
+
+const char* release_reason_name(const std::string& reason)
+{
+  if (reason == "path_invalid")
+  {
+    return "路径失效";
+  }
+  if (reason == "no_path_progress")
+  {
+    return "路径持续无进展";
+  }
+  return "未分类原因";
+}
+
 }  // namespace
 
 Planner::Planner(rclcpp::Logger logger) : logger_(logger)
@@ -151,10 +210,12 @@ void Planner::start_directional_exploration(
     planar_direction.normalized(),
     std::max(lookahead_distance, 1.0),
   };
+  directional_blocked_since_.reset();
+  directional_alternatives_allowed_ = false;
   reset_frontier_branch();
   RCLCPP_INFO(
     logger_,
-    "固定初始探索方向, origin=(%.2f, %.2f), direction=(%.3f, %.3f), lookahead=%.1f",
+    "固定初始探索方向, 起点=(%.2f, %.2f), 方向=(%.3f, %.3f), 前视距离=%.1fm",
     origin.x(),
     origin.y(),
     directional_exploration_->direction.x(),
@@ -187,7 +248,7 @@ void Planner::update_graph(graphnav_msgs::msg::NavigationGraph::ConstSharedPtr g
   auto trav_class_it = std::find(graph->trav_classes.begin(), graph->trav_classes.end(), trav_class_);
   if (trav_class_it == graph->trav_classes.end())
   {
-    RCLCPP_WARN(logger_, "Traversability class %s not found in graph", trav_class_.c_str());
+    RCLCPP_WARN(logger_, "导航图中缺少可通行类别, 类别=%s", trav_class_.c_str());
     trav_class_idx_ = 0;
     return;
   }
@@ -196,7 +257,7 @@ void Planner::update_graph(graphnav_msgs::msg::NavigationGraph::ConstSharedPtr g
   {
     if (edge.from_idx >= graph->nodes.size() || edge.to_idx >= graph->nodes.size())
     {
-      RCLCPP_WARN(logger_, "导航图 edge 越界, 跳过 edge, from=%lu, to=%lu, nodes=%zu",
+      RCLCPP_WARN(logger_, "导航图边索引越界, 已跳过, 起点=%lu, 终点=%lu, 节点数=%zu",
                   static_cast<unsigned long>(edge.from_idx), static_cast<unsigned long>(edge.to_idx),
                   graph->nodes.size());
       continue;
@@ -220,7 +281,7 @@ void Planner::update_graph(graphnav_msgs::msg::NavigationGraph::ConstSharedPtr g
   if (current_node_idx_ >= graph->nodes.size())
   {
     reset_frontier_branch();
-    RCLCPP_WARN(logger_, "current_node_idx 越界, 跳过 planner 更新, current=%lu, nodes=%zu",
+    RCLCPP_WARN(logger_, "当前节点索引越界, 跳过规划器更新, 当前索引=%lu, 节点数=%zu",
                 static_cast<unsigned long>(current_node_idx_), graph->nodes.size());
     return;
   }
@@ -270,6 +331,7 @@ void Planner::update_traversal_memory(const graphnav_msgs::msg::NavigationGraph&
 void Planner::reset_frontier_branch()
 {
   active_branch_.reset();
+  path_invalid_since_.reset();
 }
 
 void Planner::clear_deferred_branches()
@@ -304,8 +366,11 @@ void Planner::update_active_branch_progress(
     return;
   }
 
-  // 进度只接受沿已提交路径增加的弧长, 横移和回退不会重置死路计时
-  const double progress = path_progress(active_branch_->path_points, current_position);
+  // 初始探索使用固定方向投影, 路线重建后仍保持单调进度
+  const double progress = directional_exploration_ ?
+    (current_position - directional_exploration_->origin).dot(
+      directional_exploration_->direction) :
+    path_progress(active_branch_->path_points, current_position);
   if (progress >= active_branch_->max_path_progress + 0.25)
   {
     active_branch_->max_path_progress = progress;
@@ -372,17 +437,97 @@ void Planner::release_active_branch(const char* reason, rclcpp::Time current_tim
   {
     return;
   }
-  stalled_frontier_ = active_branch_->frontier_position;
-  stalled_frontier_uuid_ = active_branch_->frontier_uuid;
-  stalled_branch_direction_ = active_branch_->terminal_direction;
-  stalled_frontier_until_ = current_time +
-    rclcpp::Duration::from_seconds(frontier_progress_timeout_);
+  record_failed_branch(current_time);
   RCLCPP_WARN(
     logger_,
-    "释放探索分支, reason=%s, frontier=%s",
+    "%s, 原因=%s(%s), frontier=%s",
+    directional_exploration_ ? "释放初始方向探索分支" : "释放目标接近中继分支",
+    release_reason_name(reason),
     reason,
     active_branch_->frontier_uuid.c_str());
   reset_frontier_branch();
+}
+
+bool Planner::branch_is_suppressed(
+  const std::string& frontier_uuid,
+  const Eigen::Vector3d& position,
+  const std::optional<Eigen::Vector3d>& direction,
+  rclcpp::Time current_time) const
+{
+  for (const auto& failed : failed_branches_)
+  {
+    const bool same_uuid = frontier_uuid == failed.frontier_uuid;
+    Eigen::Vector3d delta = position - failed.position;
+    delta.z() = 0.0;
+    bool same_corridor = delta.norm() <= frontier_failure_merge_radius_;
+    if (same_corridor && direction && failed.direction &&
+        direction->norm() >= 1e-6 && failed.direction->norm() >= 1e-6)
+    {
+      same_corridor = std::abs(
+        direction->normalized().dot(failed.direction->normalized())) >= 0.5;
+    }
+    if ((same_uuid || same_corridor) &&
+        (failed.retry_after - current_time).seconds() > 0.0)
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+void Planner::record_failed_branch(rclcpp::Time current_time)
+{
+  if (!active_branch_)
+  {
+    return;
+  }
+
+  FailedBranch* matched = nullptr;
+  for (auto& failed : failed_branches_)
+  {
+    Eigen::Vector3d delta = active_branch_->frontier_position - failed.position;
+    delta.z() = 0.0;
+    bool same_corridor = delta.norm() <= frontier_failure_merge_radius_;
+    if (same_corridor && active_branch_->terminal_direction && failed.direction)
+    {
+      same_corridor = std::abs(
+        active_branch_->terminal_direction->normalized().dot(
+          failed.direction->normalized())) >= 0.5;
+    }
+    if (failed.frontier_uuid == active_branch_->frontier_uuid || same_corridor)
+    {
+      matched = &failed;
+      break;
+    }
+  }
+
+  if (matched == nullptr)
+  {
+    failed_branches_.push_back(FailedBranch{
+      active_branch_->frontier_uuid,
+      active_branch_->frontier_position,
+      active_branch_->terminal_direction,
+      0,
+      current_time,
+    });
+    matched = &failed_branches_.back();
+  }
+
+  matched->frontier_uuid = active_branch_->frontier_uuid;
+  matched->position = active_branch_->frontier_position;
+  matched->direction = active_branch_->terminal_direction;
+  matched->failure_count += 1;
+  const double cooldown = frontier_failure_cooldown_ *
+    static_cast<double>(std::min<std::uint32_t>(matched->failure_count, 3));
+  matched->retry_after = current_time + rclcpp::Duration::from_seconds(cooldown);
+  RCLCPP_WARN(
+    logger_,
+    "记录失败探索走廊, frontier=%s, 位置=(%.2f, %.2f), 失败次数=%u, 冷却=%.1fs",
+    matched->frontier_uuid.c_str(),
+    matched->position.x(),
+    matched->position.y(),
+    matched->failure_count,
+    cooldown);
 }
 
 Planner::BranchRelation Planner::classify_branch_candidate(
@@ -484,29 +629,17 @@ bool Planner::extend_active_branch(
     return false;
   }
 
-  bool path_changed = false;
-  if (relation == BranchRelation::ordered_extension)
+  if (candidate.path_node_uuids.size() != candidate.path_points.size() ||
+      route_has_repeated_nodes(candidate.path_node_uuids))
   {
-    const auto tail_it = std::find(
-      candidate.path_node_uuids.begin(),
-      candidate.path_node_uuids.end(),
-      active_branch_->frontier_uuid);
-    const size_t tail_index = std::distance(candidate.path_node_uuids.begin(), tail_it);
-    for (size_t index = tail_index + 1; index < candidate.path_node_uuids.size(); ++index)
-    {
-      active_branch_->path_node_uuids.push_back(candidate.path_node_uuids[index]);
-      active_branch_->path_points.push_back(candidate.path_points[index]);
-      path_changed = true;
-    }
+    RCLCPP_WARN(logger_, "候选路线包含重复节点或元数据不一致, 已拒绝分支延伸");
+    return false;
   }
-  else if (active_branch_->path_points.empty() ||
-           (active_branch_->path_points.back() - candidate.position).norm() >= 0.25)
-  {
-    // UUID 迁移和分支恢复只追加新尾点, 保留已提交路径及其单调进度
-    active_branch_->path_node_uuids.push_back(candidate.uuid);
-    active_branch_->path_points.push_back(candidate.position);
-    path_changed = true;
-  }
+
+  // 分支身份继续保留, 执行路线始终替换为当前节点到新 Frontier 的简单路径
+  const bool path_changed = active_branch_->path_node_uuids != candidate.path_node_uuids;
+  active_branch_->path_node_uuids = candidate.path_node_uuids;
+  active_branch_->path_points = candidate.path_points;
   active_branch_->frontier_position = candidate.position;
   active_branch_->frontier_uuid = candidate.uuid;
   active_branch_->terminal_direction = terminal_direction(active_branch_->path_points);
@@ -519,10 +652,10 @@ void Planner::reset_exploration_state()
   reset_frontier_branch();
   clear_deferred_branches();
   directional_exploration_.reset();
-  stalled_frontier_.reset();
-  stalled_frontier_uuid_.reset();
-  stalled_branch_direction_.reset();
-  stalled_frontier_until_.reset();
+  directional_blocked_since_.reset();
+  directional_alternatives_allowed_ = false;
+  failed_branches_.clear();
+  path_invalid_since_.reset();
   direct_path_node_uuids_.clear();
   direct_path_points_.clear();
 }
@@ -557,7 +690,7 @@ std::optional<UnexploredSpaceMap> Planner::compute_unexplored_space_map()
   if (!std::isfinite(min_x) || !std::isfinite(max_x) || !std::isfinite(min_y) || !std::isfinite(max_y) ||
       max_x < min_x || max_y < min_y)
   {
-    RCLCPP_WARN(logger_, "导航图边界非法, 跳过 unexplored map 构建");
+    RCLCPP_WARN(logger_, "导航图边界非法, 跳过未探索区域地图构建");
     return std::nullopt;
   }
   double resolution = 1.0;
@@ -726,6 +859,69 @@ Planner::PlanningResult Planner::plan_to_goal(
     }
     return metadata;
   };
+  const auto semantic_frontier_position = [this](
+    const graphnav_msgs::msg::Node& node,
+    const Eigen::Vector3d& owner_position) -> Eigen::Vector3d {
+    if (!directional_exploration_ || trav_class_idx_ >= node.trav_properties.size())
+    {
+      return owner_position;
+    }
+    const auto& frontier_points =
+      node.trav_properties[trav_class_idx_].frontier_points;
+    if (frontier_points.empty())
+    {
+      return owner_position;
+    }
+
+    // Frontier owner 可位于侧后方, 方向语义使用真实边界点质心
+    Eigen::Vector3d centroid = Eigen::Vector3d::Zero();
+    for (const auto& point : frontier_points)
+    {
+      centroid += Eigen::Vector3d(point.x, point.y, point.z);
+    }
+    return centroid / static_cast<double>(frontier_points.size());
+  };
+  struct DirectionalMetrics
+  {
+    Eigen::Vector3d direction;
+    double forward_progress;
+    double backtrack;
+    double alignment;
+  };
+  // 用完整路线终点和最大回退量判断语义方向
+  const auto directional_metrics = [this, &current_position](
+    const std::vector<Eigen::Vector3d>& points,
+    const Eigen::Vector3d& frontier_position) {
+    DirectionalMetrics metrics{Eigen::Vector3d::Zero(), 0.0, 0.0, 0.0};
+    if (!directional_exploration_)
+    {
+      return metrics;
+    }
+
+    const Eigen::Vector3d heading = directional_exploration_->direction;
+    const double current_projection =
+      (current_position - directional_exploration_->origin).dot(heading);
+    double minimum_projection = current_projection;
+    for (const auto& point : points)
+    {
+      const double projection =
+        (point - directional_exploration_->origin).dot(heading);
+      minimum_projection = std::min(minimum_projection, projection);
+    }
+    const double frontier_projection =
+      (frontier_position - directional_exploration_->origin).dot(heading);
+    metrics.forward_progress = frontier_projection - current_projection;
+    metrics.backtrack = std::max(0.0, current_projection - minimum_projection);
+
+    metrics.direction = frontier_position - directional_exploration_->origin;
+    metrics.direction.z() = 0.0;
+    if (metrics.direction.norm() >= 1e-6)
+    {
+      metrics.direction.normalize();
+      metrics.alignment = metrics.direction.dot(heading);
+    }
+    return metrics;
+  };
 
   std::vector<FrontierCandidate> frontier_candidates;
   for (const auto& [id, frontier_cost] : frontier_costs)
@@ -748,16 +944,27 @@ Planner::PlanningResult Planner::plan_to_goal(
         metadata.initial_direction = direction.normalized();
       }
     }
+    const Eigen::Vector3d frontier_position(
+      node.pose.position.x,
+      node.pose.position.y,
+      node.pose.position.z);
+    const Eigen::Vector3d semantic_position = semantic_frontier_position(
+      node,
+      frontier_position);
+    const DirectionalMetrics metrics = directional_metrics(
+      metadata.points,
+      semantic_position);
     frontier_candidates.push_back(FrontierCandidate{
       id,
-      Eigen::Vector3d(
-        node.pose.position.x,
-        node.pose.position.y,
-        node.pose.position.z),
+      frontier_position,
       uuid_to_string(node.uuid),
       std::move(metadata.node_uuids),
       std::move(metadata.points),
       metadata.initial_direction,
+      metrics.direction,
+      metrics.forward_progress,
+      metrics.backtrack,
+      metrics.alignment,
       frontier_cost,
       path_it->second.total_weight + frontier_cost,
       false,
@@ -779,59 +986,65 @@ Planner::PlanningResult Planner::plan_to_goal(
   const bool had_active_branch = active_branch_.has_value();
   bool branch_released = false;
   update_active_branch_progress(current_position, current_time);
-  if (committed_path_invalid(
-      node_ids_by_uuid,
-      uuid_to_string(current_node.uuid),
-      current_position))
+  const bool path_invalid = committed_path_invalid(
+    node_ids_by_uuid,
+    uuid_to_string(current_node.uuid),
+    current_position);
+  if (path_invalid && !path_invalid_since_)
+  {
+    path_invalid_since_ = current_time;
+  }
+  else if (!path_invalid)
+  {
+    path_invalid_since_.reset();
+  }
+  if (path_invalid_since_ &&
+      (current_time - *path_invalid_since_).seconds() >= path_invalid_confirm_duration_)
   {
     release_active_branch("path_invalid", current_time);
     branch_released = true;
   }
 
   if (frontier_progress_timeout_ > 0.0 && active_branch_ &&
+      (current_time - active_branch_->start_time).seconds() >= frontier_progress_start_grace_ &&
       (current_time - active_branch_->progress_time).seconds() >= frontier_progress_timeout_)
   {
     release_active_branch("no_path_progress", current_time);
     branch_released = true;
   }
-  if (stalled_frontier_until_ &&
-      (current_time - *stalled_frontier_until_).seconds() >= 0.0)
+  if (branch_released && directional_exploration_)
   {
-    stalled_frontier_.reset();
-    stalled_frontier_uuid_.reset();
-    stalled_branch_direction_.reset();
-    stalled_frontier_until_.reset();
+    directional_alternatives_allowed_ = true;
+    directional_blocked_since_.reset();
   }
-
-  const auto matches_stalled_branch = [this](
-    const std::string& uuid,
-    const Eigen::Vector3d& position,
-    const Eigen::Vector3d& direction) {
-    if (!stalled_frontier_)
+  const auto candidate_direction = [](const FrontierCandidate& candidate) {
+    const auto route_direction = terminal_direction(candidate.path_points);
+    if (route_direction)
     {
-      return false;
+      return route_direction;
     }
-    if (stalled_frontier_uuid_ && uuid == *stalled_frontier_uuid_)
+    if (candidate.directional_direction.squaredNorm() >= 1e-12)
     {
-      return true;
+      return std::optional<Eigen::Vector3d>(candidate.directional_direction.normalized());
     }
-    if ((position - *stalled_frontier_).norm() > frontier_continuity_radius_)
+    if (candidate.initial_direction.squaredNorm() >= 1e-12)
     {
-      return false;
+      return std::optional<Eigen::Vector3d>(candidate.initial_direction.normalized());
     }
-    if (stalled_branch_direction_ && direction.squaredNorm() >= 1e-12)
-    {
-      return direction.dot(*stalled_branch_direction_) >= 0.5;
-    }
-    return true;
+    return std::optional<Eigen::Vector3d>{};
+  };
+  const auto is_live_forward = [this](const FrontierCandidate& candidate) {
+    return candidate.directional_forward_progress >= directional_min_forward_progress_ &&
+      candidate.directional_backtrack <= directional_max_initial_backtrack_ &&
+      candidate.directional_alignment > 0.0;
   };
 
   std::optional<FrontierCandidate> selected_frontier;
   std::string selection_reason = branch_released ? "branch_recovery" : "initial";
   if (goal_radius_edges.empty() && branch_released && !deferred_branches_.empty())
   {
-    const DeferredBranch* oldest_branch = nullptr;
-    std::optional<FrontierCandidate> oldest_candidate;
+    const DeferredBranch* best_branch = nullptr;
+    std::optional<FrontierCandidate> best_candidate;
     for (const auto& [branch_uuid, branch] : deferred_branches_)
     {
       const auto node_id_it = node_ids_by_uuid.find(branch_uuid);
@@ -844,16 +1057,6 @@ Planner::PlanningResult Planner::plan_to_goal(
       {
         continue;
       }
-      if (matches_stalled_branch(branch_uuid, branch.position, branch.discovery_direction))
-      {
-        continue;
-      }
-      if (oldest_branch != nullptr &&
-          oldest_branch->discovery_order <= branch.discovery_order)
-      {
-        continue;
-      }
-
       const auto& node = graph_.get_vertex(node_id_it->second);
       PathMetadata metadata = describe_path(path_it->second);
       if (metadata.initial_direction.squaredNorm() < 1e-12)
@@ -871,25 +1074,67 @@ Planner::PlanningResult Planner::plan_to_goal(
           }
         }
       }
-      oldest_branch = &branch;
-      oldest_candidate = FrontierCandidate{
+      const Eigen::Vector3d frontier_position(
+        node.pose.position.x,
+        node.pose.position.y,
+        node.pose.position.z);
+      DirectionalMetrics metrics = directional_metrics(
+        metadata.points,
+        frontier_position);
+      if (directional_exploration_ && metrics.direction.squaredNorm() < 1e-12 &&
+          branch.discovery_direction.squaredNorm() >= 1e-12)
+      {
+        metrics.direction = branch.discovery_direction.normalized();
+        metrics.alignment = metrics.direction.dot(directional_exploration_->direction);
+      }
+      FrontierCandidate candidate{
         node_id_it->second,
-        Eigen::Vector3d(
-          node.pose.position.x,
-          node.pose.position.y,
-          node.pose.position.z),
+        frontier_position,
         branch_uuid,
         std::move(metadata.node_uuids),
         std::move(metadata.points),
         metadata.initial_direction,
+        metrics.direction,
+        metrics.forward_progress,
+        metrics.backtrack,
+        metrics.alignment,
         0.0,
         path_it->second.total_weight,
         true,
       };
+      if (branch_is_suppressed(
+          candidate.uuid,
+          candidate.position,
+          candidate_direction(candidate),
+          current_time))
+      {
+        continue;
+      }
+      const bool candidate_forward = directional_exploration_ && is_live_forward(candidate);
+      const bool best_forward = directional_exploration_ && best_candidate &&
+        is_live_forward(*best_candidate);
+      const double candidate_recovery_cost =
+        candidate.total_cost + candidate.directional_backtrack;
+      const double best_recovery_cost = best_candidate ?
+        best_candidate->total_cost + best_candidate->directional_backtrack :
+        std::numeric_limits<double>::max();
+      const bool better_direction = directional_exploration_ &&
+        (!best_candidate ||
+         (candidate_forward && !best_forward) ||
+         (candidate_forward == best_forward &&
+          candidate_recovery_cost < best_recovery_cost));
+      const bool older_branch = !directional_exploration_ &&
+        (best_branch == nullptr || branch.discovery_order < best_branch->discovery_order);
+      if (!better_direction && !older_branch)
+      {
+        continue;
+      }
+      best_branch = &branch;
+      best_candidate = std::move(candidate);
     }
-    if (oldest_candidate)
+    if (best_candidate)
     {
-      selected_frontier = std::move(oldest_candidate);
+      selected_frontier = std::move(best_candidate);
       selection_reason = "deferred_recovery";
     }
   }
@@ -899,11 +1144,12 @@ Planner::PlanningResult Planner::plan_to_goal(
     std::vector<const FrontierCandidate*> eligible_candidates;
     for (const auto& candidate : frontier_candidates)
     {
-      const bool is_stalled_branch = matches_stalled_branch(
+      const bool is_failed_branch = branch_is_suppressed(
         candidate.uuid,
         candidate.position,
-        candidate.initial_direction);
-      if (!is_stalled_branch)
+        candidate_direction(candidate),
+        current_time);
+      if (!is_failed_branch)
       {
         eligible_candidates.push_back(&candidate);
       }
@@ -949,23 +1195,89 @@ Planner::PlanningResult Planner::plan_to_goal(
     }
     else if (!active_branch_)
     {
-      if (directional_exploration_ && !branch_released)
+      // 前向确认阶段禁止无条件回退到全局最低代价候选
+      if (directional_exploration_ && !directional_alternatives_allowed_)
       {
         for (const FrontierCandidate* candidate : eligible_candidates)
         {
-          if (candidate->initial_direction.squaredNorm() < 1e-12 ||
-              candidate->initial_direction.dot(directional_exploration_->direction) < 0.0)
+          if (candidate->directional_forward_progress < directional_min_forward_progress_ ||
+              candidate->directional_backtrack > directional_max_initial_backtrack_ ||
+              candidate->directional_alignment <= 0.0)
           {
             continue;
           }
-          if (chosen == nullptr || candidate->total_cost < chosen->total_cost)
+          if (chosen == nullptr ||
+              candidate->directional_alignment > chosen->directional_alignment + 1e-6 ||
+              (std::abs(candidate->directional_alignment - chosen->directional_alignment) <= 1e-6 &&
+               candidate->total_cost < chosen->total_cost))
           {
             chosen = candidate;
           }
         }
-        selection_reason = chosen != nullptr ? "initial_heading" : "initial_heading_blocked";
+        if (chosen != nullptr)
+        {
+          directional_blocked_since_.reset();
+          selection_reason = "initial_forward_route";
+        }
+        else
+        {
+          if (!directional_blocked_since_)
+          {
+            directional_blocked_since_ = current_time;
+            const auto best_aligned = std::max_element(
+              eligible_candidates.begin(),
+              eligible_candidates.end(),
+              [](const FrontierCandidate* lhs, const FrontierCandidate* rhs) {
+                return lhs->directional_alignment < rhs->directional_alignment;
+              });
+            if (best_aligned != eligible_candidates.end())
+            {
+              RCLCPP_WARN(
+                logger_,
+                "暂无可用初始前向路线, 最佳前进量=%.2fm, 回退量=%.2fm, 方向一致度=%.3f",
+                (*best_aligned)->directional_forward_progress,
+                (*best_aligned)->directional_backtrack,
+                (*best_aligned)->directional_alignment);
+            }
+          }
+          const double blocked_time =
+            (current_time - *directional_blocked_since_).seconds();
+          if (blocked_time >= directional_block_confirm_timeout_)
+          {
+            directional_alternatives_allowed_ = true;
+            directional_blocked_since_.reset();
+            RCLCPP_WARN(
+              logger_,
+              "初始前向路线持续不可用, %.1f 秒后允许其他方向",
+              blocked_time);
+          }
+          else
+          {
+            selection_reason = "initial_forward_pending";
+          }
+        }
       }
-      chosen = chosen != nullptr ? chosen : global_best;
+      if (directional_exploration_ && directional_alternatives_allowed_)
+      {
+        for (const FrontierCandidate* candidate : eligible_candidates)
+        {
+          const bool candidate_forward = is_live_forward(*candidate);
+          const bool chosen_forward = chosen != nullptr && is_live_forward(*chosen);
+          if (chosen == nullptr ||
+              (candidate_forward && !chosen_forward) ||
+              (candidate_forward == chosen_forward &&
+               candidate->total_cost < chosen->total_cost))
+          {
+            chosen = candidate;
+          }
+        }
+        selection_reason = branch_released ? "directional_branch_recovery" :
+          "confirmed_forward_blocked";
+      }
+      else if (!directional_exploration_)
+      {
+        chosen = global_best;
+      }
     }
     if (chosen != nullptr)
     {
@@ -981,7 +1293,11 @@ Planner::PlanningResult Planner::plan_to_goal(
       {
         continue;
       }
-      if (matches_stalled_branch(candidate.uuid, candidate.position, candidate.initial_direction))
+      if (branch_is_suppressed(
+          candidate.uuid,
+          candidate.position,
+          candidate_direction(candidate),
+          current_time))
       {
         continue;
       }
@@ -997,7 +1313,10 @@ Planner::PlanningResult Planner::plan_to_goal(
       {
         continue;
       }
-      remember_deferred_branch(candidate.uuid, candidate.position, candidate.initial_direction);
+      const Eigen::Vector3d discovery_direction =
+        candidate.directional_direction.squaredNorm() >= 1e-12 ?
+        candidate.directional_direction : candidate.initial_direction;
+      remember_deferred_branch(candidate.uuid, candidate.position, discovery_direction);
     }
     if (selected_frontier)
     {
@@ -1028,6 +1347,22 @@ Planner::PlanningResult Planner::plan_to_goal(
     {
       direct_path_node_uuids_ = metadata.node_uuids;
       direct_path_points_ = metadata.points;
+      const auto& target_node = graph_.get_vertex(std::get<0>(*best_goal_edge));
+      const Eigen::Vector3d target_node_position(
+        target_node.pose.position.x,
+        target_node.pose.position.y,
+        target_node.pose.position.z);
+      const double route_cost =
+        base_shortest_paths.at(std::get<0>(*best_goal_edge)).total_weight +
+        std::get<1>(*best_goal_edge);
+      RCLCPP_INFO(
+        logger_,
+        "目标附近已有可达节点, 生成直接目标路线, 目标=(%.2f, %.2f), "
+        "节点到目标=%.2fm, 路线总代价=%.2f",
+        planning_goal.x(),
+        planning_goal.y(),
+        (target_node_position - planning_goal).norm(),
+        route_cost);
     }
     reset_frontier_branch();
     return {metadata.points, !route_unchanged};
@@ -1047,7 +1382,19 @@ Planner::PlanningResult Planner::plan_to_goal(
     node_ids_by_uuid);
   if (active_branch_ && selected_relation == BranchRelation::same_frontier)
   {
-    return {remaining_path(active_branch_->path_points, current_position), false};
+    const bool route_unchanged = is_route_suffix(
+      selected_frontier->path_node_uuids,
+      active_branch_->path_node_uuids);
+    if (!route_has_repeated_nodes(selected_frontier->path_node_uuids))
+    {
+      active_branch_->path_node_uuids = selected_frontier->path_node_uuids;
+      active_branch_->path_points = selected_frontier->path_points;
+      active_branch_->terminal_direction = terminal_direction(active_branch_->path_points);
+    }
+    return {
+      remaining_path(active_branch_->path_points, current_position),
+      !route_unchanged,
+    };
   }
 
   bool path_changed = false;
@@ -1059,11 +1406,16 @@ Planner::PlanningResult Planner::plan_to_goal(
   {
     std::optional<Eigen::Vector3d> branch_direction =
       terminal_direction(selected_frontier->path_points);
+    const double initial_progress = directional_exploration_ ?
+      (current_position - directional_exploration_->origin).dot(
+        directional_exploration_->direction) :
+      path_progress(selected_frontier->path_points, current_position);
     active_branch_ = ActiveBranch{
       selected_frontier->position,
       selected_frontier->uuid,
       current_time,
-      path_progress(selected_frontier->path_points, current_position),
+      current_time,
+      initial_progress,
       selected_frontier->path_node_uuids,
       selected_frontier->path_points,
       branch_direction,
@@ -1074,13 +1426,41 @@ Planner::PlanningResult Planner::plan_to_goal(
 
   if (path_changed)
   {
-    RCLCPP_INFO(
-      logger_,
-      "%s, reason=%s, frontier=%s, total_cost=%.2f",
-      had_active_branch && !branch_released ? "探索分支延伸" : "探索分支选择",
-      selection_reason.c_str(),
-      selected_frontier->uuid.c_str(),
-      selected_frontier->total_cost);
+    const bool branch_extended = had_active_branch && !branch_released;
+    if (directional_exploration_)
+    {
+      RCLCPP_INFO(
+        logger_,
+        "%s, 原因=%s(%s), frontier=%s, 中继点=(%.2f, %.2f), "
+        "前进量=%.2fm, 回退量=%.2fm, 方向一致度=%.3f, 总代价=%.2f",
+        branch_extended ? "初始方向探索分支延伸" : "初始方向探索分支选择",
+        selection_reason_name(selection_reason),
+        selection_reason.c_str(),
+        selected_frontier->uuid.c_str(),
+        selected_frontier->position.x(),
+        selected_frontier->position.y(),
+        selected_frontier->directional_forward_progress,
+        selected_frontier->directional_backtrack,
+        selected_frontier->directional_alignment,
+        selected_frontier->total_cost);
+    }
+    else
+    {
+      RCLCPP_INFO(
+        logger_,
+        "%s, 原因=%s(%s), frontier=%s, 目标=(%.2f, %.2f), "
+        "中继点=(%.2f, %.2f), 中继到目标=%.2fm, 总代价=%.2f",
+        branch_extended ? "目标接近中继分支延伸" : "目标接近中继分支选择",
+        selection_reason_name(selection_reason),
+        selection_reason.c_str(),
+        selected_frontier->uuid.c_str(),
+        planning_goal.x(),
+        planning_goal.y(),
+        selected_frontier->position.x(),
+        selected_frontier->position.y(),
+        (selected_frontier->position - planning_goal).norm(),
+        selected_frontier->total_cost);
+    }
   }
   direct_path_node_uuids_.clear();
   direct_path_points_.clear();

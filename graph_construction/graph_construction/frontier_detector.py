@@ -25,12 +25,17 @@ class FrontierDetector:
         frontier_min_span: float,
         frontier_border_margin: float,
         frontier_candidate_spacing: float = 0.0,
+        frontier_visited_corridor_radius: float = 0.0,
     ) -> None:
         self.frontier_assign_radius = frontier_assign_radius
         self.frontier_min_points = frontier_min_points
         self.frontier_min_span = frontier_min_span
         self.frontier_border_margin = frontier_border_margin
         self.frontier_candidate_spacing = frontier_candidate_spacing
+        self.frontier_visited_corridor_radius = max(
+            0.0,
+            float(frontier_visited_corridor_radius),
+        )
 
     def detect_frontier_cells(self, grid: ClassifiedGrid) -> List[GridIndex]:
         """扫描所有 free cell, 找出和 unknown 相邻的边界 cell"""
@@ -58,10 +63,15 @@ class FrontierDetector:
         新边界使用世界坐标键去重, 已保留的 owner 不会被每帧最近邻结果替换
         """
         explored_areas = _ExploredAreaIndex(graph.nodes.values(), grid.resolution)
+        visited_corridor = _VisitedTrajectoryIndex(
+            graph.trajectory_points,
+            self.frontier_visited_corridor_radius,
+        )
         preserved_owner_ids, assigned_frontier_keys = self._validate_historical_frontiers(
             graph,
             grid,
             explored_areas,
+            visited_corridor,
         )
 
         candidate_cells = self._select_frontier_candidates(grid, frontier_cells)
@@ -85,6 +95,8 @@ class FrontierDetector:
             if owner is None:
                 continue
             if explored_areas.contains(frontier_point):
+                continue
+            if visited_corridor.contains(frontier_point):
                 continue
             if not grid.is_world_collision_free(
                 (owner.position[0], owner.position[1]),
@@ -111,12 +123,12 @@ class FrontierDetector:
             if not node.is_frontier:
                 node.frontier_points.clear()
 
-
     def _validate_historical_frontiers(
         self,
         graph: GraphState,
         grid: ClassifiedGrid,
         explored_areas: _ExploredAreaIndex,
+        visited_corridor: _VisitedTrajectoryIndex,
     ) -> Tuple[set[int], set[Tuple[int, int]]]:
         """只保留当前地图仍能验证的历史 Frontier
 
@@ -152,6 +164,8 @@ class FrontierDetector:
                 if not self._touches_unknown(grid, ix, iy):
                     continue
                 if explored_areas.contains(point, excluded_node_id=node.node_id):
+                    continue
+                if visited_corridor.contains(point):
                     continue
                 if not grid.is_world_collision_free(
                     (node.position[0], node.position[1]),
@@ -226,6 +240,7 @@ class FrontierDetector:
         ys = [point[1] for point in points]
         return hypot(max(xs) - min(xs), max(ys) - min(ys))
 
+
 class _NodeSpatialIndex:
     """按 assign radius 建立临时节点桶, 避免每个 frontier 扫描全图节点"""
 
@@ -284,3 +299,34 @@ class _ExploredAreaIndex:
             if node.distance_xy(point) < radius:
                 return True
         return False
+
+
+class _VisitedTrajectoryIndex:
+    """查询 Frontier 是否落入机器人已走过的轨迹走廊"""
+
+    def __init__(self, points: Iterable[Point3], radius: float) -> None:
+        self.radius = max(0.0, float(radius))
+        self.bucket_size = max(self.radius, 0.01)
+        self.buckets: Dict[Tuple[int, int], List[Point3]] = {}
+        if self.radius <= 0.0:
+            return
+        for point in points:
+            self.buckets.setdefault(self._key(point), []).append(point)
+
+    def contains(self, point: Point3) -> bool:
+        """只检查相邻轨迹桶, 避免随轨迹增长线性扫描"""
+        if self.radius <= 0.0:
+            return False
+        center_x, center_y = self._key(point)
+        for by in range(center_y - 1, center_y + 2):
+            for bx in range(center_x - 1, center_x + 2):
+                for visited in self.buckets.get((bx, by), ()):
+                    if hypot(visited[0] - point[0], visited[1] - point[1]) <= self.radius:
+                        return True
+        return False
+
+    def _key(self, point: Point3) -> Tuple[int, int]:
+        return (
+            int(point[0] // self.bucket_size),
+            int(point[1] // self.bucket_size),
+        )

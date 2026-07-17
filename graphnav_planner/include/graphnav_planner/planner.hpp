@@ -269,6 +269,7 @@ private:
   {
     Eigen::Vector3d frontier_position;
     std::string frontier_uuid;
+    rclcpp::Time start_time;
     rclcpp::Time progress_time;
     double max_path_progress;
     std::vector<std::string> path_node_uuids;
@@ -285,6 +286,15 @@ private:
     std::uint64_t discovery_order;
   };
 
+  struct FailedBranch
+  {
+    std::string frontier_uuid;
+    Eigen::Vector3d position;
+    std::optional<Eigen::Vector3d> direction;
+    std::uint32_t failure_count;
+    rclcpp::Time retry_after;
+  };
+
   struct FrontierCandidate
   {
     graaf::vertex_id_t id;
@@ -293,6 +303,10 @@ private:
     std::vector<std::string> path_node_uuids;
     std::vector<Eigen::Vector3d> path_points;
     Eigen::Vector3d initial_direction;
+    Eigen::Vector3d directional_direction;
+    double directional_forward_progress;
+    double directional_backtrack;
+    double directional_alignment;
     double frontier_cost;
     double total_cost;
     bool is_deferred;
@@ -319,13 +333,13 @@ private:
   size_t trav_class_idx_ = 0;
   std::optional<UnexploredSpaceMap> unexplored_space_map_;
   std::optional<DirectionalExploration> directional_exploration_;
+  std::optional<rclcpp::Time> directional_blocked_since_;
+  bool directional_alternatives_allowed_ = false;
   std::optional<ActiveBranch> active_branch_;
   std::unordered_map<std::string, DeferredBranch> deferred_branches_;
   std::uint64_t next_deferred_branch_order_ = 0;
-  std::optional<Eigen::Vector3d> stalled_frontier_;
-  std::optional<std::string> stalled_frontier_uuid_;
-  std::optional<Eigen::Vector3d> stalled_branch_direction_;
-  std::optional<rclcpp::Time> stalled_frontier_until_;
+  std::vector<FailedBranch> failed_branches_;
+  std::optional<rclcpp::Time> path_invalid_since_;
   std::optional<std::string> last_current_node_uuid_;
   std::unordered_set<std::string> traversed_edges_;
   std::vector<std::string> direct_path_node_uuids_;
@@ -348,6 +362,12 @@ private:
     const std::string& current_uuid,
     const Eigen::Vector3d& current_position) const;
   void release_active_branch(const char* reason, rclcpp::Time current_time);
+  bool branch_is_suppressed(
+    const std::string& frontier_uuid,
+    const Eigen::Vector3d& position,
+    const std::optional<Eigen::Vector3d>& direction,
+    rclcpp::Time current_time) const;
+  void record_failed_branch(rclcpp::Time current_time);
   BranchRelation classify_branch_candidate(
     const FrontierCandidate& candidate,
     const NodeIdsByUuid& node_ids_by_uuid) const;
@@ -365,6 +385,13 @@ public:
   double frontier_score_factor_ = 10.0;
   double frontier_continuity_radius_ = 5.0;
   double frontier_progress_timeout_ = 12.0;
+  double frontier_progress_start_grace_ = 20.0;
+  double directional_min_forward_progress_ = 0.5;
+  double directional_max_initial_backtrack_ = 2.0;
+  double directional_block_confirm_timeout_ = 5.0;
+  double frontier_failure_cooldown_ = 60.0;
+  double frontier_failure_merge_radius_ = 2.5;
+  double path_invalid_confirm_duration_ = 1.5;
   double revisit_cost_factor_ = 1.0;
 
   visualization_msgs::msg::MarkerArray get_score_visualization(const rclcpp::Time& stamp, std::string frame_id, bool with_id_text = false) const;
