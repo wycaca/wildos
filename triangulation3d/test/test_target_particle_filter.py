@@ -139,3 +139,27 @@ def test_inconsistent_view_cannot_replace_locked_target():
 
     assert after_outlier.accepted_views == 0
     assert np.linalg.norm(after_outlier.position - locked.position) < 1e-9
+
+
+def test_single_lidar_frame_cannot_move_visual_track():
+    """已有视觉轨迹时单帧 LiDAR 候选不能立即改写位置"""
+    target = np.array([8.0, 0.0, 1.0])
+    config = ParticleFilterConfig(
+        particle_count=1000,
+        max_depth=15.0,
+        lidar_lock_frames=2,
+    )
+    particle_filter = TargetParticleFilter(config, seed=10)
+    visual = particle_filter.update_vision([
+        _observation(np.array([0.0, 0.0, 1.0]), target, "front"),
+    ])
+
+    after_single_lidar = particle_filter.update_lidar(
+        np.array([25.0, 20.0, 1.0]),
+        support=100,
+    )
+
+    assert np.linalg.norm(after_single_lidar.position - visual.position) < 1e-9
+    assert after_single_lidar.confidence == visual.confidence
+    assert after_single_lidar.source == visual.source
+    assert after_single_lidar.state != FusionState.LIDAR_LOCKED

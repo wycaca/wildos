@@ -47,7 +47,6 @@ scored_navgraph_topic: /spot1/scored_nav_graph
 model_viz_topic: /spot1/model_visualization
 valid_geofrontiers_topic: /spot1/within_range_geofrontiers
 score_ring_topic: /spot1/score_rings
-graph_viz_topic: /spot1/nav_graph_viz
 object_mask_topic: /spot1/object_mask
 object_completed_topic: /spot1/object_search_completed
 
@@ -66,6 +65,7 @@ object_search_config:
     detection_min_component_pixels: 300
     detection_min_component_fraction: 0.0005
     detection_confirm_frames: 2
+    detection_confirm_window_frames: 3
     detection_debug_interval: 20
     obj_frontier_score: 0.9
     obj_trav_score: 0.9

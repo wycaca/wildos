@@ -19,6 +19,8 @@ def mux_node():
             "--ros-args",
             "-p",
             "initial_goal_distance:=20.0",
+            "-p",
+            "frame_id:=odom",
         ]
     )
     node = ObjectSearchGoalMux()
@@ -29,12 +31,13 @@ def mux_node():
         rclpy.shutdown()
 
 
-def _odom(x: float, y: float, yaw: float) -> Odometry:
+def _odom(x: float, y: float, yaw: float, z: float = 0.0) -> Odometry:
     """构造给定位置和偏航角的 odom"""
     msg = Odometry()
     msg.header.frame_id = "odom"
     msg.pose.pose.position.x = x
     msg.pose.pose.position.y = y
+    msg.pose.pose.position.z = z
     msg.pose.pose.orientation.z = math.sin(yaw * 0.5)
     msg.pose.pose.orientation.w = math.cos(yaw * 0.5)
     return msg
@@ -48,13 +51,18 @@ def _target_estimate(
     confidence: float = 0.8,
     accepted_views: int = 2,
     state: str | None = None,
+    z: float = 0.0,
+    horizontal_std: float = 0.0,
 ) -> TargetEstimate:
     """构造视觉粗目标或稳定融合目标估计"""
     msg = TargetEstimate()
     msg.header.frame_id = "odom"
     msg.pose.pose.position.x = x
     msg.pose.pose.position.y = y
+    msg.pose.pose.position.z = z
     msg.pose.pose.orientation.w = 1.0
+    msg.pose.covariance[0] = horizontal_std * horizontal_std * 0.5
+    msg.pose.covariance[7] = horizontal_std * horizontal_std * 0.5
     msg.confidence = confidence
     msg.source = TargetEstimate.SOURCE_VISION
     msg.stable = stable
@@ -128,6 +136,25 @@ def test_reached_requires_metric_target_within_distance(mux_node):
     assert near_state == ObjectSearchState.TARGET_REACHED_VIEWPOINT
 
 
+def test_reached_gate_reports_stable_target_and_distance_reasons(mux_node):
+    """完成门控诊断需要区分稳定目标缺失和目标距离过远"""
+    mux_node._on_odom(_odom(0.0, 0.0, 0.0))
+    mux_node.latest_object_reached = True
+    mux_node.latest_object_reached_time = mux_node.get_clock().now()
+
+    reason_code, _ = mux_node._object_reached_gate_reason(
+        mux_node.latest_object_reached_time
+    )
+    assert reason_code == "no_stable_target"
+
+    mux_node._on_target_estimate(_target_estimate(5.0, 0.0))
+    reason_code, reason_text = mux_node._object_reached_gate_reason(
+        mux_node.latest_object_reached_time
+    )
+    assert reason_code == "target_too_far"
+    assert "5.00m" in reason_text
+
+
 def test_single_view_pending_estimate_keeps_initial_goal(mux_node):
     """单视角深度不确定时不能替换初始探索 goal"""
     mux_node._on_odom(_odom(0.0, 0.0, 0.0))
@@ -181,6 +208,7 @@ def test_coarse_target_cannot_trigger_final_completion(mux_node):
 
 def test_small_metric_updates_do_not_move_goal(mux_node):
     """置信度相近的小幅粒子波动不能反复改变高层 goal"""
+    mux_node._on_odom(_odom(0.0, 0.0, 0.0))
     first = _target_estimate(10.0, 2.0)
     mux_node._on_target_estimate(first)
 
@@ -192,3 +220,54 @@ def test_small_metric_updates_do_not_move_goal(mux_node):
 
     assert mux_node.metric_target.pose.position.x == pytest.approx(10.0)
     assert mux_node.metric_target.pose.position.y == pytest.approx(2.0)
+
+
+def test_impossible_coarse_target_keeps_initial_goal(mux_node):
+    """高度和距离明显异常的粗定位不能接管导航 goal"""
+    mux_node._on_odom(_odom(15.68, -9.64, 0.0, z=0.2))
+    estimate = _target_estimate(
+        44.82,
+        -39.53,
+        stable=False,
+        confidence=0.51,
+        accepted_views=2,
+        state="TRACKING",
+        z=-5.58,
+    )
+
+    mux_node._on_target_estimate(estimate)
+    state, _ = mux_node._select_goal()
+
+    assert state == ObjectSearchState.SEARCHING_WITH_INITIAL_GOAL
+    assert mux_node.metric_target is None
+
+
+def test_uncertain_coarse_target_keeps_initial_goal(mux_node):
+    """水平不确定度过大的粗定位不能接管导航 goal"""
+    mux_node._on_odom(_odom(0.0, 0.0, 0.0))
+
+    mux_node._on_target_estimate(
+        _target_estimate(
+            12.0,
+            3.0,
+            stable=False,
+            confidence=0.7,
+            state="TRACKING",
+            horizontal_std=9.0,
+        )
+    )
+
+    assert mux_node.metric_target is None
+
+
+def test_stable_target_can_correct_previous_stable_goal(mux_node):
+    """稳定融合结果移动超过小门槛时允许纠正首次稳定 goal"""
+    mux_node._on_odom(_odom(15.68, -9.64, 0.0, z=0.2))
+    mux_node._on_target_estimate(_target_estimate(18.35, -12.25, z=-0.03))
+
+    mux_node._on_target_estimate(
+        _target_estimate(18.75, -12.68, confidence=0.69, z=-0.17)
+    )
+
+    assert mux_node.metric_target.pose.position.x == pytest.approx(18.75)
+    assert mux_node.metric_target.pose.position.y == pytest.approx(-12.68)

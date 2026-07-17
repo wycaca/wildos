@@ -8,6 +8,7 @@ from object_search_msgs.msg import ObjectMaskWithTf
 from triangulation3d.target_particle_filter import TargetEstimate
 from visual_navigation.object_target_fusion import (
     _mask_array,
+    _target_ray_marker,
     _target_surface_measurement,
     _target_marker,
 )
@@ -63,6 +64,9 @@ def test_stable_marker_scale_is_bounded():
     assert 0.3 <= marker.scale.x <= 1.5
     assert 0.3 <= marker.scale.y <= 1.5
     assert 0.3 <= marker.scale.z <= 1.5
+    assert marker.color.r == 0.0
+    assert marker.color.g == 1.0
+    assert marker.color.b == 1.0
 
 
 def test_two_view_tracking_estimate_publishes_coarse_marker():
@@ -75,6 +79,35 @@ def test_two_view_tracking_estimate_publishes_coarse_marker():
     assert marker.action == Marker.ADD
     assert marker.color.r == 1.0
     assert marker.color.g == 0.75
+
+
+def test_visible_target_publishes_green_camera_rays():
+    estimate = _estimate(True, np.eye(3))
+    marker = _target_ray_marker(
+        estimate,
+        "odom",
+        Time(),
+        [np.array([0.0, 0.0, 0.5]), np.array([0.0, 0.2, 0.5])],
+    )
+
+    assert marker.action == Marker.ADD
+    assert marker.type == Marker.LINE_LIST
+    assert len(marker.points) == 4
+    assert marker.points[1].x == 8.0
+    assert marker.color.r == 0.0
+    assert marker.color.g == 1.0
+    assert marker.color.b == 0.0
+
+
+def test_pending_target_deletes_camera_rays():
+    marker = _target_ray_marker(
+        _estimate(False, np.eye(3), state="PENDING"),
+        "odom",
+        Time(),
+        [np.zeros(3)],
+    )
+
+    assert marker.action == Marker.DELETE
 
 
 def test_reference_image_stamp_uses_middle_camera_time():
@@ -116,3 +149,34 @@ def test_lidar_measurement_rejects_ground_points_inside_mask():
     assert support >= 10
     assert np.linalg.norm(position[:2] - np.array([0.0, -9.0])) < 0.5
     assert position[2] > 0.3
+
+
+def test_lidar_measurement_prefers_nearest_foreground_cluster():
+    """同一 mask 射线中不能因背景更密集而把目标推到墙面"""
+    rng = np.random.default_rng(11)
+    foreground = rng.normal(
+        loc=np.array([4.0, 0.0, 0.7]),
+        scale=np.array([0.12, 0.12, 0.08]),
+        size=(24, 3),
+    )
+    background = rng.normal(
+        loc=np.array([8.0, 0.0, 1.0]),
+        scale=np.array([0.18, 0.18, 0.15]),
+        size=(80, 3),
+    )
+    ground = rng.normal(
+        loc=np.array([3.0, 0.0, 0.0]),
+        scale=np.array([0.3, 0.3, 0.01]),
+        size=(45, 3),
+    )
+
+    measurement = _target_surface_measurement(
+        np.vstack((ground, foreground, background)),
+        minimum_support=30,
+        reference_position=np.zeros(3),
+    )
+
+    assert measurement is not None
+    position, support = measurement
+    assert support >= 10
+    assert np.linalg.norm(position - np.array([4.0, 0.0, 0.7])) < 0.5

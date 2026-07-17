@@ -27,7 +27,8 @@ from visual_navigation.utils.object_search_utils import (
     localize_query,
     reference_image_stamp,
 )
-from visual_navigation.object_detection_filter import filter_object_detection_mask
+from visual_navigation.object_detection_filter import analyze_object_detection_mask
+from visual_navigation.object_detection_confirmation import DetectionConfirmationWindow
 from visual_navigation.object_reached_evidence import VisualReachedEvidence
 from visual_navigation.utils.paths import repository_root
 
@@ -36,7 +37,13 @@ CAMERA_MAPPING = {
     0: "front",
     1: "left",
     2: "right"
-}    
+}
+CAMERA_LOG_NAMES = {
+    0: "前相机",
+    1: "左相机",
+    2: "右相机",
+}
+
 
 class WildOS_Nav(TFLookupSubscriber):
     default_config = {
@@ -90,7 +97,6 @@ class WildOS_Nav(TFLookupSubscriber):
         "model_viz_topic": "model_visualization",
         "valid_geofrontiers_topic": "within_range_geofrontiers",
         "score_ring_topic": "/spot1/score_rings",
-        "graph_viz_topic": "/spot1/navgraph_viz",
         "object_mask_topic": "/spot1/object_mask",
         "object_reached_topic": "/spot1/object_search_reached",
         "object_completed_topic": "/spot1/object_search_completed",
@@ -113,6 +119,7 @@ class WildOS_Nav(TFLookupSubscriber):
             "detection_min_component_pixels": 300,
             "detection_min_component_fraction": 0.0005,
             "detection_confirm_frames": 2,
+            "detection_confirm_window_frames": 3,
             "detection_debug_interval": 20,
             "obj_frontier_score": 0.9,
             "obj_trav_score": 0.9,
@@ -151,11 +158,6 @@ class WildOS_Nav(TFLookupSubscriber):
             config=config.tf_lookup_config
         )
         self.get_logger().info("WildOS 模型初始化完成")
-        if self.object_search_mode:
-            self.get_logger().info(
-                f"目标搜索已启用, text_queries={list(self.text_queries)}, "
-                f"mask_threshold={self.mask_threshold:.3f}"
-            )
 
         # 用于转换 ROS 和 OpenCV 图像
         self.br = CvBridge()
@@ -172,7 +174,8 @@ class WildOS_Nav(TFLookupSubscriber):
         self.frontier_uuid_to_scores = {}
         self.object_detection_debug_interval = 20
         self._object_missing_log_count = 0
-        self._object_detection_confirm_count = 0
+        self.object_detection_confirmation = None
+        self._object_detection_ready = False
         self.object_reached_evidence = None
         self._visual_reached_active = False
         self.object_search_completed = False
@@ -204,8 +207,25 @@ class WildOS_Nav(TFLookupSubscriber):
                 int(config.object_search_config.get("detection_confirm_frames", 2)),
                 1,
             )
-            self.object_reached_mask_fraction = float(config.object_search_config.get("reached_mask_fraction", 0.01))
-            self.object_reached_min_pixel_count = int(config.object_search_config.get("reached_min_pixel_count", 1200))
+            self.object_detection_confirm_window_frames = max(
+                int(
+                    config.object_search_config.get(
+                        "detection_confirm_window_frames",
+                        self.object_detection_confirm_frames + 1,
+                    )
+                ),
+                self.object_detection_confirm_frames,
+            )
+            self.object_detection_confirmation = DetectionConfirmationWindow(
+                self.object_detection_confirm_frames,
+                self.object_detection_confirm_window_frames,
+            )
+            self.object_reached_mask_fraction = float(
+                config.object_search_config.get("reached_mask_fraction", 0.01)
+            )
+            self.object_reached_min_pixel_count = int(
+                config.object_search_config.get("reached_min_pixel_count", 1200)
+            )
             self.object_reached_confirm_frames = max(
                 int(config.object_search_config.get("reached_confirm_frames", 2)),
                 1,
@@ -214,6 +234,12 @@ class WildOS_Nav(TFLookupSubscriber):
                 self.object_reached_min_pixel_count,
                 self.object_reached_mask_fraction,
                 self.object_reached_confirm_frames,
+            )
+            self.get_logger().info(
+                f"目标搜索已启用, 查询目标={list(self.text_queries)}, "
+                f"Mask阈值={self.mask_threshold:.3f}, "
+                f"峰值门槛={self.object_detection_min_peak_score:.3f}, "
+                f"最小区域像素={self.object_detection_min_component_pixels}"
             )
 
         # 将导航图 frontier 投影到图像
@@ -384,11 +410,6 @@ class WildOS_Nav(TFLookupSubscriber):
             config.score_ring_topic,
             10
         )
-        self.navgraph_vis_pub = self.create_publisher(
-            MarkerArray,
-            config.graph_viz_topic,
-            10
-        )
         if self.object_search_mode:
             self.object_mask_publisher = self.create_publisher(
                 ObjectMaskWithTf,
@@ -505,7 +526,7 @@ class WildOS_Nav(TFLookupSubscriber):
                 all_cam_data=all_cam_data
             )
         except Exception as e:
-            self.get_logger().error(f"Error in extracting geofrontiers: {e}")
+            self.get_logger().error(f"提取几何Frontier失败, 原因={e}")
             return
 
         
@@ -533,28 +554,30 @@ class WildOS_Nav(TFLookupSubscriber):
                     pixel_level_seg=self.pixel_level_seg,
                     mask_threshold=self.mask_threshold
                 )
-                binary_mask, detection_components = filter_object_detection_mask(
-                    text_sim_spatial,
-                    binary_mask,
-                    min_peak_score=self.object_detection_min_peak_score,
-                    min_component_pixels=self.object_detection_min_component_pixels,
-                    min_component_fraction=self.object_detection_min_component_fraction,
+                binary_mask, detection_components, detection_rejections = (
+                    analyze_object_detection_mask(
+                        text_sim_spatial,
+                        binary_mask,
+                        min_peak_score=self.object_detection_min_peak_score,
+                        min_component_pixels=self.object_detection_min_component_pixels,
+                        min_component_fraction=self.object_detection_min_component_fraction,
+                    )
                 )
                 has_detection_evidence = bool(detection_components)
                 if has_detection_evidence:
-                    self._object_detection_confirm_count = min(
-                        self._object_detection_confirm_count + 1,
-                        self.object_detection_confirm_frames,
-                    )
-                else:
-                    self._object_detection_confirm_count = 0
-                object_detected = (
+                    self._object_missing_log_count = 0
+                was_confirmation_ready = self._object_detection_ready
+                object_detected = self.object_detection_confirmation.update(
                     has_detection_evidence
-                    and self._object_detection_confirm_count >= self.object_detection_confirm_frames
                 )
+                confirmation_ready = self.object_detection_confirmation.ready
+                if confirmation_ready and not was_confirmation_ready:
+                    self._log_object_detection_confirmed(detection_components)
+                elif was_confirmation_ready and not confirmation_ready:
+                    self._log_object_detection_lost()
+                self._object_detection_ready = confirmation_ready
 
                 if object_detected:
-                    self._object_missing_log_count = 0
                     self._publish_object_reached(binary_mask)
                     tf_list = [
                         tf_data[f"world_from_cam{i}"]
@@ -573,14 +596,23 @@ class WildOS_Nav(TFLookupSubscriber):
                             measurement_header=measurement_header,
                         )
                     )
-                    batch_img_frontiers = np.maximum(batch_img_frontiers, self.obj_frontier_score*binary_mask)
-                    batch_img_traversability = np.maximum(batch_img_traversability, self.obj_trav_score*binary_mask)
+                    batch_img_frontiers = np.maximum(
+                        batch_img_frontiers,
+                        self.obj_frontier_score * binary_mask,
+                    )
+                    batch_img_traversability = np.maximum(
+                        batch_img_traversability,
+                        self.obj_trav_score * binary_mask,
+                    )
                 else:
                     self._publish_object_reached(None)
                     if has_detection_evidence:
                         self._log_object_detection_pending(detection_components)
                     else:
-                        self._log_object_missing(text_sim_spatial)
+                        self._log_object_missing(
+                            detection_rejections,
+                            confirmation_ready,
+                        )
                     binary_mask.fill(0)
 
         # 给几何 frontier 评分
@@ -631,13 +663,6 @@ class WildOS_Nav(TFLookupSubscriber):
         )
         model_viz_msg.header = msgs[0].header
         self.model_viz_pub.publish(model_viz_msg)
-        self.navgraph_vis_pub.publish(
-            self.viz.visualize_navgraph(
-                navgraph_msg,
-                self.global_frame,
-                self.get_clock().now().to_msg()
-            )
-        )
         self.score_rings_pub.publish(
             self.viz.visualize_all_heading_scores(
                 self.frontier_uuid_to_scores,
@@ -648,53 +673,93 @@ class WildOS_Nav(TFLookupSubscriber):
             )
         )
 
-    def _log_object_missing(self, text_sim_spatial=None) -> None:
+    def _log_object_missing(self, detection_rejections, confirmation_ready: bool) -> None:
+        """记录当前帧的真实拒绝门槛, 并区分窗口和融合目标状态"""
         self._object_missing_log_count += 1
-        summary = self._object_detection_debug_summary(text_sim_spatial)
-        if self._object_missing_log_count == 1:
-            self.get_logger().warn(f"当前帧未检测到目标, 跳过 object mask 发布{summary}")
-        elif self._object_missing_log_count % self.object_detection_debug_interval == 0:
-            self.get_logger().info(f"连续未检测到目标帧数={self._object_missing_log_count}{summary}")
+        should_log = (
+            self._object_missing_log_count == 1
+            or self._object_missing_log_count % self.object_detection_debug_interval == 0
+        )
+        if not should_log:
+            return
+        window_state = "仍满足确认门槛" if confirmation_ready else "未满足确认门槛"
+        summary = self._object_detection_rejection_summary(detection_rejections)
+        self.get_logger().info(
+            f"当前帧未形成有效目标, 连续帧数={self._object_missing_log_count}, "
+            f"原因={summary}, Mask阈值={self.mask_threshold:.3f}, "
+            f"视觉窗口={window_state}, 本帧不发布目标Mask, "
+            "已有融合目标不会被当前帧清除"
+        )
 
     def _log_object_detection_pending(self, detection_components) -> None:
-        """记录尚未达到连续帧门槛的目标证据, 不发布目标点"""
-        if self._object_detection_confirm_count != 1:
+        """记录窗口尚未达到证据门槛的目标候选"""
+        evidence_count = self.object_detection_confirmation.evidence_count
+        if evidence_count != 1:
             return
-        summary = ",".join(
-            f"{CAMERA_MAPPING.get(component.camera_idx, component.camera_idx)}"
-            f"/peak={component.peak_score:.3f}/pixels={component.pixel_count}"
+        summary = self._object_detection_component_summary(detection_components)
+        self.get_logger().info(
+            f"视觉窗口正在累计, 有效帧={evidence_count}/"
+            f"{self.object_detection_confirm_frames}, 窗口占用="
+            f"{self.object_detection_confirmation.sample_count}/"
+            f"{self.object_detection_confirm_window_frames}, 候选={summary}"
+        )
+
+    def _log_object_detection_confirmed(self, detection_components) -> None:
+        """确认状态只在窗口首次达标时记录一次"""
+        summary = self._object_detection_component_summary(detection_components)
+        self.get_logger().info(
+            f"当前视觉窗口已通过, 有效帧="
+            f"{self.object_detection_confirmation.evidence_count}/"
+            f"{self.object_detection_confirm_frames}, 窗口占用="
+            f"{self.object_detection_confirmation.sample_count}/"
+            f"{self.object_detection_confirm_window_frames}, 已发布目标Mask, "
+            f"候选={summary}"
+        )
+
+    def _log_object_detection_lost(self) -> None:
+        """窗口失效不等于融合目标丢失"""
+        self.get_logger().info(
+            f"视觉窗口已失效, 有效帧="
+            f"{self.object_detection_confirmation.evidence_count}/"
+            f"{self.object_detection_confirm_frames}, 窗口占用="
+            f"{self.object_detection_confirmation.sample_count}/"
+            f"{self.object_detection_confirm_window_frames}, "
+            "停止发布当前目标Mask, 历史融合目标继续由融合节点维护"
+        )
+
+    @staticmethod
+    def _object_detection_component_summary(detection_components) -> str:
+        """格式化各相机通过过滤的目标连通域"""
+        return ",".join(
+            f"{CAMERA_LOG_NAMES.get(component.camera_idx, component.camera_idx)}"
+            f"/峰值={component.peak_score:.3f}/像素={component.pixel_count}"
             for component in detection_components
         )
-        self.get_logger().info(
-            f"目标证据待确认, frame=1/{self.object_detection_confirm_frames}, components={summary}"
-        )
 
-    def _object_detection_debug_summary(self, text_sim_spatial) -> str:
-        """汇总每路相机的目标相似度, 用于判断远距离目标是否低于阈值"""
-        if text_sim_spatial is None:
-            return ""
-
-        scores = np.asarray(text_sim_spatial)
-        if scores.ndim == 4:
-            scores = np.max(scores, axis=1)
-        elif scores.ndim > 4:
-            scores = scores.reshape(scores.shape[0], -1, scores.shape[-2], scores.shape[-1])
-            scores = np.max(scores, axis=1)
-        if scores.ndim != 3 or scores.shape[0] == 0:
-            return ""
-
-        loose_threshold = self.mask_threshold * 0.8
-        camera_scores = []
-        near_pixels = []
-        for cam_idx in range(min(self.num_cameras, scores.shape[0])):
-            cam_scores = np.nan_to_num(scores[cam_idx], nan=-1.0, posinf=-1.0, neginf=-1.0)
-            camera_scores.append(f"{CAMERA_MAPPING.get(cam_idx, cam_idx)}/{float(np.max(cam_scores)):.3f}")
-            near_pixels.append(f"{CAMERA_MAPPING.get(cam_idx, cam_idx)}/{int(np.sum(cam_scores > loose_threshold))}")
-        return (
-            f", threshold={self.mask_threshold:.3f}, "
-            f"相机最高相似度={','.join(camera_scores)}, "
-            f"近阈值像素={','.join(near_pixels)}"
-        )
+    @staticmethod
+    def _object_detection_rejection_summary(detection_rejections) -> str:
+        """把过滤器拒绝代码转换成可直接判断的中文门槛信息"""
+        reasons = []
+        for rejection in detection_rejections:
+            camera_name = CAMERA_LOG_NAMES.get(
+                rejection.camera_idx,
+                rejection.camera_idx,
+            )
+            if rejection.reason == "peak_below_threshold":
+                detail = (
+                    f"峰值不足/峰值={rejection.peak_score:.3f}<"
+                    f"{rejection.required_peak_score:.3f}/区域像素="
+                    f"{rejection.pixel_count}"
+                )
+            elif rejection.reason == "component_too_small":
+                detail = (
+                    f"区域过小/像素={rejection.pixel_count}<"
+                    f"{rejection.required_pixels}/峰值={rejection.peak_score:.3f}"
+                )
+            else:
+                detail = f"无Mask连通区域/最高分={rejection.peak_score:.3f}"
+            reasons.append(f"{camera_name}/{detail}")
+        return ",".join(reasons) if reasons else "无过滤诊断"
 
     def _publish_object_reached(self, binary_mask) -> None:
         reached = self._object_reached_from_mask(binary_mask)

@@ -2,7 +2,6 @@
   ros__parameters:
     # 输入输出 topic, 平台差异优先由 topic_profiles.yaml 覆盖
     output_goal_topic: /spot1/graphnav_goal_pose
-    goal_viz_topic: /spot1/object_search_goal_viz
     status_topic: /spot1/object_search_status
     object_target_estimate_topic: /spot1/object_target_estimate
     object_reached_topic: /spot1/object_search_reached
@@ -19,5 +18,9 @@
     object_reached_timeout_sec: 2.0
     object_reached_max_target_distance: 2.0
     coarse_target_min_views: 2
-    coarse_target_min_confidence: 0.35
+    coarse_target_min_confidence: 0.5
+    coarse_target_max_distance: 30.0
+    target_max_vertical_offset: 1.5
+    coarse_target_max_horizontal_std: 8.0
     target_update_min_distance: 0.75
+    stable_target_update_min_distance: 0.3

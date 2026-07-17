@@ -173,6 +173,26 @@ class TargetParticleFilter:
         measurement = np.asarray(position, dtype=np.float64).reshape(3)
         support = max(int(support), 0)
 
+        has_visual_track = self.particles is not None and self.accepted_views > 0
+        if (
+            self.last_lidar_position is not None
+            and np.linalg.norm(measurement - self.last_lidar_position)
+            <= self.config.lidar_consistency_radius
+        ):
+            self.lidar_consistent_frames += 1
+        else:
+            self.lidar_consistent_frames = 1
+        self.last_lidar_position = measurement
+        self.lidar_support = support
+
+        # 视觉轨迹存在时先等待连续 LiDAR 证据, 避免单帧背景点改写目标
+        if (
+            has_visual_track
+            and self.lidar_consistent_frames < self.config.lidar_lock_frames
+        ):
+            self._update_state()
+            return self.estimate()
+
         if self.particles is None:
             self.particles = self.rng.normal(
                 measurement,
@@ -186,17 +206,6 @@ class TargetParticleFilter:
             self.weights *= likelihood
             self._normalize_weights()
             self._resample_if_needed()
-
-        if (
-            self.last_lidar_position is not None
-            and np.linalg.norm(measurement - self.last_lidar_position)
-            <= self.config.lidar_consistency_radius
-        ):
-            self.lidar_consistent_frames += 1
-        else:
-            self.lidar_consistent_frames = 1
-        self.last_lidar_position = measurement
-        self.lidar_support = support
         self._update_state()
         return self.estimate()
 
@@ -215,7 +224,9 @@ class TargetParticleFilter:
         if self.state == FusionState.REACHED:
             stable = self.reached_estimate_stable
         source = EstimateSource.VISION
-        if self.lidar_consistent_frames > 0:
+        if self.accepted_views == 0 and self.lidar_support > 0:
+            source = EstimateSource.LIDAR
+        elif self.lidar_consistent_frames >= self.config.lidar_lock_frames:
             source = EstimateSource.FUSED
         if self.state == FusionState.LIDAR_LOCKED:
             source = EstimateSource.LIDAR
@@ -406,8 +417,14 @@ class TargetParticleFilter:
         spread_score = math.exp(
             -horizontal_std / max(self.config.stable_max_horizontal_std, 1e-6)
         )
+        effective_lidar_frames = self.lidar_consistent_frames
+        if (
+            self.accepted_views > 0
+            and effective_lidar_frames < self.config.lidar_lock_frames
+        ):
+            effective_lidar_frames = 0
         lidar_score = min(
-            self.lidar_consistent_frames / max(self.config.lidar_lock_frames, 1),
+            effective_lidar_frames / max(self.config.lidar_lock_frames, 1),
             1.0,
         )
         confidence = 0.35 * view_score + 0.45 * spread_score + 0.20 * lidar_score
