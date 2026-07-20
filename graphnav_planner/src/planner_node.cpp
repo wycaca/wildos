@@ -80,6 +80,11 @@ public:
         });
     goal_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
         "~/goal_pose", 10, [this](const geometry_msgs::msg::PoseStamped::ConstSharedPtr msg) {
+          if (this->last_hold_goal_ && same_goal_pose(*this->last_hold_goal_, *msg))
+          {
+            return;
+          }
+          this->last_hold_goal_.reset();
           if (this->goal_pose_ && same_goal_pose(*this->goal_pose_, *msg))
           {
             // goal mux 会周期重发同一粗目标, 只更新时间戳而不重复触发规划
@@ -161,6 +166,7 @@ private:
     // 状态切换先丢弃旧 goal, 等同一周期的新 goal 到达后再规划
     // 这样目标出现时不会用旧探索 goal 短暂发布错误路径
     goal_pose_.reset();
+    last_hold_goal_.reset();
     planner_.reset_exploration_state();
     RCLCPP_INFO(
       this->get_logger(),
@@ -238,6 +244,7 @@ private:
           }
           if (!directional_exploration_mode_ && (goal_vec - robot_vec).norm() < goal_radius_)
           {
+            last_hold_goal_ = goal;
             publish_hold_path(robot_in_graph_frame);
             goal_pose_.reset();
             return;
@@ -296,6 +303,11 @@ private:
           }
         }
         path_pub_->publish(path_msg);
+        RCLCPP_INFO(
+          this->get_logger(),
+          "已发布规划路径, type=route, poses=%zu, frame=%s",
+          path_msg.poses.size(),
+          path_msg.header.frame_id.c_str());
       }
       if (grid_map_debug_pub_->get_subscription_count() > 0)
       {
@@ -341,6 +353,11 @@ private:
     hold_pose.header = path_msg.header;
     path_msg.poses.push_back(hold_pose);
     path_pub_->publish(path_msg);
+    RCLCPP_INFO(
+      this->get_logger(),
+      "已发布停止路径, type=hold, reason=goal_within_radius, poses=%zu, frame=%s",
+      path_msg.poses.size(),
+      path_msg.header.frame_id.c_str());
   }
 
   rclcpp::Subscription<graphnav_msgs::msg::NavigationGraph>::SharedPtr graph_sub_;
@@ -355,6 +372,7 @@ private:
   tf2_ros::TransformListener tf_listener_;
 
   geometry_msgs::msg::PoseStamped::ConstSharedPtr goal_pose_;
+  std::optional<geometry_msgs::msg::PoseStamped> last_hold_goal_;
   nav_msgs::msg::Odometry::ConstSharedPtr odom_;
   std::optional<std_msgs::msg::Header> latest_graph_header_;
   std::string object_search_state_;
