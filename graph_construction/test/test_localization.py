@@ -45,6 +45,10 @@ def test_unity_dlio_localization_uses_raw_lidar_and_imu():
     assert wiring.isolate_platform_tf is True
 
 
+def test_unity_profile_normalizes_camera_stamps():
+    assert _unity_profile()["camera_stamp_mode"] == "now"
+
+
 def test_unity_dlio_disables_unstable_adaptive_gicp():
     config = _unity_dlio_config()
 
@@ -55,6 +59,7 @@ def test_unity_dlio_disables_unstable_adaptive_gicp():
 def test_unity_dlio_uses_gravity_alignment_and_bounded_accel_bias():
     config = _unity_dlio_config()
 
+    assert config["odom/publishRate"] == 20.0
     assert config["odom/imu/approximateGravity"] is True
     assert config["odom/geo/abias_max"] == 1.0
 

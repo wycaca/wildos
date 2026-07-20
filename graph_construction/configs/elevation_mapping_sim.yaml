@@ -19,8 +19,10 @@ elevation_mapping_node:
     enable_drift_corrected_TF_publishing: false
     enable_pointcloud_publishing: false
     use_initializer_at_start: true
+    initialize_method: linear
     initialize_frame_id: ["base_link"]
-    initialize_tf_offset: [0.0, 0.0, 0.0, 0.0]
+    initialize_tf_offset: [-0.22]
+    dilation_size_initialize: 5
     initialize_tf_grid_size: 1.0
     service_namespace: /elevation_mapping_cupy
 

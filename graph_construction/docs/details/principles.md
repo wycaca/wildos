@@ -6,6 +6,18 @@
 
 当前唯一几何输入是 elevation mapping 发布的 `GridMap`
 
+高程图启动时先完成一次脚下地面初始化:
+
+1. 第一帧点云到达后，按同一时间戳查询 `map_frame -> base_frame`
+2. 将 rolling map 中心移动到机器人初始位姿
+3. 单 `base_link` 配置按 `initialize_tf_grid_size` 展开为 4 个方形地面锚点
+4. 地面锚点高度使用 `base_link` 高度加 `initialize_tf_offset`
+5. 插值和膨胀完成后才接收第一帧点云，防止点云先写入又被初始化清空
+
+当前 Unity 配置使用 `initialize_tf_offset=-0.22m`、`initialize_tf_grid_size=1.0m` 和 `dilation_size_initialize=5`
+
+启动初始化负责从源头给出脚下初始地面，`SparseGraphBuilder` 的局部 unknown 修补继续作为保守兜底，两者不能互相替代
+
 `grid_adapter.py` 负责:
 
 1. 根据 GridMap layout 和 circular buffer 起点恢复二维 layer

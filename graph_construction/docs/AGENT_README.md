@@ -228,6 +228,8 @@ graph_construction/graph_construction/
 
 当前必须保持的修复不变量:
 
+- `elevation_mapping_cupy` 必须在第一帧点云融合前完成一次启动初始化，单 `base_link` 展开为 4 个地面锚点，Unity 高度偏移固定为 `-0.22m`
+- 启动初始化等待同一时刻的 base 和 initializer TF，TF 不可用时跳过点云，禁止先融合点云再调用会清图的 `initialize_map`
 - `SparseGraphBuilder` 只修补 `robot_blind_zone_radius` 内的 unknown，高程优先取与 odom 预期地面一致的最近地面中位数，无可信样本时才使用 odom 高度偏移，明确 obstacle 绝不得覆盖
 - 脚下修补区是孤立 free 小岛时，可跨越无明确障碍的 unknown 盲区引导采样外围 free 分量，但不得将整个盲区改成 free
 - `NavigationGraph.current_node_idx` 优先对应跟随机器人的 anchor，不得恢复为普通近邻采样点
@@ -244,6 +246,9 @@ graph_construction/graph_construction/
 
 | 参数 | 默认值 | 语义 |
 |---|---:|---|
+| `initialize_tf_offset` | -0.22m | `base_link` 到启动地面锚点的高度偏移 |
+| `initialize_tf_grid_size` | 1.0m | 单初始化 TF 展开的方形地面区域边长 |
+| `dilation_size_initialize` | 5 cell | 启动地面插值后的膨胀尺寸 |
 | `robot_blind_zone_radius` | 0.8m | 只允许修补的机器人脚下半径 |
 | `robot_blind_zone_elevation_search_radius` | 6.0m | 周边地面高程搜索半径，只取最近边缘样本 |
 | `robot_ground_height_offset` | 0.22m | base odom 高度到预期脚下地面的偏移 |
@@ -259,6 +264,9 @@ graph_construction/graph_construction/
 
 回归测试不得删除:
 
+- `test_single_base_frame_expands_to_ground_square`
+- `test_four_foot_frames_keep_positions_and_apply_offsets`
+- `test_rejects_ambiguous_two_frame_configuration`
 - `test_graph_builder_repairs_robot_blind_zone_from_nearby_ground`
 - `test_graph_builder_uses_robot_anchor_as_current_node_on_known_ground`
 - `test_graph_builder_rejects_implausible_high_surface_near_blind_zone`
