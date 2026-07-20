@@ -39,7 +39,8 @@ setup(
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
-            "dlio_input_filter = graph_construction.dlio_input_filter:main",
+            "camera_stamp_adapter = graph_construction.camera_stamp_adapter:main",
+            "dlio_output_guard = graph_construction.dlio_output_guard:main",
             "dlio_tf_adapter = graph_construction.dlio_tf_adapter:main",
             "graph_construction = graph_construction.node:main",
             "pointcloud_axis_adapter = graph_construction.pointcloud_axis_adapter:main",

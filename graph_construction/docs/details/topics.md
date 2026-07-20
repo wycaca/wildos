@@ -119,21 +119,24 @@ launch_dlio:=true
 |---|---|
 | `/livox/lidar` | DLIO 原始 PointCloud2 输入 |
 | `/livox/imu` | DLIO IMU 输入 |
-| `/spot1/dlio/odom_node/input/pointcloud` | 去除重复时间戳后的 DLIO 点云输入 |
-| `/spot1/dlio/odom_node/input/imu` | 去除重复时间戳后的 DLIO IMU 输入 |
 | `/spot1/dlio/odom_node/odom` | DLIO odom 输出 |
 | `/spot1/dlio/odom_node/aligned_odom` | 启动锚定到 `odom_3D` 后的 DLIO odom |
-| `/spot1/dlio/odom_node/healthy` | DLIO 健康状态，false 时输入过滤器停止转发 |
-| `/spot1/dlio/odom_node/pointcloud/deskewed` | elevation mapping 和目标 LiDAR 细化输入 |
+| `/spot1/dlio/odom_node/healthy` | DLIO 健康状态, false 时暂停 canonical odom、TF 和下游点云 |
+| `/spot1/dlio/odom_node/pointcloud/deskewed_raw` | DLIO 原始输出, 仅供健康门控 |
+| `/spot1/dlio/odom_node/pointcloud/deskewed` | 健康门控后的 elevation mapping 和目标 LiDAR 细化输入 |
 | `/spot1/dlio/odom_node/tf_raw` | 官方 DLIO scan-rate TF，仅用于诊断 |
 | `/spot1/tf` | `dlio_tf_adapter` 从 DLIO odom 重建的统一动态 TF |
 | `/spot1/tf_static` | WildOS 专用相机静态 TF |
+
+DLIO 直接订阅原始 LiDAR 和 IMU, 不再使用 Python 去重转发节点, 避免大点云回调压低 IMU 输入频率
 
 DLIO 模式会绕过 XYZ-only pointcloud axis adapter，并保留 DLIO odom 的原始 timestamp
 
 Unity 模式等待 DLIO 的 3 秒 IMU 标定稳定后，使用同时间戳 `/unity/odom` 一次性确定 `odom_3D -> dlio_odom`，后续运动只由 DLIO 更新
 
 WildOS 节点统一读取 `/spot1/tf` 和 `/spot1/tf_static`，TF 链为 `odom_3D -> dlio_odom -> base_link -> livox_frame`，避免 Unity 和 DLIO 发布同一个 child frame
+
+Unity 原始相机 header stamp 与主 `/clock` 不同源, `camera_stamp_adapter` 将三路 image 和 camera info 重打到当前 `/clock`, WildOS 实际订阅 `/spot1/camera_synced/{front,left,right}/...`
 
 普通 RViz 可以用 Unity `/tf` 显示已经对齐到 `odom_3D` 的 GridMap，检查 DLIO 局部 frame 时需要 remap `/tf:=/spot1/tf` 和 `/tf_static:=/spot1/tf_static`，或使用 `launch_paper_rviz:=true`
 

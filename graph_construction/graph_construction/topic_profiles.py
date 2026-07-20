@@ -73,6 +73,7 @@ PROFILE_KEY_DESCRIPTIONS = {
     "goal_pose_topic": "planner 高层 goal 输入 topic",
     "camera_img_topic": "三相机图像 topic 模板",
     "camera_info_topic": "三相机 camera info topic 模板",
+    "camera_stamp_mode": "相机 header stamp 处理方式, preserve 或 now",
 }
 
 

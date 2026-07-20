@@ -2,8 +2,9 @@ import importlib.util
 import os
 from pathlib import Path
 
+import pytest
 from launch import LaunchContext
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, TimerAction
 from launch.utilities import perform_substitutions
 from launch_ros.actions import Node
 
@@ -41,6 +42,33 @@ def _expanded(context, substitutions):
     return perform_substitutions(context, substitutions)
 
 
+def _remappings(context, node):
+    return {
+        (
+            perform_substitutions(context, source),
+            perform_substitutions(context, target),
+        )
+        for source, target in node._Node__remappings
+    }
+
+
+def _all_nodes(actions):
+    """展开 TimerAction, 收集主链路中的所有节点"""
+    for action in actions:
+        if isinstance(action, Node):
+            yield action
+        elif isinstance(action, TimerAction):
+            yield from _all_nodes(action._TimerAction__actions)
+
+
+def _node_prefix(context, node):
+    description = node._ExecuteLocal__process_description
+    return perform_substitutions(
+        context,
+        description._Executable__prefix,
+    )
+
+
 def test_unity_dlio_launch_owns_dlio_and_skips_xyz_adapter():
     os.environ.setdefault("ROS_LOG_DIR", "/tmp/wildos_test_ros_log")
     module = _load_launch_module()
@@ -63,8 +91,38 @@ def test_unity_dlio_launch_owns_dlio_and_skips_xyz_adapter():
         "dlio_odom_node",
     ) in launched_nodes
     assert ("graph_construction", "dlio_tf_adapter") in launched_nodes
-    assert ("graph_construction", "dlio_input_filter") in launched_nodes
+    assert ("graph_construction", "dlio_output_guard") in launched_nodes
+    assert ("graph_construction", "camera_stamp_adapter") in launched_nodes
     assert ("graph_construction", "pointcloud_axis_adapter") not in launched_nodes
+
+    dlio_node = next(
+        action
+        for action in actions
+        if isinstance(action, Node)
+        and _expanded(context, action.node_executable) == "dlio_odom_node"
+    )
+    remappings = _remappings(context, dlio_node)
+    assert ("pointcloud", "/livox/lidar") in remappings
+    assert ("imu", "/livox/imu") in remappings
+    assert (
+        "deskewed",
+        "/spot1/dlio/odom_node/pointcloud/deskewed_raw",
+    ) in remappings
+
+
+def test_camera_stamp_adapter_can_be_disabled():
+    module = _load_launch_module()
+    context = _context_with_defaults(module)
+    context.launch_configurations["camera_stamp_mode"] = "preserve"
+
+    actions = module._launch_setup(context)
+    executables = {
+        _expanded(context, action.node_executable)
+        for action in actions
+        if isinstance(action, Node)
+    }
+
+    assert "camera_stamp_adapter" not in executables
 
 
 def test_dlio_odom_adapter_defaults_to_message_pose():
@@ -86,3 +144,43 @@ def test_dlio_scoring_uses_globally_aligned_odom():
 
     assert module._scoring_odom_input_topic(wiring) == "/spot1/dlio/odom_node/aligned_odom"
     assert wiring.dlio_local_frame == "dlio_odom"
+
+
+def test_all_python_nodes_use_uv_environment_python():
+    module = _load_launch_module()
+    expected_python = str(REPO_ROOT / ".venv/bin/python3")
+    python_executables = {
+        "camera_stamp_adapter",
+        "dlio_output_guard",
+        "dlio_tf_adapter",
+        "elevation_mapping_node.py",
+        "graph_construction",
+        "object_search_goal_mux",
+        "object_target_fusion",
+        "odom_frame_adapter",
+        "pointcloud_axis_adapter",
+        "wildos",
+    }
+    launched_python = set()
+
+    for backend in ("platform", "dlio"):
+        context = _context_with_defaults(module)
+        context.launch_configurations["localization_backend"] = backend
+        context.launch_configurations["launch_dlio"] = "true"
+        for node in _all_nodes(module._launch_setup(context)):
+            executable = _expanded(context, node.node_executable)
+            if executable not in python_executables:
+                continue
+            launched_python.add(executable)
+            assert _node_prefix(context, node).strip() == expected_python
+
+    assert launched_python == python_executables
+
+
+def test_system_python_is_rejected_for_python_nodes():
+    module = _load_launch_module()
+    context = _context_with_defaults(module)
+    context.launch_configurations["wildos_python_executable"] = "/usr/bin/python3"
+
+    with pytest.raises(RuntimeError, match="不是 uv 创建"):
+        module._launch_setup(context)

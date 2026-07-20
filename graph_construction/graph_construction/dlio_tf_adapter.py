@@ -410,8 +410,6 @@ class DlioTfAdapter(Node):
         self.reference_messages.append(msg)
 
     def _on_odom(self, msg: Odometry) -> None:
-        if self._health_status is False:
-            return
         if self.alignment is None:
             if not self.extrinsics_ready:
                 if not self._logged_waiting:
@@ -467,15 +465,18 @@ class DlioTfAdapter(Node):
             self.max_linear_speed,
         )
         if not healthy:
-            self._publish_health(False)
-            self.get_logger().error(
-                "DLIO 位姿发散, 已冻结 odom 和 TF, "
-                f"position_error={metrics[0]:.3f}m, "
-                f"orientation_error={metrics[1]:.2f}deg, "
-                f"speed={metrics[2]:.3f}m/s"
-            )
+            if self._publish_health(False):
+                self.get_logger().error(
+                    "DLIO 位姿发散, 已暂停 odom、TF 和点云输出, "
+                    f"position_error={metrics[0]:.3f}m, "
+                    f"orientation_error={metrics[1]:.2f}deg, "
+                    f"speed={metrics[2]:.3f}m/s"
+                )
             return
+        recovered = self._health_status is False
         self._publish_health(True)
+        if recovered:
+            self.get_logger().info("DLIO 位姿已恢复, 继续发布 odom、TF 和点云")
         alignment_tf = alignment_to_transform(
             self.alignment,
             msg.header.stamp,
@@ -500,11 +501,12 @@ class DlioTfAdapter(Node):
             )
             self._logged_pose = True
 
-    def _publish_health(self, healthy: bool) -> None:
+    def _publish_health(self, healthy: bool) -> bool:
         if self._health_status == healthy:
-            return
+            return False
         self.health_publisher.publish(Bool(data=healthy))
         self._health_status = healthy
+        return True
 
     def _nearest_reference(self, msg: Odometry) -> Odometry | None:
         if not self.reference_messages:

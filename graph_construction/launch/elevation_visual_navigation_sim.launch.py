@@ -83,7 +83,7 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "wildos_python_executable",
                 default_value="",
-                description="Python executable used to launch WildOS, empty uses console script shebang",
+                description="uv environment Python used by every Python node",
             ),
             DeclareLaunchArgument(
                 "launch_odom_adapter",
@@ -149,6 +149,7 @@ def generate_launch_description():
             _profile_arg("cam_frame", "cam_frame"),
             _profile_arg("camera_img_topic", "camera_img_topic"),
             _profile_arg("camera_info_topic", "camera_info_topic"),
+            _profile_arg("camera_stamp_mode", "camera_stamp_mode"),
             _profile_arg("nav_graph_topic", "nav_graph_topic"),
             _profile_arg("graph_construction_viz_topic", "graph_construction_viz_topic"),
             _profile_arg("scored_nav_graph_topic", "scored_nav_graph_topic"),
@@ -230,6 +231,42 @@ def _launch_setup(context):
     odom_output_topic = _value(context, profile, "odom_output_topic", "odom_output_topic")
     nav_graph_topic = _value(context, profile, "nav_graph_topic", "nav_graph_topic")
     aligned_lidar_topic = wiring.mapping_pointcloud_topic
+    camera_img_topic = _value(
+        context,
+        profile,
+        "camera_img_topic",
+        "camera_img_topic",
+    )
+    camera_info_topic = _value(
+        context,
+        profile,
+        "camera_info_topic",
+        "camera_info_topic",
+    )
+    camera_stamp_mode = _value(
+        context,
+        profile,
+        "camera_stamp_mode",
+        "camera_stamp_mode",
+    ).strip().lower()
+    if camera_stamp_mode not in {"preserve", "now"}:
+        raise ValueError(
+            f"Unsupported camera_stamp_mode={camera_stamp_mode}, "
+            "expected preserve or now"
+        )
+    normalized_ns = str(ns).strip("/")
+    camera_sync_root = (
+        f"/{normalized_ns}/camera_synced"
+        if normalized_ns
+        else "/camera_synced"
+    )
+    visual_camera_img_topic = camera_img_topic
+    visual_camera_info_topic = camera_info_topic
+    if camera_stamp_mode == "now":
+        visual_camera_img_topic = (
+            f"{camera_sync_root}/{{}}/color/image/compressed"
+        )
+        visual_camera_info_topic = f"{camera_sync_root}/{{}}/color/camera_info"
     pointcloud_axis_mode = _value(context, profile, "pointcloud_axis_mode", "pointcloud_axis_mode")
     pointcloud_output_frame = _value(context, profile, "pointcloud_output_frame", "pointcloud_output_frame")
     isolated_tf_remappings = _tf_remappings(ns) if wiring.isolate_platform_tf else []
@@ -247,8 +284,8 @@ def _launch_setup(context):
         {
             "parent_frame": _value(context, profile, "parent_frame", "parent_frame"),
             "cam_frame": _value(context, profile, "cam_frame", "cam_frame"),
-            "camera_img_topic": _value(context, profile, "camera_img_topic", "camera_img_topic"),
-            "camera_info_topic": _value(context, profile, "camera_info_topic", "camera_info_topic"),
+            "camera_img_topic": visual_camera_img_topic,
+            "camera_info_topic": visual_camera_info_topic,
             "odometry_topic": odom_output_topic,
             "navigation_graph_topic": nav_graph_topic,
             "scored_navgraph_topic": _value(context, profile, "scored_nav_graph_topic", "scored_nav_graph_topic"),
@@ -344,13 +381,16 @@ def _launch_setup(context):
     goal_pose_topic = _value(context, profile, "goal_pose_topic", "goal_pose_topic")
     scored_nav_graph_topic = _value(context, profile, "scored_nav_graph_topic", "scored_nav_graph_topic")
     publish_camera_static_tf = TextSubstitution(text=_arg(context, "publish_camera_static_tf"))
-    wildos_python_executable = _arg(context, "wildos_python_executable")
-    wildos_extra_args = {}
-    if wildos_python_executable:
-        wildos_extra_args["prefix"] = f"{wildos_python_executable} "
     repo_root = _repo_root()
-    wildos_extra_args["additional_env"] = {
-        "PYTHONPATH": _prepend_pythonpath(repo_root),
+    python_executable = _uv_python_executable(context, repo_root)
+    python_node_extra_args = {
+        "prefix": f"{python_executable} ",
+        "additional_env": {
+            "PYTHONPATH": _prepend_pythonpath(repo_root),
+            "PYTHONNOUSERSITE": "1",
+            "VIRTUAL_ENV": str(Path(python_executable).parent.parent),
+            "PATH": _prepend_path(str(Path(python_executable).parent)),
+        },
     }
 
     elevation_share = get_package_share_directory("elevation_mapping_cupy")
@@ -362,6 +402,7 @@ def _launch_setup(context):
         executable="elevation_mapping_node.py",
         name="elevation_mapping_node",
         output="screen",
+        **python_node_extra_args,
         parameters=[
             core_param,
             _package_config_path("graph_construction", elevation_config),
@@ -383,6 +424,7 @@ def _launch_setup(context):
         package="graph_construction",
         executable="graph_construction",
         output="screen",
+        **python_node_extra_args,
         namespace=ns,
         arguments=["--config", graph_config, *graph_overrides, "--ros-args", "--log-level", log_level],
         parameters=[{"use_sim_time": use_sim_time}],
@@ -393,6 +435,7 @@ def _launch_setup(context):
         package="visual_navigation",
         executable="odom_frame_adapter",
         output="screen",
+        **python_node_extra_args,
         parameters=[
             {"use_sim_time": use_sim_time},
             {"input_topic": _scoring_odom_input_topic(wiring)},
@@ -411,6 +454,7 @@ def _launch_setup(context):
         package="graph_construction",
         executable="pointcloud_axis_adapter",
         output="screen",
+        **python_node_extra_args,
         parameters=[
             {"use_sim_time": use_sim_time},
             {"input_topic": _value(context, profile, "pointcloud_input_topic", "pointcloud_input_topic")},
@@ -419,6 +463,20 @@ def _launch_setup(context):
             {"axis_mode": pointcloud_axis_mode},
         ],
         condition=IfCondition(LaunchConfiguration("launch_pointcloud_axis_adapter")),
+    )
+
+    camera_stamp_adapter = Node(
+        package="graph_construction",
+        executable="camera_stamp_adapter",
+        output="screen",
+        **python_node_extra_args,
+        parameters=[
+            {"use_sim_time": use_sim_time},
+            {"input_image_topic_template": camera_img_topic},
+            {"input_info_topic_template": camera_info_topic},
+            {"output_image_topic_template": visual_camera_img_topic},
+            {"output_info_topic_template": visual_camera_info_topic},
+        ],
     )
 
     paper_rviz_config = Path(_arg(context, "paper_rviz_config"))
@@ -443,7 +501,7 @@ def _launch_setup(context):
         package="visual_navigation",
         executable="wildos",
         output="both",
-        **wildos_extra_args,
+        **python_node_extra_args,
         arguments=[
             "--config",
             visual_config,
@@ -463,6 +521,7 @@ def _launch_setup(context):
         executable="object_target_fusion",
         name="object_target_fusion",
         output="screen",
+        **python_node_extra_args,
         parameters=[
             {"use_sim_time": use_sim_time},
             {"global_frame": global_frame},
@@ -489,6 +548,7 @@ def _launch_setup(context):
         package="visual_navigation",
         executable="object_search_goal_mux",
         output="screen",
+        **python_node_extra_args,
         parameters=[
             _package_config_path("visual_navigation", "object_search_goal_mux.yaml"),
             {"use_sim_time": use_sim_time},
@@ -564,6 +624,7 @@ def _launch_setup(context):
         log_level,
         isolated_tf_remappings,
         pointcloud_axis_adapter,
+        python_node_extra_args,
     )
 
     return [
@@ -581,6 +642,7 @@ def _launch_setup(context):
         ),
         *localization_actions,
         odom_adapter,
+        *([camera_stamp_adapter] if camera_stamp_mode == "now" else []),
         paper_rviz,
         _camera_static_tf(
             "front",
@@ -620,6 +682,7 @@ def _localization_actions(
     log_level,
     tf_remappings,
     pointcloud_axis_adapter,
+    python_node_extra_args,
 ):
     """Create only the nodes owned by the selected localization backend"""
     if wiring.backend == "platform":
@@ -627,11 +690,12 @@ def _localization_actions(
     if not _launch_bool(context, "launch_dlio"):
         return []
     return [
-        _dlio_input_filter(
+        _dlio_output_guard(
             context,
             profile,
             wiring,
             use_sim_time,
+            python_node_extra_args,
         ),
         _dlio_node(
             context,
@@ -642,7 +706,14 @@ def _localization_actions(
             use_sim_time,
             log_level,
         ),
-        _dlio_tf_adapter(context, profile, wiring, ns, use_sim_time),
+        _dlio_tf_adapter(
+            context,
+            profile,
+            wiring,
+            ns,
+            use_sim_time,
+            python_node_extra_args,
+        ),
     ]
 
 
@@ -657,8 +728,7 @@ def _dlio_node(
 ):
     """Launch official DLIO with its scan-rate TF isolated as raw diagnostics"""
     topic_root = _value(context, profile, "dlio_topic_root", "dlio_topic_root").rstrip("/")
-    filtered_pointcloud_topic = f"{topic_root}/input/pointcloud"
-    filtered_imu_topic = f"{topic_root}/input/imu"
+    raw_deskewed_topic = f"{topic_root}/pointcloud/deskewed_raw"
     config_file = _arg(context, "dlio_config_file")
     if not config_file:
         config_file = _package_config_path(
@@ -684,22 +754,28 @@ def _dlio_node(
         ],
         arguments=["--ros-args", "--log-level", log_level],
         remappings=[
-            ("pointcloud", filtered_pointcloud_topic),
-            ("imu", filtered_imu_topic),
+            ("pointcloud", wiring.dlio_pointcloud_input_topic),
+            ("imu", wiring.dlio_imu_input_topic),
             ("odom", wiring.odom_input_topic),
             ("pose", f"{topic_root}/pose"),
             ("path", f"{topic_root}/path"),
             ("kf_pose", f"{topic_root}/keyframes"),
             ("kf_cloud", f"{topic_root}/pointcloud/keyframe"),
-            ("deskewed", wiring.mapping_pointcloud_topic),
+            ("deskewed", raw_deskewed_topic),
             ("/tf", f"{topic_root}/tf_raw"),
             ("/tf_static", f"{topic_root}/tf_static_raw"),
         ],
     )
 
 
-def _dlio_input_filter(context, profile, wiring, use_sim_time):
-    """Drop repeated sensor stamps before official DLIO receives them"""
+def _dlio_output_guard(
+    context,
+    profile,
+    wiring,
+    use_sim_time,
+    python_node_extra_args,
+):
+    """Block DLIO point clouds while aligned odometry is unhealthy"""
     topic_root = _value(
         context,
         profile,
@@ -708,20 +784,30 @@ def _dlio_input_filter(context, profile, wiring, use_sim_time):
     ).rstrip("/")
     return Node(
         package="graph_construction",
-        executable="dlio_input_filter",
+        executable="dlio_output_guard",
         output="screen",
+        **python_node_extra_args,
         parameters=[
             {"use_sim_time": use_sim_time},
-            {"input_pointcloud_topic": wiring.dlio_pointcloud_input_topic},
-            {"input_imu_topic": wiring.dlio_imu_input_topic},
-            {"output_pointcloud_topic": f"{topic_root}/input/pointcloud"},
-            {"output_imu_topic": f"{topic_root}/input/imu"},
+            {
+                "input_pointcloud_topic": (
+                    f"{topic_root}/pointcloud/deskewed_raw"
+                )
+            },
+            {"output_pointcloud_topic": wiring.mapping_pointcloud_topic},
             {"health_topic": f"{topic_root}/healthy"},
         ],
     )
 
 
-def _dlio_tf_adapter(context, profile, wiring, ns, use_sim_time):
+def _dlio_tf_adapter(
+    context,
+    profile,
+    wiring,
+    ns,
+    use_sim_time,
+    python_node_extra_args,
+):
     """Rebuild canonical TF from the high-rate DLIO odom state"""
     topic_root = _value(context, profile, "dlio_topic_root", "dlio_topic_root").rstrip("/")
     normalized_ns = str(ns).strip("/")
@@ -730,6 +816,7 @@ def _dlio_tf_adapter(context, profile, wiring, ns, use_sim_time):
         package="graph_construction",
         executable="dlio_tf_adapter",
         output="screen",
+        **python_node_extra_args,
         parameters=[
             {"use_sim_time": use_sim_time},
             {"input_odom_topic": wiring.odom_input_topic},
@@ -922,11 +1009,36 @@ def _repo_root():
     return str(Path(__file__).resolve().parents[2])
 
 
+def _uv_python_executable(context, repo_root):
+    """只接受 uv 创建的 Python 环境, 避免 ROS entrypoint 回退系统 Python"""
+    configured = _arg(context, "wildos_python_executable")
+    candidate = Path(configured) if configured else Path(repo_root) / ".venv/bin/python3"
+    if not candidate.is_absolute():
+        candidate = Path(repo_root) / candidate
+    venv_config = candidate.parent.parent / "pyvenv.cfg"
+    if not candidate.is_file() or not os.access(candidate, os.X_OK):
+        raise RuntimeError(f"uv Python 不可执行: {candidate}")
+    if not venv_config.is_file() or not any(
+        line.startswith("uv = ")
+        for line in venv_config.read_text(encoding="utf-8").splitlines()
+    ):
+        raise RuntimeError(f"Python 环境不是 uv 创建的虚拟环境: {candidate.parent.parent}")
+    return str(candidate.absolute())
+
+
 def _prepend_pythonpath(path):
-    """给 WildOS 子进程补仓库根目录, 让本地 explorfm 包可导入"""
+    """给所有 Python 节点补仓库根目录, 让本地包可导入"""
     current_pythonpath = os.environ.get("PYTHONPATH")
     if current_pythonpath:
         return f"{path}:{current_pythonpath}"
+    return path
+
+
+def _prepend_path(path):
+    """让 Python 节点创建的子进程继续优先使用同一 uv 环境"""
+    current_path = os.environ.get("PATH")
+    if current_path:
+        return f"{path}:{current_path}"
     return path
 
 

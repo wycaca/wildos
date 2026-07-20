@@ -405,4 +405,12 @@ WILDOS_TOPIC_PROFILE=unity \
 - 修复后完整链路持续运行超过 2 分钟, DLIO position 保持毫米级, `/spot1/scored_nav_graph` 稳定约 `2 Hz`
 - 启动脚本增加重复 launch 检查, 旧 elevation launch 未退出时拒绝启动第二套实例
 
+2026-07-20 输入链路修正:
+
+- Unity 发布端已修复重复 timestamp, 删除 WildOS 内部 LiDAR 和 IMU 去重逻辑
+- 故障日志显示输入转发节点每 10 秒只收到约 97 帧 IMU, 与 LiDAR 帧数近似相同
+- DLIO 改为直接订阅 `/livox/lidar` 和 `/livox/imu`, Python 节点只在输出侧门控约 10 Hz 的 deskewed cloud
+- 健康失败不再停止原始传感器输入或要求重启, 后续健康 odom 可自动恢复 canonical odom、TF 和点云输出
+- 删除输入节点后实测原始 `/livox/imu` 仍约 10.02 Hz, header stamp 间隔约 0.1 s, 说明 Unity 的 200 Hz 配置尚未反映到 ROS publisher
+
 该验证证明 Unity 接线和 DLIO-only 主链可运行, 但不等于完成算法精度验收。由于当前点云没有逐点时间字段, DLIO 将传感器识别为 unknown 并关闭 deskew, 因此还需补充有效 Livox `timestamp` 后评测 ATE, RPE 和运动去畸变效果

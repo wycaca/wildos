@@ -70,6 +70,7 @@ profiles:
     goal_pose_topic: /goal_pose
     camera_img_topic: /unitree_go2/{}_cam/color_image
     camera_info_topic: /unitree_go2/{}_cam/info
+    camera_stamp_mode: preserve
 
   unity:
     description: Unity simulation profile
@@ -149,6 +150,7 @@ profiles:
     goal_pose_topic: /spot1/graphnav_goal_pose
     camera_img_topic: /camera/{}/color/image/compressed
     camera_info_topic: /camera/{}/color/camera_info
+    camera_stamp_mode: now
 
   robot:
     description: Real robot profile placeholder
@@ -218,3 +220,4 @@ profiles:
     goal_pose_topic: /goal_pose
     camera_img_topic: /spot1/realsense/{}/color/image_raw/compressed
     camera_info_topic: /spot1/realsense/{}/color/camera_info
+    camera_stamp_mode: preserve

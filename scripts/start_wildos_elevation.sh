@@ -7,11 +7,9 @@ WORKSPACE_ROOT="$(cd "${REPO_ROOT}/../.." && pwd)"
 
 ROS_SETUP="${ROS_SETUP:-/opt/ros/humble/setup.bash}"
 INSTALL_SETUP="${INSTALL_SETUP:-${WORKSPACE_ROOT}/install/setup.bash}"
-DEFAULT_VENV_ACTIVATE="${REPO_ROOT}/.venv/bin/activate"
-if [[ ! -f "${DEFAULT_VENV_ACTIVATE}" ]]; then
-  DEFAULT_VENV_ACTIVATE="${REPO_ROOT}/wildos_venv/bin/activate"
-fi
-VENV_ACTIVATE="${VENV_ACTIVATE:-${DEFAULT_VENV_ACTIVATE}}"
+WILDOS_UV_VENV="${WILDOS_UV_VENV:-${REPO_ROOT}/.venv}"
+VENV_ACTIVATE="${WILDOS_UV_VENV}/bin/activate"
+PYTHON_BIN="${WILDOS_UV_VENV}/bin/python3"
 FAST_DDS_PROFILE="${FAST_DDS_PROFILE:-${REPO_ROOT}/configs/fastdds_shm_profile.xml}"
 OBJECT_SEARCH_BUILD_PACKAGES="object_search_msgs triangulation3d visual_navigation graph_construction"
 
@@ -22,9 +20,17 @@ fi
 
 source "${ROS_SETUP}"
 
-if [[ -f "${VENV_ACTIVATE}" ]]; then
-  source "${VENV_ACTIVATE}"
+if [[ ! -x "${PYTHON_BIN}" || ! -f "${VENV_ACTIVATE}" ]]; then
+  echo "缺少 uv 虚拟环境: ${WILDOS_UV_VENV}" >&2
+  echo "请在仓库根目录执行 uv sync" >&2
+  exit 1
 fi
+if [[ ! -f "${WILDOS_UV_VENV}/pyvenv.cfg" ]] \
+  || ! grep -q '^uv = ' "${WILDOS_UV_VENV}/pyvenv.cfg"; then
+  echo "Python 环境不是 uv 创建的虚拟环境: ${WILDOS_UV_VENV}" >&2
+  exit 1
+fi
+source "${VENV_ACTIVATE}"
 
 if [[ ! -f "${INSTALL_SETUP}" ]]; then
   echo "缺少工作空间环境文件: ${INSTALL_SETUP}" >&2
@@ -62,20 +68,6 @@ if [[ -f "${FAST_DDS_PROFILE}" ]]; then
   export FASTRTPS_DEFAULT_PROFILES_FILE="${FAST_DDS_PROFILE}"
   FAST_DDS_LAUNCH_ARG=(fastdds_profile:="${FAST_DDS_PROFILE}")
 fi
-
-PYTHON_BIN="${PYTHON_BIN:-$(command -v python3)}"
-
-fix_executable_shebang() {
-  local executable="$1"
-  local script_path
-  script_path="$(command -v "${executable}" || true)"
-  if [[ -z "${script_path}" || ! -f "${script_path}" ]]; then
-    return 0
-  fi
-  if [[ "$(head -n 1 "${script_path}")" == "#!/usr/bin/python3" ]]; then
-    sed -i "1s|.*|#!${PYTHON_BIN}|" "${script_path}"
-  fi
-}
 
 launch_arg_enabled() {
   local name="$1"
@@ -154,12 +146,6 @@ if ! ros2 pkg prefix elevation_mapping_cupy >/dev/null 2>&1; then
 fi
 
 ensure_no_existing_wildos_launch
-
-fix_executable_shebang "elevation_mapping_node.py"
-fix_executable_shebang "wildos"
-fix_executable_shebang "odom_frame_adapter"
-fix_executable_shebang "object_search_goal_mux"
-fix_executable_shebang "object_target_fusion"
 
 if launch_arg_enabled "do_object_search" "$@"; then
   ensure_object_search_interfaces

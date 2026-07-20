@@ -30,6 +30,8 @@
     map/sparse/leafSize: 0.25
 
     odom/gravity: 9.80665
+    # DLIO state follows the sensor callbacks, 20 Hz avoids redundant 100 Hz output
+    odom/publishRate: 20.0
     odom/computeTimeOffset: true
     # Align the initial attitude with Unity gravity instead of learning tilt as bias
     odom/imu/approximateGravity: true

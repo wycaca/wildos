@@ -132,9 +132,14 @@ ros2 launch graphnav_planner path_follower.launch.py
 - DLIO 内部必须使用独立 `dlio_odom`, 禁止和 Unity 局部原点不同却同名为 `odom_3D`
 - Unity DLIO 启动时等待 IMU 标定稳定, 再由 `/unity/odom` 锁定一次 `odom_3D -> dlio_odom`
 - Unity LiDAR 和 IMU 外参必须匹配 `base_link -> livox_frame = [0.093, 0.0, 0.334]m`
-- Unity DLIO 输入必须经过 `dlio_input_filter`, 严格丢弃重复或倒序 LiDAR/IMU timestamp
-- Unity 模式持续比较 DLIO 与 `/unity/odom`, 位置误差超过 0.5 m、姿态误差超过 10 deg 或速度超过 5 m/s 时冻结 odom 和 TF，并停止传感器转发
-- 2026-07-20 实测 Unity 原始 LiDAR 和 IMU 都存在约 50% 重复 timestamp, 去重后有效频率约 5 Hz, 动态精度验收前必须提高 Unity IMU 唯一时间戳发布频率
+- Unity 已从发布端修复重复 timestamp, DLIO 必须直接订阅 `/livox/lidar` 和 `/livox/imu`, 禁止恢复 Python 传感器转发和去重
+- Unity 模式持续比较 DLIO 与 `/unity/odom`, 位置误差超过 0.5 m、姿态误差超过 10 deg 或速度超过 5 m/s 时暂停 odom、TF 和下游点云输出, 后续健康帧允许链路自动恢复
+- `dlio_output_guard` 只门控 DLIO 输出点云, 不得在 Python 单线程 executor 中转发原始高频 IMU 和大体积点云
+- 2026-07-20 删除输入中转后实测 `/livox/imu` 到达频率仍约 10.02 Hz, header stamp 间隔约 0.1 s, Unity 的 200 Hz 配置尚未作用到 ROS publisher
+- 低频 IMU 运行中曾让姿态误差达到 10.76 deg, 启动验收必须在原始 topic 和 DLIO 订阅端确认 IMU 接近 200 Hz
+- 当前固定版本 DLIO 已增加 `odom/publishRate`, Unity 配置为 20 Hz, 只降低 odom 和 pose topic 输出, 不得对原始 IMU 或内部状态传播降频
+- Unity 相机 header stamp 当前与 `/clock`、DLIO odom 相差超过 1000 s, `camera_stamp_mode=now` 和 `camera_stamp_adapter` 必须保留, 否则 WildOS 多路同步永远不会触发
+- planner Path 只在路线变化时发布, 每次实际发布必须保留 `已发布规划路径, poses=...` 日志, 禁止仅凭晚启动的 `topic echo` 判断未发布
 - 外部 RViz 检查 DLIO 局部 TF 时 remap 到 `/spot1/tf` 和 `/spot1/tf_static`
 - DLIO 作为 WildOS 外部组件运行, 不放入默认 WildOS 容器
 - Ouster 点云和 IMU 必须完成时间同步、外参和 IMU 内参标定
