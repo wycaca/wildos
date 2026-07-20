@@ -1,5 +1,5 @@
 import rclpy
-from rclpy.executors import ExternalShutdownException
+from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import CompressedImage, Image as ImageMsg, CameraInfo
@@ -147,16 +147,16 @@ class WildOS_Nav(TFLookupSubscriber):
     def __init__(self, config: OmegaConf=OmegaConf.create(), do_object_search=False):
         config = OmegaConf.merge(OmegaConf.create(self.default_config), config)
 
-        # 先初始化模型, 避免 TF listener 过早 spin
-        print(f"WildOS 模型初始化开始, object_search={do_object_search}", flush=True)
-        np.random.seed(42)
-        self.init_model(config, do_object_search)
-        print("WildOS 模型初始化完成", flush=True)
-
+        # 先创建 ROS 和 TF endpoints, 让中间件在模型加载期间完成发现
         super().__init__(
             node_name='wildos',
             config=config.tf_lookup_config
         )
+        self.get_logger().info(
+            f"WildOS 模型初始化开始, object_search={do_object_search}"
+        )
+        np.random.seed(42)
+        self.init_model(config, do_object_search)
         self.get_logger().info("WildOS 模型初始化完成")
 
         # 用于转换 ROS 和 OpenCV 图像
@@ -880,11 +880,16 @@ def main(args=None):
         config = OmegaConf.merge(config, OmegaConf.from_dotlist(custom_args.config_override))
 
     ros2_node = WildOS_Nav(config, do_object_search=custom_args.do_object_search)
+    # Keep TF delivery independent from synchronized camera and inference callbacks
+    executor = MultiThreadedExecutor(num_threads=2)
+    executor.add_node(ros2_node)
     try:
-        rclpy.spin(ros2_node)
+        executor.spin()
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
+        executor.remove_node(ros2_node)
+        executor.shutdown()
         try:
             ros2_node.destroy_node()
         except KeyboardInterrupt:

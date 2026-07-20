@@ -76,7 +76,7 @@ tf_lookup_config:
     cache_time: 10
     timer_duration: 0.1
     lookup_timeout: 0
-    qos_history_depth: 1
+    qos_history_depth: 100
     wait_for_oldest: false
     clear_buffer_on_process: true
     spin_thread: false

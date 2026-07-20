@@ -18,6 +18,10 @@ setup(
         ("share/" + package_name, ["package.xml"]),
         (os.path.join("share", package_name, "configs"), glob("configs/*.yaml")),
         (
+            os.path.join("share", package_name, "configs", "dlio"),
+            glob("configs/dlio/*.yaml"),
+        ),
+        (
             os.path.join("share", package_name, "launch"),
             launch_files,
         ),
@@ -35,6 +39,8 @@ setup(
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
+            "dlio_input_filter = graph_construction.dlio_input_filter:main",
+            "dlio_tf_adapter = graph_construction.dlio_tf_adapter:main",
             "graph_construction = graph_construction.node:main",
             "pointcloud_axis_adapter = graph_construction.pointcloud_axis_adapter:main",
         ],

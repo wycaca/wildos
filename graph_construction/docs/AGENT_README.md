@@ -12,6 +12,8 @@
 
 双架构 Docker 和 Compose 部署见 `docs/2026-07-16/2026-07-16-wildos-docker-deployment.md`
 
+DLIO 仿真和真机接入方案见 `docs/2026-07-17/2026-07-17-dlio-integration-plan.md`
+
 长期维护的实现细节见 `docs/details/`，当前 topic 契约见 `docs/details/topics.md`
 
 ## 文档维护规则
@@ -91,6 +93,8 @@ WILDOS_TOPIC_PROFILE=robot ./scripts/start_wildos_elevation.sh do_object_search:
 graph_construction/launch/elevation_visual_navigation_sim.launch.py
 ```
 
+启动脚本会拒绝创建第二套同名 elevation launch, 避免旧 DLIO, TF 和 WildOS publisher 同时残留
+
 单组件调试入口:
 
 ```bash
@@ -109,6 +113,33 @@ ros2 launch graphnav_planner path_follower.launch.py
 - Compose 必须使用 host network，跨容器或跨主机 ROS2 通信不得改成普通 Docker bridge
 - 完整镜像必须包含 RADIO、Frontier、Traversability 和 SigLIP2 权重
 - Unity、Isaac Sim、传感器驱动和底盘控制不属于 WildOS 容器，由外部 ROS2 系统提供 topic
+
+## DLIO 定位
+
+- 真机默认必须接入 DLIO, 或提供经过同等验证的 6DoF LiDAR-inertial odometry
+- Unity 和 Isaac Sim 可以接入 DLIO, Unity 真值 odom 只用于启动时的全局 frame 锚定和后续评测
+- Unity DLIO 输入固定为 `/livox/lidar` 和 `/livox/imu`, 原始点云直接进入 DLIO
+- 当前 Unity 点云没有逐点时间字段, DLIO deskew 必须保持关闭, 发布端补充有效 `timestamp` 后才能启用
+- Unity DLIO 必须保持 `adaptive: false`, 当前点云包含约一半无效零点, 官方 adaptive GICP 会在静止运行约 40 秒后发散
+- 2026-07-20 Unity 已完成 DLIO 到 elevation map, navigation graph 和 WildOS 首帧验证, 对齐点云相对 Unity 世界坐标最大误差约 6.1 mm
+- Unity 原地转向测试曾让 DLIO 单次产生约 4 m 假位移和错误俯仰, 动态闭环尚未通过
+- Unity 发布端补充有效逐点时间并完成转向测试前, DLIO 模式仅用于联调, 可用导航继续使用 platform backend
+- DLIO 异常位姿会污染不做 visibility cleanup 的历史高程, 修正输入后必须重启 elevation mapping 清图
+- WildOS 动态 TF 订阅使用 `RELIABLE`, 与 Unity 和 DLIO 的 `/tf` QoS 保持一致
+- Unity DLIO 模式使用 `/spot1/tf` 隔离平台真值 `/tf`, 禁止两个定位源进入同一运行链路
+- 官方 DLIO scan-rate TF 隔离到 `/spot1/dlio/odom_node/tf_raw`, canonical `/spot1/tf` 必须由 DLIO odom 重建
+- DLIO backend 的 `odom_frame_adapter` 必须使用 message pose, 禁止再用较旧 TF 覆盖高频 odom
+- DLIO 内部必须使用独立 `dlio_odom`, 禁止和 Unity 局部原点不同却同名为 `odom_3D`
+- Unity DLIO 启动时等待 IMU 标定稳定, 再由 `/unity/odom` 锁定一次 `odom_3D -> dlio_odom`
+- Unity LiDAR 和 IMU 外参必须匹配 `base_link -> livox_frame = [0.093, 0.0, 0.334]m`
+- Unity DLIO 输入必须经过 `dlio_input_filter`, 严格丢弃重复或倒序 LiDAR/IMU timestamp
+- Unity 模式持续比较 DLIO 与 `/unity/odom`, 位置误差超过 0.5 m、姿态误差超过 10 deg 或速度超过 5 m/s 时冻结 odom 和 TF，并停止传感器转发
+- 2026-07-20 实测 Unity 原始 LiDAR 和 IMU 都存在约 50% 重复 timestamp, 去重后有效频率约 5 Hz, 动态精度验收前必须提高 Unity IMU 唯一时间戳发布频率
+- 外部 RViz 检查 DLIO 局部 TF 时 remap 到 `/spot1/tf` 和 `/spot1/tf_static`
+- DLIO 作为 WildOS 外部组件运行, 不放入默认 WildOS 容器
+- Ouster 点云和 IMU 必须完成时间同步、外参和 IMU 内参标定
+- DLIO 必须提供连续 odom、`odom -> base_link` TF 和 deskewed point cloud
+- 当前 robot profile 仍是占位配置, 完成 DLIO 接入和真机 ROS graph 核对前不得视为可部署状态
 
 ## Topic Profile
 

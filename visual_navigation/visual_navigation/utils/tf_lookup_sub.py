@@ -19,10 +19,22 @@ from scipy.spatial.transform import Rotation as R
 
 from visual_navigation.utils.buffer import MessageBuffer
 
+
+def dynamic_tf_qos(depth: int) -> QoSProfile:
+    """Build QoS matching Unity and DLIO dynamic TF publishers"""
+    return QoSProfile(
+        depth=depth,
+        reliability=ReliabilityPolicy.RELIABLE,
+        durability=DurabilityPolicy.VOLATILE,
+        history=HistoryPolicy.KEEP_LAST,
+    )
+
+
 @dataclass
 class TFEdge:
     source_frame: str
     target_frame: str
+
 
 class TFLookupSubscriber(Node, ABC):
 
@@ -39,22 +51,23 @@ class TFLookupSubscriber(Node, ABC):
     }
 
     def __init__(
-        self, node_name: str, config: OmegaConf=OmegaConf.create()
+        self, node_name: str, config: OmegaConf = OmegaConf.create()
     ):
         super().__init__(node_name)
-        config = OmegaConf.merge(OmegaConf.create(self.default_tflookup_config), config)
+        config = OmegaConf.merge(
+            OmegaConf.create(self.default_tflookup_config),
+            config,
+        )
 
-        self.msg_buffer = MessageBuffer(max_size=config.buffer_size, wait_for_oldest=config.wait_for_oldest)
+        self.msg_buffer = MessageBuffer(
+            max_size=config.buffer_size,
+            wait_for_oldest=config.wait_for_oldest,
+        )
 
         self.tf_buffer = Buffer(cache_time=Duration(seconds=config.cache_time))
         self.tf_listener = TransformListener(
             self.tf_buffer, self,
-            qos = QoSProfile(
-                depth=config.qos_history_depth,
-                reliability=ReliabilityPolicy.BEST_EFFORT,
-                durability=DurabilityPolicy.VOLATILE,
-                history=HistoryPolicy.KEEP_LAST,
-            ),
+            qos=dynamic_tf_qos(config.qos_history_depth),
             spin_thread=config.spin_thread
         )
 
@@ -81,13 +94,19 @@ class TFLookupSubscriber(Node, ABC):
         if not self._required_transforms:
             self._required_transforms = transforms
         else:
-            self.get_logger().warn(f"Required transforms already set. {self.__class__.__name__} tried to set it again.")
+            self.get_logger().warn(
+                "Required transforms already set, "
+                f"{self.__class__.__name__} tried to set it again"
+            )
 
     def start_timer(self):
         if self.timer is None:
             self.timer = self.create_timer(self.timer_duration, self.check_tf_exists)
         else:
-            self.get_logger().warn(f"Timer already initialized. {self.__class__.__name__} tried to initialize it again.")
+            self.get_logger().warn(
+                "Timer already initialized, "
+                f"{self.__class__.__name__} tried to initialize it again"
+            )
 
     def check_tf_exists(self):
         if self.msg_buffer.buffer:
@@ -109,7 +128,8 @@ class TFLookupSubscriber(Node, ABC):
                         if not found_one_valid_ts:
                             if self._is_past_extrapolation(e):
                                 self.get_logger().warn(
-                                    f"Dropping stale message at time {old_msg_tm}, TF buffer cannot serve older data"
+                                    f"Dropping stale message at time {old_msg_tm}, "
+                                    "TF buffer cannot serve older data"
                                 )
                                 self.msg_buffer.pop_oldest_msg()
                             return
@@ -123,7 +143,7 @@ class TFLookupSubscriber(Node, ABC):
                 valid_msg = old_msg
                 valid_ts = old_msg_tm
                 break
-            
+
             if self.oldest_time_processed is None or self.oldest_time_processed < valid_ts:
                 self.oldest_time_processed = valid_ts
                 self._log_tf_found(valid_ts)
@@ -131,7 +151,9 @@ class TFLookupSubscriber(Node, ABC):
                 if self.clear_buffer_on_process:
                     self.msg_buffer.clear()
             else:
-                self.get_logger().debug(f"Already processed TF for time {valid_ts}, skipping processing.")
+                self.get_logger().debug(
+                    f"Already processed TF for time {valid_ts}, skipping processing"
+                )
                 self.msg_buffer.pop_oldest_msg()
         else:
             self.get_logger().debug("Message buffer is empty, waiting for messages...")
@@ -195,7 +217,10 @@ class TFLookupSubscriber(Node, ABC):
                 timeout=Duration(seconds=self.lookup_timeout)
             )
         except Exception as exc:
-            if not self.allow_latest_tf_on_past_extrapolation or not self._is_past_extrapolation(exc):
+            if (
+                not self.allow_latest_tf_on_past_extrapolation
+                or not self._is_past_extrapolation(exc)
+            ):
                 raise
             try:
                 latest_tf = self.tf_buffer.lookup_transform(
@@ -213,11 +238,13 @@ class TFLookupSubscriber(Node, ABC):
         self._tf_latest_fallback_count += 1
         if self._tf_latest_fallback_count == 1:
             self.get_logger().warn(
-                f"TF 时间略早于缓存, 已回退 latest TF, source={edge.source_frame}, time={stamp}, error={error}"
+                f"TF 时间略早于缓存, 已回退 latest TF, source={edge.source_frame}, "
+                f"time={stamp}, error={error}"
             )
         elif self._tf_latest_fallback_count % 100 == 0:
             self.get_logger().debug(
-                f"TF latest 回退次数={self._tf_latest_fallback_count}, source={edge.source_frame}, time={stamp}"
+                f"TF latest 回退次数={self._tf_latest_fallback_count}, "
+                f"source={edge.source_frame}, time={stamp}"
             )
 
     def _log_tf_found(self, valid_ts) -> None:
@@ -225,15 +252,21 @@ class TFLookupSubscriber(Node, ABC):
         if self._tf_found_count == 1:
             self.get_logger().info(f"首次找到相机 TF, time={valid_ts}")
         elif self._tf_found_count % 100 == 0:
-            self.get_logger().debug(f"相机 TF 已匹配次数={self._tf_found_count}, latest_time={valid_ts}")
+            self.get_logger().debug(
+                f"相机 TF 已匹配次数={self._tf_found_count}, latest_time={valid_ts}"
+            )
 
     def _log_tf_missing(self, edge: TFEdge, stamp: Time, error: Exception) -> None:
         self._tf_missing_count += 1
         if self._tf_missing_count == 1:
-            self.get_logger().warn(f"暂时未找到 TF, source={edge.source_frame}, time={stamp}, error={error}")
+            self.get_logger().warn(
+                f"暂时未找到 TF, source={edge.source_frame}, "
+                f"time={stamp}, error={error}"
+            )
         elif self._tf_missing_count % 100 == 0:
             self.get_logger().debug(
-                f"TF 未匹配次数={self._tf_missing_count}, source={edge.source_frame}, time={stamp}, error={error}"
+                f"TF 未匹配次数={self._tf_missing_count}, "
+                f"source={edge.source_frame}, time={stamp}, error={error}"
             )
 
     @abstractmethod

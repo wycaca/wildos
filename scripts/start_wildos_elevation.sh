@@ -94,6 +94,20 @@ launch_arg_enabled() {
   return 1
 }
 
+launch_arg_value() {
+  local name="$1"
+  local default_value="$2"
+  local arg
+  shift 2
+  for arg in "$@"; do
+    if [[ "${arg}" == "${name}:="* ]]; then
+      echo "${arg#*:=}"
+      return 0
+    fi
+  done
+  echo "${default_value}"
+}
+
 ensure_installed_executable() {
   local executable="$1"
   local package="$2"
@@ -122,11 +136,24 @@ ensure_object_search_interfaces() {
   exit 1
 }
 
+ensure_no_existing_wildos_launch() {
+  local launch_pattern="[r]os2 launch graph_construction elevation_visual_navigation_sim.launch.py"
+  if ! pgrep -f "${launch_pattern}" >/dev/null; then
+    return 0
+  fi
+
+  echo "检测到仍在运行的 WildOS elevation launch, 请先停止旧实例" >&2
+  pgrep -af "${launch_pattern}" >&2
+  exit 1
+}
+
 if ! ros2 pkg prefix elevation_mapping_cupy >/dev/null 2>&1; then
   echo "缺少 elevation_mapping_cupy, 无法启动论文一致的 2.5D GridMap 后端" >&2
   echo "请确认工作空间已包含并构建 elevation_mapping_cupy" >&2
   exit 1
 fi
+
+ensure_no_existing_wildos_launch
 
 fix_executable_shebang "elevation_mapping_node.py"
 fix_executable_shebang "wildos"
@@ -138,6 +165,8 @@ if launch_arg_enabled "do_object_search" "$@"; then
   ensure_object_search_interfaces
   ensure_installed_executable "object_search_goal_mux" "visual_navigation"
   ensure_installed_executable "object_target_fusion" "visual_navigation"
+else
+  echo "提示: do_object_search=false, planner 将等待外部 goal: /spot1/graphnav_goal_pose" >&2
 fi
 
 if launch_arg_enabled "launch_paper_rviz" "$@"; then
@@ -147,7 +176,25 @@ if launch_arg_enabled "launch_paper_rviz" "$@"; then
   fi
 fi
 
-echo "启动 WildOS elevation/2.5D, profile=${WILDOS_TOPIC_PROFILE}, python=${PYTHON_BIN}"
+LOCALIZATION_BACKEND="$(launch_arg_value "localization_backend" "platform" "$@")"
+case "${LOCALIZATION_BACKEND}" in
+  platform|dlio)
+    ;;
+  *)
+    echo "未知 localization backend: ${LOCALIZATION_BACKEND}" >&2
+    exit 1
+    ;;
+esac
+
+if [[ "${LOCALIZATION_BACKEND}" == "dlio" ]] && launch_arg_enabled "launch_dlio" "$@"; then
+  if ! ros2 pkg prefix direct_lidar_inertial_odometry >/dev/null 2>&1; then
+    echo "缺少 direct_lidar_inertial_odometry, 无法由主 launch 启动 DLIO" >&2
+    echo "请先按 dependencies/dlio.repos 导入并构建固定版本 DLIO" >&2
+    exit 1
+  fi
+fi
+
+echo "启动 WildOS elevation/2.5D, profile=${WILDOS_TOPIC_PROFILE}, localization=${LOCALIZATION_BACKEND}, python=${PYTHON_BIN}"
 
 exec ros2 launch graph_construction elevation_visual_navigation_sim.launch.py \
   topic_profile:="${WILDOS_TOPIC_PROFILE}" \

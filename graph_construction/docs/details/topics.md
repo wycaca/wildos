@@ -48,6 +48,16 @@
   -> /spot1/odom_for_scoring
      -> graph construction, WildOS, Goal Mux, planner
 
+DLIO mode:
+
+/livox/lidar + /livox/imu
+  -> /spot1/dlio/odom_node/odom
+  -> /spot1/odom_for_scoring
+
+/livox/lidar + /livox/imu
+  -> /spot1/dlio/odom_node/pointcloud/deskewed
+  -> elevation_mapping_cupy
+
 camera image + camera info
   -> /spot1/object_mask
   -> /spot1/object_target_estimate
@@ -65,7 +75,8 @@ camera image + camera info
 
 | Topic | 类型 | 外部发布者 | WildOS 消费者 | 状态 | 说明 |
 |---|---|---|---|---|---|
-| `/livox/lidar` | `sensor_msgs/msg/PointCloud2` | Unity LiDAR bridge | `pointcloud_axis_adapter` | 必须提供 | 原始雷达点云，Unity profile 使用 `identity` 轴向模式，消息必须包含 `x`、`y`、`z` 字段 |
+| `/livox/lidar` | `sensor_msgs/msg/PointCloud2` | Unity LiDAR bridge | pointcloud adapter 或 DLIO | 必须提供 | 原始雷达点云，当前 Unity 包含 FLOAT32 XYZ、intensity 和 line，但没有逐点时间字段 |
+| `/livox/imu` | `sensor_msgs/msg/Imu` | Unity Livox bridge | DLIO | DLIO 模式必须提供 | 雷达对应 IMU，必须包含角速度、线加速度，并与点云使用同一仿真时钟 |
 | `/unity/odom` | `nav_msgs/msg/Odometry` | Unity robot bridge | `odom_frame_adapter` | 必须提供 | 原始机器人里程计，adapter 默认使用 TF 位姿覆盖消息 pose |
 | `/camera/front/color/image/compressed` | `sensor_msgs/msg/CompressedImage` | Unity camera bridge | WildOS | 必须提供 | 前相机压缩彩色图像 |
 | `/camera/left/color/image/compressed` | `sensor_msgs/msg/CompressedImage` | Unity camera bridge | WildOS | 必须提供 | 左相机压缩彩色图像 |
@@ -87,11 +98,56 @@ camera image + camera info
 - adapter 会把输出 `header.frame_id` 固定改为 profile 的 `pointcloud_output_frame`，Unity 默认是 `livox_frame`
 - TF 树必须能把 `livox_frame` 转换到全局 `odom_3D`，否则 elevation mapping 和目标 LiDAR 细化无法使用点云
 - adapter 只保留 XYZ 字段，强度、ring 和其他雷达字段不会进入高程图链路
+- DLIO 模式中 `/livox/lidar` 直接进入 DLIO，不经过 `pointcloud_axis_adapter`
+- 官方 DLIO 使用 `timestamp` 字段识别 Livox 并执行 deskew，当前 Unity 点云没有该字段，因此 Unity DLIO 配置显式关闭 deskew
+- DLIO deskewed cloud 位于独立的 `dlio_odom`，通过 `/spot1/tf` 转换到 `odom_3D` 后进入 elevation mapping
+- Unity 每帧约 40000 点中有约 20000 个无效零点, DLIO crop 会移除这些近场点
+- Unity 配置固定 `adaptive: false`, 避免 adaptive GICP 在当前稀疏点云上缩小对应距离并导致里程计发散
+
+#### DLIO 模式
+
+Unity DLIO 模式使用:
+
+```text
+localization_backend:=dlio
+launch_dlio:=true
+```
+
+主 launch 托管 DLIO 时，输入和输出为:
+
+| Topic | 角色 |
+|---|---|
+| `/livox/lidar` | DLIO 原始 PointCloud2 输入 |
+| `/livox/imu` | DLIO IMU 输入 |
+| `/spot1/dlio/odom_node/input/pointcloud` | 去除重复时间戳后的 DLIO 点云输入 |
+| `/spot1/dlio/odom_node/input/imu` | 去除重复时间戳后的 DLIO IMU 输入 |
+| `/spot1/dlio/odom_node/odom` | DLIO odom 输出 |
+| `/spot1/dlio/odom_node/aligned_odom` | 启动锚定到 `odom_3D` 后的 DLIO odom |
+| `/spot1/dlio/odom_node/healthy` | DLIO 健康状态，false 时输入过滤器停止转发 |
+| `/spot1/dlio/odom_node/pointcloud/deskewed` | elevation mapping 和目标 LiDAR 细化输入 |
+| `/spot1/dlio/odom_node/tf_raw` | 官方 DLIO scan-rate TF，仅用于诊断 |
+| `/spot1/tf` | `dlio_tf_adapter` 从 DLIO odom 重建的统一动态 TF |
+| `/spot1/tf_static` | WildOS 专用相机静态 TF |
+
+DLIO 模式会绕过 XYZ-only pointcloud axis adapter，并保留 DLIO odom 的原始 timestamp
+
+Unity 模式等待 DLIO 的 3 秒 IMU 标定稳定后，使用同时间戳 `/unity/odom` 一次性确定 `odom_3D -> dlio_odom`，后续运动只由 DLIO 更新
+
+WildOS 节点统一读取 `/spot1/tf` 和 `/spot1/tf_static`，TF 链为 `odom_3D -> dlio_odom -> base_link -> livox_frame`，避免 Unity 和 DLIO 发布同一个 child frame
+
+普通 RViz 可以用 Unity `/tf` 显示已经对齐到 `odom_3D` 的 GridMap，检查 DLIO 局部 frame 时需要 remap `/tf:=/spot1/tf` 和 `/tf_static:=/spot1/tf_static`，或使用 `launch_paper_rviz:=true`
+
+Zenoh 干净启动时 WildOS 可能先打印一次 `暂时未找到 TF`, 当前实测约 18 秒后会打印 `首次找到相机 TF` 并开始发布 scored graph。只有后续始终没有恢复日志和 scored graph 消息时才判定为故障
+
+`launch_dlio:=false` 时 DLIO 由外部进程提供，外部集成必须保证 canonical TF 与 odom pose 同源且时间戳一致
+
+2026-07-17 Unity 实测中，LiDAR 约为 `10 Hz`，IMU 约为 `100 Hz`，DLIO odom、cloud、隔离 TF、GridMap、navigation graph 和 WildOS 首帧均已连通。关闭 adaptive 后静止运行约 98 秒，位置漂移保持在 3 mm 内。当前验证仍不覆盖运动 deskew 与完整轨迹精度，因为 Unity 点云缺少逐点时间字段
 
 #### Odom 和 TF
 
-- `/unity/odom` 提供速度、协方差和消息时间，默认位姿以 `odom_3D -> base_link` TF 为准
-- 默认 `odom_pose_source=tf`、`odom_fallback_to_message=false`，TF 不可用时 `/spot1/odom_for_scoring` 不会发布
+- platform backend 默认使用 TF pose，DLIO backend 默认直接保留 DLIO odom pose
+- 官方 DLIO 的 odom 为 IMU-rate，原始 TF 为 scan-rate，主链禁止直接使用原始 TF pose
+- `dlio_tf_adapter` 发布固定启动锚定 `odom_3D -> dlio_odom`、每帧 `dlio_odom -> base_link` 和对齐后的 odom，并转发传感器外参
 - TF、odom、点云和相机必须使用同一个仿真时钟，不能混用系统时间和 `/clock`
 - 平台已提供相机静态 TF 时应设置 `publish_camera_static_tf:=false`，避免同一 child frame 存在两个 authority
 - 平台没有相机静态 TF 时，可保留默认 launch 的三个 fallback static publisher
@@ -132,6 +188,7 @@ WildOS 使用一个近似时间同步器联合等待以下 8 路消息:
 
 ```bash
 ros2 topic hz /livox/lidar
+ros2 topic hz /livox/imu
 ros2 topic hz /unity/odom
 ros2 topic hz /camera/front/color/image/compressed
 ros2 topic hz /camera/left/color/image/compressed
@@ -139,6 +196,7 @@ ros2 topic hz /camera/right/color/image/compressed
 ros2 topic echo /clock --once
 ros2 run tf2_ros tf2_echo odom_3D base_link
 ros2 topic info -v /livox/lidar
+ros2 topic info -v /livox/imu
 ```
 
 ## 4. 默认主链路输出

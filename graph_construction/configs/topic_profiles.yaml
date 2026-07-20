@@ -97,6 +97,16 @@ profiles:
     aligned_lidar_topic: /livox/lidar_aligned
     odom_input_topic: /unity/odom
     odom_output_topic: /spot1/odom_for_scoring
+    dlio_pointcloud_input_topic: /livox/lidar
+    dlio_imu_input_topic: /livox/imu
+    dlio_odom_topic: /spot1/dlio/odom_node/odom
+    dlio_aligned_odom_topic: /spot1/dlio/odom_node/aligned_odom
+    dlio_reference_odom_topic: /unity/odom
+    dlio_local_frame: dlio_odom
+    dlio_alignment_delay: 3.2
+    dlio_deskewed_topic: /spot1/dlio/odom_node/pointcloud/deskewed
+    dlio_topic_root: /spot1/dlio/odom_node
+    imu_frame: livox_frame
 
     # graph, visual scoring 和 planner topic
     planner_odom_topic: odom_for_scoring

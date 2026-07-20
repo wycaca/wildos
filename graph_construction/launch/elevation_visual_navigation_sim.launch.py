@@ -8,6 +8,7 @@ from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, Text
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 
+from graph_construction.localization import resolve_localization_wiring
 from graph_construction.topic_profiles import load_topic_profile, profile_key_description
 
 
@@ -48,6 +49,21 @@ def generate_launch_description():
                 description="RViz config name installed by graph_construction or an absolute path",
             ),
             DeclareLaunchArgument("use_sim_time", default_value="true", description="Use simulation clock"),
+            DeclareLaunchArgument(
+                "localization_backend",
+                default_value="platform",
+                description="Localization backend: platform or dlio",
+            ),
+            DeclareLaunchArgument(
+                "launch_dlio",
+                default_value="false",
+                description="Launch the installed DLIO odometry node",
+            ),
+            DeclareLaunchArgument(
+                "dlio_config_file",
+                default_value="",
+                description="DLIO parameter file, empty uses configs/dlio/<profile>.yaml",
+            ),
             DeclareLaunchArgument(
                 "graph_start_delay",
                 default_value="3.0",
@@ -91,11 +107,29 @@ def generate_launch_description():
             _profile_arg("elevation_grid_map_topic", "elevation_grid_map_topic"),
             _profile_arg("odom_input_topic", "odom_input_topic"),
             _profile_arg("odom_output_topic", "odom_output_topic"),
+            _profile_arg("dlio_pointcloud_input_topic", "dlio_pointcloud_input_topic"),
+            _profile_arg("dlio_imu_input_topic", "dlio_imu_input_topic"),
+            _profile_arg("dlio_odom_topic", "dlio_odom_topic"),
+            _profile_arg("dlio_aligned_odom_topic", "dlio_aligned_odom_topic"),
+            _profile_arg("dlio_reference_odom_topic", "dlio_reference_odom_topic"),
+            _profile_arg("dlio_local_frame", "dlio_local_frame"),
+            _profile_arg("dlio_alignment_delay", "dlio_alignment_delay"),
+            _profile_arg("dlio_deskewed_topic", "dlio_deskewed_topic"),
+            _profile_arg("dlio_topic_root", "dlio_topic_root"),
+            _profile_arg("imu_frame", "imu_frame"),
             _profile_arg("odom_parent_frame", "odom_parent_frame"),
             _profile_arg("odom_child_frame", "odom_child_frame"),
             _profile_arg("base_frame", "base_frame"),
-            DeclareLaunchArgument("odom_stamp_mode", default_value="now", description="Adapted odometry stamp mode"),
-            DeclareLaunchArgument("odom_pose_source", default_value="tf", description="Adapted odometry pose source"),
+            DeclareLaunchArgument(
+                "odom_stamp_mode",
+                default_value="",
+                description="Adapted odometry stamp mode, empty selects a backend-safe default",
+            ),
+            DeclareLaunchArgument(
+                "odom_pose_source",
+                default_value="",
+                description="Adapted odometry pose source, empty selects a backend-safe default",
+            ),
             DeclareLaunchArgument(
                 "odom_fallback_to_message",
                 default_value="false",
@@ -182,6 +216,12 @@ def _launch_setup(context):
     profile_file = _arg(context, "topic_profile_file") or None
     profile = load_topic_profile(profile_name, profile_file)
 
+    localization_profile = _localization_profile_with_overrides(context, profile)
+    wiring = resolve_localization_wiring(
+        localization_profile,
+        _arg(context, "localization_backend"),
+    )
+
     ns = _value(context, profile, "ns", "namespace")
     elevation_config = _arg(context, "elevation_config")
     graph_config = _arg(context, "graph_config")
@@ -189,9 +229,10 @@ def _launch_setup(context):
     global_frame = _value(context, profile, "global_frame", "global_frame")
     odom_output_topic = _value(context, profile, "odom_output_topic", "odom_output_topic")
     nav_graph_topic = _value(context, profile, "nav_graph_topic", "nav_graph_topic")
-    aligned_lidar_topic = _value(context, profile, "pointcloud_output_topic", "aligned_lidar_topic")
+    aligned_lidar_topic = wiring.mapping_pointcloud_topic
     pointcloud_axis_mode = _value(context, profile, "pointcloud_axis_mode", "pointcloud_axis_mode")
     pointcloud_output_frame = _value(context, profile, "pointcloud_output_frame", "pointcloud_output_frame")
+    isolated_tf_remappings = _tf_remappings(ns) if wiring.isolate_platform_tf else []
 
     graph_overrides = _config_override_args(
         {
@@ -334,6 +375,7 @@ def _launch_setup(context):
         arguments=["--ros-args", "--log-level", log_level],
         remappings=[
             ("/livox/lidar_aligned", aligned_lidar_topic),
+            *isolated_tf_remappings,
         ],
     )
 
@@ -344,13 +386,7 @@ def _launch_setup(context):
         namespace=ns,
         arguments=["--config", graph_config, *graph_overrides, "--ros-args", "--log-level", log_level],
         parameters=[{"use_sim_time": use_sim_time}],
-        remappings=[
-            ("/tf", PathJoinSubstitution([TextSubstitution(text="/"), TextSubstitution(text=ns), TextSubstitution(text="tf")])),
-            (
-                "/tf_static",
-                PathJoinSubstitution([TextSubstitution(text="/"), TextSubstitution(text=ns), TextSubstitution(text="tf_static")]),
-            ),
-        ],
+        remappings=_tf_remappings(ns),
     )
 
     odom_adapter = Node(
@@ -359,14 +395,15 @@ def _launch_setup(context):
         output="screen",
         parameters=[
             {"use_sim_time": use_sim_time},
-            {"input_topic": _value(context, profile, "odom_input_topic", "odom_input_topic")},
+            {"input_topic": _scoring_odom_input_topic(wiring)},
             {"output_topic": odom_output_topic},
             {"parent_frame": _value(context, profile, "odom_parent_frame", "odom_parent_frame")},
             {"child_frame": _value(context, profile, "odom_child_frame", "odom_child_frame")},
-            {"stamp_mode": LaunchConfiguration("odom_stamp_mode")},
-            {"pose_source": LaunchConfiguration("odom_pose_source")},
+            {"stamp_mode": _odom_stamp_mode(context, wiring.backend)},
+            {"pose_source": _odom_pose_source(context, wiring.backend)},
             {"fallback_to_message": LaunchConfiguration("odom_fallback_to_message")},
         ],
+        remappings=isolated_tf_remappings,
         condition=IfCondition(LaunchConfiguration("launch_odom_adapter")),
     )
 
@@ -398,6 +435,7 @@ def _launch_setup(context):
         output="screen",
         arguments=["-d", str(paper_rviz_config), "-f", global_frame],
         parameters=[{"use_sim_time": use_sim_time}],
+        remappings=isolated_tf_remappings,
         condition=IfCondition(LaunchConfiguration("launch_paper_rviz")),
     )
 
@@ -417,6 +455,7 @@ def _launch_setup(context):
             log_level,
         ],
         parameters=[{"use_sim_time": use_sim_time}],
+        remappings=isolated_tf_remappings,
     )
 
     object_target_fusion = Node(
@@ -442,6 +481,7 @@ def _launch_setup(context):
                 )
             },
         ],
+        remappings=isolated_tf_remappings,
         condition=IfCondition(LaunchConfiguration("do_object_search")),
     )
 
@@ -500,6 +540,7 @@ def _launch_setup(context):
                 )
             },
         ],
+        remappings=isolated_tf_remappings,
         condition=IfCondition(LaunchConfiguration("do_object_search")),
     )
 
@@ -510,6 +551,19 @@ def _launch_setup(context):
         goal_pose_topic,
         scored_nav_graph_topic,
         _value(context, profile, "object_search_status_topic", "object_search_status_topic"),
+        isolated_tf_remappings,
+    )
+
+    localization_actions = _localization_actions(
+        context,
+        profile_name,
+        profile,
+        wiring,
+        ns,
+        use_sim_time,
+        log_level,
+        isolated_tf_remappings,
+        pointcloud_axis_adapter,
     )
 
     return [
@@ -525,18 +579,234 @@ def _launch_setup(context):
             LaunchConfiguration("fastdds_profile"),
             condition=LaunchConfigurationNotEquals("fastdds_profile", ""),
         ),
+        *localization_actions,
         odom_adapter,
-        _lidar_static_tf(context, profile),
-        pointcloud_axis_adapter,
         paper_rviz,
-        _camera_static_tf("front", camera_parent_frame, camera_transforms["front"], publish_camera_static_tf),
-        _camera_static_tf("left", camera_parent_frame, camera_transforms["left"], publish_camera_static_tf),
-        _camera_static_tf("right", camera_parent_frame, camera_transforms["right"], publish_camera_static_tf),
+        _camera_static_tf(
+            "front",
+            camera_parent_frame,
+            camera_transforms["front"],
+            publish_camera_static_tf,
+            isolated_tf_remappings,
+        ),
+        _camera_static_tf(
+            "left",
+            camera_parent_frame,
+            camera_transforms["left"],
+            publish_camera_static_tf,
+            isolated_tf_remappings,
+        ),
+        _camera_static_tf(
+            "right",
+            camera_parent_frame,
+            camera_transforms["right"],
+            publish_camera_static_tf,
+            isolated_tf_remappings,
+        ),
         elevation_mapping,
         TimerAction(period=LaunchConfiguration("graph_start_delay"), actions=[graph_construction]),
         TimerAction(period=LaunchConfiguration("visual_start_delay"), actions=[wildos, object_target_fusion]),
         TimerAction(period=LaunchConfiguration("planner_start_delay"), actions=[object_search_goal_mux, planner]),
     ]
+
+
+def _localization_actions(
+    context,
+    profile_name,
+    profile,
+    wiring,
+    ns,
+    use_sim_time,
+    log_level,
+    tf_remappings,
+    pointcloud_axis_adapter,
+):
+    """Create only the nodes owned by the selected localization backend"""
+    if wiring.backend == "platform":
+        return [_lidar_static_tf(context, profile), pointcloud_axis_adapter]
+    if not _launch_bool(context, "launch_dlio"):
+        return []
+    return [
+        _dlio_input_filter(
+            context,
+            profile,
+            wiring,
+            use_sim_time,
+        ),
+        _dlio_node(
+            context,
+            profile_name,
+            profile,
+            wiring,
+            ns,
+            use_sim_time,
+            log_level,
+        ),
+        _dlio_tf_adapter(context, profile, wiring, ns, use_sim_time),
+    ]
+
+
+def _dlio_node(
+    context,
+    profile_name,
+    profile,
+    wiring,
+    ns,
+    use_sim_time,
+    log_level,
+):
+    """Launch official DLIO with its scan-rate TF isolated as raw diagnostics"""
+    topic_root = _value(context, profile, "dlio_topic_root", "dlio_topic_root").rstrip("/")
+    filtered_pointcloud_topic = f"{topic_root}/input/pointcloud"
+    filtered_imu_topic = f"{topic_root}/input/imu"
+    config_file = _arg(context, "dlio_config_file")
+    if not config_file:
+        config_file = _package_config_path(
+            "graph_construction",
+            f"dlio/{profile_name}.yaml",
+        )
+
+    return Node(
+        package="direct_lidar_inertial_odometry",
+        executable="dlio_odom_node",
+        name="dlio_odom_node",
+        namespace=ns,
+        output="log",
+        parameters=[
+            config_file,
+            {
+                "use_sim_time": use_sim_time,
+                "frames/odom": wiring.dlio_local_frame,
+                "frames/baselink": _value(context, profile, "base_frame", "base_frame"),
+                "frames/lidar": _value(context, profile, "lidar_frame", "lidar_frame"),
+                "frames/imu": _value(context, profile, "imu_frame", "imu_frame"),
+            },
+        ],
+        arguments=["--ros-args", "--log-level", log_level],
+        remappings=[
+            ("pointcloud", filtered_pointcloud_topic),
+            ("imu", filtered_imu_topic),
+            ("odom", wiring.odom_input_topic),
+            ("pose", f"{topic_root}/pose"),
+            ("path", f"{topic_root}/path"),
+            ("kf_pose", f"{topic_root}/keyframes"),
+            ("kf_cloud", f"{topic_root}/pointcloud/keyframe"),
+            ("deskewed", wiring.mapping_pointcloud_topic),
+            ("/tf", f"{topic_root}/tf_raw"),
+            ("/tf_static", f"{topic_root}/tf_static_raw"),
+        ],
+    )
+
+
+def _dlio_input_filter(context, profile, wiring, use_sim_time):
+    """Drop repeated sensor stamps before official DLIO receives them"""
+    topic_root = _value(
+        context,
+        profile,
+        "dlio_topic_root",
+        "dlio_topic_root",
+    ).rstrip("/")
+    return Node(
+        package="graph_construction",
+        executable="dlio_input_filter",
+        output="screen",
+        parameters=[
+            {"use_sim_time": use_sim_time},
+            {"input_pointcloud_topic": wiring.dlio_pointcloud_input_topic},
+            {"input_imu_topic": wiring.dlio_imu_input_topic},
+            {"output_pointcloud_topic": f"{topic_root}/input/pointcloud"},
+            {"output_imu_topic": f"{topic_root}/input/imu"},
+            {"health_topic": f"{topic_root}/healthy"},
+        ],
+    )
+
+
+def _dlio_tf_adapter(context, profile, wiring, ns, use_sim_time):
+    """Rebuild canonical TF from the high-rate DLIO odom state"""
+    topic_root = _value(context, profile, "dlio_topic_root", "dlio_topic_root").rstrip("/")
+    normalized_ns = str(ns).strip("/")
+    output_tf_topic = f"/{normalized_ns}/tf" if normalized_ns else "/tf"
+    return Node(
+        package="graph_construction",
+        executable="dlio_tf_adapter",
+        output="screen",
+        parameters=[
+            {"use_sim_time": use_sim_time},
+            {"input_odom_topic": wiring.odom_input_topic},
+            {"input_raw_tf_topic": f"{topic_root}/tf_raw"},
+            {"reference_odom_topic": wiring.dlio_reference_odom_topic},
+            {"output_aligned_odom_topic": wiring.dlio_aligned_odom_topic},
+            {"output_tf_topic": output_tf_topic},
+            {"global_frame": _value(context, profile, "global_frame", "global_frame")},
+            {"local_frame": wiring.dlio_local_frame},
+            {"alignment_delay": wiring.dlio_alignment_delay},
+            {"base_frame": _value(context, profile, "base_frame", "base_frame")},
+            {"health_topic": f"{topic_root}/healthy"},
+        ],
+    )
+
+
+def _localization_profile_with_overrides(context, profile):
+    """Apply launch topic overrides before resolving backend wiring"""
+    resolved_profile = dict(profile)
+    override_keys = {
+        "pointcloud_input_topic": "pointcloud_input_topic",
+        "pointcloud_output_topic": "aligned_lidar_topic",
+        "odom_input_topic": "odom_input_topic",
+        "dlio_pointcloud_input_topic": "dlio_pointcloud_input_topic",
+        "dlio_imu_input_topic": "dlio_imu_input_topic",
+        "dlio_odom_topic": "dlio_odom_topic",
+        "dlio_aligned_odom_topic": "dlio_aligned_odom_topic",
+        "dlio_reference_odom_topic": "dlio_reference_odom_topic",
+        "dlio_local_frame": "dlio_local_frame",
+        "dlio_alignment_delay": "dlio_alignment_delay",
+        "dlio_deskewed_topic": "dlio_deskewed_topic",
+    }
+    for arg_name, profile_key in override_keys.items():
+        override = _arg(context, arg_name)
+        if override:
+            resolved_profile[profile_key] = override
+    return resolved_profile
+
+
+def _tf_remappings(ns):
+    """Keep DLIO TF separate from simulator ground truth TF"""
+    normalized_ns = str(ns).strip("/")
+    if not normalized_ns:
+        return []
+    return [
+        ("/tf", f"/{normalized_ns}/tf"),
+        ("/tf_static", f"/{normalized_ns}/tf_static"),
+    ]
+
+
+def _odom_stamp_mode(context, backend):
+    override = _arg(context, "odom_stamp_mode")
+    if override:
+        return override
+    return "preserve" if backend == "dlio" else "now"
+
+
+def _scoring_odom_input_topic(wiring):
+    if wiring.backend == "dlio":
+        return wiring.dlio_aligned_odom_topic
+    return wiring.odom_input_topic
+
+
+def _odom_pose_source(context, backend):
+    override = _arg(context, "odom_pose_source")
+    if override:
+        return override
+    return "message" if backend == "dlio" else "tf"
+
+
+def _launch_bool(context, name):
+    raw_value = _arg(context, name).strip().lower()
+    if raw_value in {"true", "1", "yes", "on"}:
+        return True
+    if raw_value in {"false", "0", "no", "off"}:
+        return False
+    raise ValueError(f"Invalid boolean value for {name}: {raw_value}")
 
 
 def _planner_node(
@@ -546,6 +816,7 @@ def _planner_node(
     goal_pose_topic,
     scored_nav_graph_topic,
     object_search_status_topic,
+    tf_remappings,
 ):
     return Node(
         package="graphnav_planner",
@@ -562,6 +833,7 @@ def _planner_node(
             ("~/odom", odom_topic),
             ("~/goal_pose", goal_pose_topic),
             ("~/object_search_status", object_search_status_topic),
+            *tf_remappings,
         ],
     )
 
@@ -586,13 +858,14 @@ def _lidar_static_tf(context, profile):
     )
 
 
-def _camera_static_tf(name, parent_frame, transform_args, condition):
+def _camera_static_tf(name, parent_frame, transform_args, condition, tf_remappings):
     return Node(
         package="tf2_ros",
         executable="static_transform_publisher",
         name=f"unitree_{name}_camera_static_tf",
         output="screen",
         arguments=[*transform_args, parent_frame, f"{name}_camera"],
+        remappings=tf_remappings,
         condition=IfCondition(condition),
     )
 

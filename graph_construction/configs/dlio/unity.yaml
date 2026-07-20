@@ -1,0 +1,61 @@
+/**:
+  ros__parameters:
+    version: 1.1.1
+    use_sim_time: true
+    # Unity scans are sparse and contain many invalid zero points
+    adaptive: false
+
+    frames/odom: dlio_odom
+    frames/baselink: base_link
+    frames/lidar: livox_frame
+    frames/imu: livox_frame
+
+    # Unity PointCloud2 has no per-point time field yet
+    pointcloud/deskew: false
+    pointcloud/voxelize: true
+
+    imu/calibration: true
+    imu/intrinsics/accel/bias: [0.0, 0.0, 0.0]
+    imu/intrinsics/accel/sm: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+    imu/intrinsics/gyro/bias: [0.0, 0.0, 0.0]
+
+    # Match Unity base_link to livox_frame TF
+    extrinsics/baselink2imu/t: [0.093, 0.0, 0.334]
+    extrinsics/baselink2imu/R: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+    extrinsics/baselink2lidar/t: [0.093, 0.0, 0.334]
+    extrinsics/baselink2lidar/R: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+
+    map/waitUntilMove: false
+    map/dense/filtered: false
+    map/sparse/leafSize: 0.25
+
+    odom/gravity: 9.80665
+    odom/computeTimeOffset: true
+    # Align the initial attitude with Unity gravity instead of learning tilt as bias
+    odom/imu/approximateGravity: true
+    odom/imu/calibration/gyro: true
+    odom/imu/calibration/accel: true
+    odom/imu/calibration/time: 3.0
+    odom/imu/bufferSize: 5000
+    odom/preprocessing/cropBoxFilter/size: 1.0
+    odom/preprocessing/voxelFilter/res: 0.25
+    odom/keyframe/threshD: 1.0
+    odom/keyframe/threshR: 45.0
+    odom/submap/keyframe/knn: 10
+    odom/submap/keyframe/kcv: 10
+    odom/submap/keyframe/kcc: 10
+    odom/gicp/minNumPoints: 64
+    odom/gicp/kCorrespondences: 16
+    odom/gicp/maxCorrespondenceDistance: 0.5
+    odom/gicp/maxIterations: 32
+    odom/gicp/transformationEpsilon: 0.01
+    odom/gicp/rotationEpsilon: 0.01
+    odom/gicp/initLambdaFactor: 1.0e-9
+    odom/geo/Kp: 4.5
+    odom/geo/Kv: 11.25
+    odom/geo/Kq: 4.0
+    odom/geo/Kab: 2.25
+    odom/geo/Kgb: 1.0
+    # Bound observer runaway after a rejected or discontinuous scan match
+    odom/geo/abias_max: 1.0
+    odom/geo/gbias_max: 0.5
