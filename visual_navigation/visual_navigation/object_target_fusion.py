@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from collections import deque
+import faulthandler
 import math
+import sys
+import traceback
 
 import numpy as np
 import rclpy
+import scipy
 from rclpy.duration import Duration
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
@@ -67,6 +71,14 @@ class ObjectTargetFusion(Node):
         )
         self._last_logged_state = ""
         self._latest_camera_origins: list[np.ndarray] = []
+        self._mask_stage = "idle"
+        self._mask_received = 0
+        self._mask_processed = 0
+        self._mask_empty = 0
+        self._mask_errors = 0
+        self._mask_ignored_reached = 0
+        self._lidar_matched = 0
+        self._lidar_refined = 0
 
         self.tf_buffer = Buffer(cache_time=Duration(seconds=10.0))
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -104,13 +116,15 @@ class ObjectTargetFusion(Node):
             self._on_completed,
             10,
         )
+        self.create_timer(10.0, self._log_health)
 
         self.get_logger().info(
             "目标融合已启动, "
             f"Mask话题={self.get_parameter('object_mask_topic').value}, "
             f"雷达话题={self.get_parameter('lidar_topic').value}, "
             f"估计话题={self.get_parameter('target_estimate_topic').value}, "
-            f"最大深度={self.max_depth:.1f}m"
+            f"最大深度={self.max_depth:.1f}m, "
+            f"python={sys.executable}, numpy={np.__version__}, scipy={scipy.__version__}"
         )
 
     def _on_lidar(self, msg: PointCloud2) -> None:
@@ -133,35 +147,87 @@ class ObjectTargetFusion(Node):
         self.get_logger().info("目标融合收到 Mux 完成通知, 状态=任务完成(REACHED)")
 
     def _on_object_mask(self, msg: ObjectMaskWithTf) -> None:
+        """隔离单帧异常, 保留融合节点并记录完整处理阶段"""
+        self._mask_received += 1
+        self._set_mask_stage("received", _mask_message_summary(msg))
+        try:
+            self._process_object_mask(msg)
+        except Exception:
+            self._mask_errors += 1
+            self.get_logger().error(
+                f"目标融合处理 Mask 失败, frame={self._mask_received}, "
+                f"stage={self._mask_stage}\n{traceback.format_exc()}"
+            )
+        finally:
+            self._mask_stage = "idle"
+
+    def _process_object_mask(self, msg: ObjectMaskWithTf) -> None:
         """每条确认 Mask 都先更新视觉粒子, 有近时刻点云时再追加 LiDAR 测量"""
         if self.particle_filter.completed:
+            self._mask_ignored_reached += 1
             return
+        self._set_mask_stage("decode_mask")
         try:
             observations = self._camera_observations(msg)
         except ValueError as exc:
             self.get_logger().warn(f"目标 Mask 数据无效, 已跳过: {exc}")
             return
         if not observations:
+            self._mask_empty += 1
             return
         self._latest_camera_origins = [
             observation.translation_world_from_camera.copy()
             for observation in observations
         ]
 
+        self._set_mask_stage("update_vision", f"observations={len(observations)}")
         estimate = self.particle_filter.update_vision(observations)
+        self._set_mask_stage("match_lidar", f"buffer={len(self.lidar_buffer)}")
         lidar_msg = self._nearest_lidar(msg.header.stamp)
         if lidar_msg is not None:
+            self._lidar_matched += 1
+            self._set_mask_stage(
+                "project_lidar",
+                f"frame={lidar_msg.header.frame_id}, points={lidar_msg.width * lidar_msg.height}",
+            )
             lidar_measurement = self._lidar_measurement(observations, lidar_msg)
             if lidar_measurement is not None:
                 position, support = lidar_measurement
+                self._lidar_refined += 1
+                self._set_mask_stage("update_lidar", f"support={support}")
                 estimate = self.particle_filter.update_lidar(position, support)
 
         if estimate is None:
             return
+        self._set_mask_stage(
+            "publish",
+            f"state={estimate.state}, views={estimate.accepted_views}, "
+            f"lidar_support={estimate.lidar_support}",
+        )
         self._log_estimate_state(estimate)
         self._publish_estimate(estimate, msg.header.stamp)
         self._publish_markers(estimate, msg.header.stamp)
         self._publish_particles(msg.header.stamp)
+        self._mask_processed += 1
+
+    def _set_mask_stage(self, stage: str, detail: str = "") -> None:
+        """首帧逐阶段记录, 后续由周期统计报告当前阶段"""
+        self._mask_stage = stage
+        if self._mask_received != 1:
+            return
+        suffix = f", {detail}" if detail else ""
+        self.get_logger().info(f"首帧目标 Mask 处理阶段={stage}{suffix}")
+
+    def _log_health(self) -> None:
+        """周期报告融合存活状态和最近回调阶段"""
+        self.get_logger().info(
+            "目标融合运行统计, "
+            f"mask received={self._mask_received}, processed={self._mask_processed}, "
+            f"ignored_reached={self._mask_ignored_reached}, "
+            f"empty={self._mask_empty}, errors={self._mask_errors}, "
+            f"lidar matched={self._lidar_matched}, refined={self._lidar_refined}, "
+            f"stage={self._mask_stage}, fusion_state={self.particle_filter.state}"
+        )
 
     def _log_estimate_state(self, estimate: CoreTargetEstimate) -> None:
         if estimate.state == self._last_logged_state:
@@ -233,15 +299,9 @@ class ObjectTargetFusion(Node):
         lidar_msg: PointCloud2,
     ) -> tuple[np.ndarray, int] | None:
         """把点云转到目标全局坐标系, 仅保留投影落入任一目标 Mask 的点"""
-        points = point_cloud2.read_points_numpy(
-            lidar_msg,
-            field_names=("x", "y", "z"),
-            skip_nans=True,
-        )
-        points = np.asarray(points, dtype=np.float64)
+        points = _xyz_points(lidar_msg)
         if points.size == 0:
             return None
-        points = points.reshape(-1, 3)
         world_points = self._points_in_global_frame(points, lidar_msg)
         if world_points is None:
             return None
@@ -392,6 +452,31 @@ def _stamp_seconds(stamp) -> float:
     return float(stamp.sec) + float(stamp.nanosec) * 1e-9
 
 
+def _mask_message_summary(msg: ObjectMaskWithTf) -> str:
+    """只记录消息结构, 避免复制大体积 Mask"""
+    shape = "x".join(str(dimension.size) for dimension in msg.object_mask.layout.dim)
+    stamp = _stamp_seconds(msg.header.stamp)
+    return (
+        f"stamp={stamp:.6f}, frame={msg.header.frame_id}, shape={shape or 'unknown'}, "
+        f"data={len(msg.object_mask.data)}, cameras={len(msg.cam_infos)}, "
+        f"transforms={len(msg.cam_transforms.transforms)}"
+    )
+
+
+def _xyz_points(cloud: PointCloud2) -> np.ndarray:
+    """从异构 PointCloud2 中只提取同为浮点类型的 XYZ 字段"""
+    points = point_cloud2.read_points(
+        cloud,
+        field_names=("x", "y", "z"),
+        skip_nans=True,
+    )
+    if points.size == 0:
+        return np.empty((0, 3), dtype=np.float64)
+    return np.column_stack(
+        (points["x"], points["y"], points["z"])
+    ).astype(np.float64, copy=False)
+
+
 def _target_surface_measurement(
     points: np.ndarray,
     minimum_support: int,
@@ -514,12 +599,16 @@ def _target_marker_visible(estimate: CoreTargetEstimate) -> bool:
 
 
 def main(args=None):
+    faulthandler.enable(all_threads=True)
     rclpy.init(args=args)
     node = ObjectTargetFusion()
     try:
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
+    except Exception:
+        node.get_logger().fatal(f"目标融合主循环异常\n{traceback.format_exc()}")
+        raise
     finally:
         try:
             node.destroy_node()

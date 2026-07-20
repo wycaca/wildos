@@ -1,16 +1,19 @@
 import numpy as np
 from builtin_interfaces.msg import Time
-from sensor_msgs.msg import Image
-from std_msgs.msg import MultiArrayDimension
+from sensor_msgs.msg import Image, PointField
+from sensor_msgs_py import point_cloud2
+from std_msgs.msg import Header, MultiArrayDimension
 from visualization_msgs.msg import Marker
 
 from object_search_msgs.msg import ObjectMaskWithTf
 from triangulation3d.target_particle_filter import TargetEstimate
 from visual_navigation.object_target_fusion import (
+    ObjectTargetFusion,
     _mask_array,
     _target_ray_marker,
     _target_surface_measurement,
     _target_marker,
+    _xyz_points,
 )
 from visual_navigation.utils.object_search_utils import reference_image_stamp
 
@@ -30,6 +33,68 @@ def test_mask_array_decodes_object_mask_message():
     decoded = _mask_array(msg)
 
     assert np.array_equal(decoded, expected)
+
+
+def test_mask_callback_logs_exception_without_terminating_node():
+    """单帧处理异常必须被记录, 不能退出融合进程"""
+
+    class Logger:
+        def __init__(self):
+            self.errors = []
+
+        def info(self, message):
+            pass
+
+        def error(self, message):
+            self.errors.append(message)
+
+    class CallbackHarness:
+        _on_object_mask = ObjectTargetFusion._on_object_mask
+        _set_mask_stage = ObjectTargetFusion._set_mask_stage
+
+        def __init__(self):
+            self._mask_received = 0
+            self._mask_errors = 0
+            self._mask_stage = "idle"
+            self.logger = Logger()
+
+        def get_logger(self):
+            return self.logger
+
+        def _process_object_mask(self, msg):
+            self._mask_stage = "update_vision"
+            raise RuntimeError("synthetic callback failure")
+
+    harness = CallbackHarness()
+
+    harness._on_object_mask(ObjectMaskWithTf())
+
+    assert harness._mask_received == 1
+    assert harness._mask_errors == 1
+    assert harness._mask_stage == "idle"
+    assert "stage=update_vision" in harness.logger.errors[0]
+    assert "RuntimeError: synthetic callback failure" in harness.logger.errors[0]
+
+
+def test_xyz_points_accepts_mixed_pointcloud_field_types():
+    """XYZ 为 FLOAT32 时不能被额外的整型 timestamp 字段阻断"""
+    fields = [
+        PointField(name="x", offset=0, datatype=PointField.FLOAT32, count=1),
+        PointField(name="y", offset=4, datatype=PointField.FLOAT32, count=1),
+        PointField(name="z", offset=8, datatype=PointField.FLOAT32, count=1),
+        PointField(name="timestamp", offset=12, datatype=PointField.UINT32, count=1),
+    ]
+    cloud = point_cloud2.create_cloud(
+        Header(frame_id="dlio_odom"),
+        fields,
+        [(1.0, 2.0, 3.0, 10), (float("nan"), 5.0, 6.0, 20)],
+    )
+
+    points = _xyz_points(cloud)
+
+    assert points.dtype == np.float64
+    assert points.shape == (1, 3)
+    assert np.allclose(points[0], [1.0, 2.0, 3.0])
 
 
 def _estimate(
