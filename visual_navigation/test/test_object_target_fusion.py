@@ -16,6 +16,7 @@ from visual_navigation.object_target_fusion import (
     _xyz_points,
 )
 from visual_navigation.utils.object_search_utils import reference_image_stamp
+from visual_navigation.utils.performance_stats import EventRate, TimingWindow
 
 
 def test_mask_array_decodes_object_mask_message():
@@ -45,6 +46,9 @@ def test_mask_callback_logs_exception_without_terminating_node():
         def info(self, message):
             pass
 
+        def debug(self, message):
+            pass
+
         def error(self, message):
             self.errors.append(message)
 
@@ -56,6 +60,8 @@ def test_mask_callback_logs_exception_without_terminating_node():
             self._mask_received = 0
             self._mask_errors = 0
             self._mask_stage = "idle"
+            self._mask_rate = EventRate()
+            self._timings = {"total": TimingWindow()}
             self.logger = Logger()
 
         def get_logger(self):
@@ -64,6 +70,9 @@ def test_mask_callback_logs_exception_without_terminating_node():
         def _process_object_mask(self, msg):
             self._mask_stage = "update_vision"
             raise RuntimeError("synthetic callback failure")
+
+        def _warn_if_slow(self, elapsed_seconds, stage):
+            pass
 
     harness = CallbackHarness()
 

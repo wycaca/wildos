@@ -14,6 +14,7 @@ from pathlib import Path
 from omegaconf import OmegaConf
 import numpy as np
 import torch
+import time
 from torchvision import transforms
 
 from visual_navigation.utils.tf_lookup_sub import TFEdge, TFLookupSubscriber
@@ -31,6 +32,7 @@ from visual_navigation.object_detection_filter import analyze_object_detection_m
 from visual_navigation.object_detection_confirmation import DetectionConfirmationWindow
 from visual_navigation.object_reached_evidence import VisualReachedEvidence
 from visual_navigation.utils.paths import repository_root
+from visual_navigation.utils.performance_stats import EventRate, TimingWindow
 
 HOME_DIR = repository_root()
 CAMERA_MAPPING = {
@@ -142,6 +144,8 @@ class WildOS_Nav(TFLookupSubscriber):
 
         # 日志配置
         "callback_log_interval": 100,
+        "diagnostics_log_period_sec": 30.0,
+        "slow_processing_warning_ms": 1500.0,
     }
 
     def __init__(self, config: OmegaConf=OmegaConf.create(), do_object_search=False):
@@ -279,6 +283,20 @@ class WildOS_Nav(TFLookupSubscriber):
         )
         self.compute_paths = config.compute_paths
         self.callback_log_interval = max(int(config.get("callback_log_interval", 100)), 1)
+        self.diagnostics_log_period_sec = max(
+            float(config.get("diagnostics_log_period_sec", 30.0)),
+            10.0,
+        )
+        self.slow_processing_warning_ms = max(
+            float(config.get("slow_processing_warning_ms", 1500.0)),
+            1.0,
+        )
+        self._last_slow_warning = 0.0
+        self._processing_rate = EventRate()
+        self._processing_timings = {
+            name: TimingWindow()
+            for name in ("decode", "project", "inference", "object", "score", "publish", "total")
+        }
 
         # 可视化
         self.geofrontier_viz_colors = np.array([
@@ -312,6 +330,7 @@ class WildOS_Nav(TFLookupSubscriber):
         self.init_publishers(config)
         self.init_subscribers(config)
         self.start_timer()
+        self.create_timer(self.diagnostics_log_period_sec, self._log_performance)
 
     def init_model(self, config, do_object_search):
         # VLM 初始化
@@ -488,6 +507,7 @@ class WildOS_Nav(TFLookupSubscriber):
 
     def do_processing(self, msg, tf_data):
         self.get_logger().debug("WildOS 开始执行视觉评分")
+        processing_started = time.perf_counter()
 
         # 提取消息
         odom_msg = msg["odom"]
@@ -496,6 +516,7 @@ class WildOS_Nav(TFLookupSubscriber):
         measurement_header = msg["measurement_header"]
 
         # 提取相机图像和内参
+        stage_started = time.perf_counter()
         rgb_imgs, cam_info_msgs = [], []
         for i in range(self.num_cameras):
             if self.using_compressed_imgs:
@@ -512,8 +533,10 @@ class WildOS_Nav(TFLookupSubscriber):
                     convert_func(msgs[i * 2], desired_encoding='rgb8')
                 )
             cam_info_msgs.append(msgs[i * 2 + 1])
+        self._processing_timings["decode"].add_seconds(time.perf_counter() - stage_started)
 
         # 从 navgraph_msg 提取 geofrontier
+        stage_started = time.perf_counter()
         all_cam_data = []
         for i, cam_info_msg in enumerate(cam_info_msgs):
             cam_data = self.fetch_cam_intrinsics_extrinsics(cam_info_msg, tf_data[f"world_from_cam{i}"])
@@ -527,17 +550,21 @@ class WildOS_Nav(TFLookupSubscriber):
             )
         except Exception as e:
             self.get_logger().error(f"提取几何Frontier失败, 原因={e}")
+            self._finish_processing(processing_started)
             return
+        self._processing_timings["project"].add_seconds(time.perf_counter() - stage_started)
 
-        
         # 模型前向推理
+        stage_started = time.perf_counter()
         rgb_tensors = [self.transforms(img.copy()) for img in rgb_imgs]
         batch_tensor = torch.stack(rgb_tensors)
         batch_img_traversability, batch_img_frontiers, spatial_feats = self.model.forward(batch_tensor)
 
         batch_img_frontiers = batch_img_frontiers.cpu().numpy().astype(np.float32)
         batch_img_traversability = batch_img_traversability.cpu().numpy().astype(np.float32)
+        self._processing_timings["inference"].add_seconds(time.perf_counter() - stage_started)
 
+        stage_started = time.perf_counter()
         object_detected = False
         if self.object_search_mode:
             if self.object_search_completed:
@@ -614,8 +641,10 @@ class WildOS_Nav(TFLookupSubscriber):
                             confirmation_ready,
                         )
                     binary_mask.fill(0)
+        self._processing_timings["object"].add_seconds(time.perf_counter() - stage_started)
 
         # 给几何 frontier 评分
+        stage_started = time.perf_counter()
         nav_data = []
         for i in range(self.num_cameras):
             cam_data = all_cam_data[i]
@@ -646,8 +675,10 @@ class WildOS_Nav(TFLookupSubscriber):
                 "scores": scores,
                 "paths": paths,
             })
+        self._processing_timings["score"].add_seconds(time.perf_counter() - stage_started)
 
         # 发布评分后的 navgraph
+        stage_started = time.perf_counter()
         updated_navgraph, removed_uuids, updated_uuids = self.update_navgraph_with_scores(
             navgraph_msg, geofrontiers, nav_data
         )
@@ -671,6 +702,47 @@ class WildOS_Nav(TFLookupSubscriber):
                 self.global_frame,
                 self.get_clock().now().to_msg()
             )
+        )
+        self._processing_timings["publish"].add_seconds(time.perf_counter() - stage_started)
+        self._finish_processing(processing_started)
+
+    def _finish_processing(self, processing_started: float) -> None:
+        """Record total processing time and throttle slow-frame warnings"""
+        elapsed = time.perf_counter() - processing_started
+        self._processing_timings["total"].add_seconds(elapsed)
+        self._processing_rate.tick()
+        now = time.monotonic()
+        if (
+            elapsed * 1000.0 >= self.slow_processing_warning_ms
+            and now - self._last_slow_warning >= 30.0
+        ):
+            self._last_slow_warning = now
+            self.get_logger().warn(
+                f"WildOS 视觉处理耗时偏高, total={elapsed * 1000.0:.1f}ms, "
+                f"threshold={self.slow_processing_warning_ms:.1f}ms"
+            )
+
+    def _log_performance(self) -> None:
+        """Report visual pipeline timing at low frequency"""
+        summaries = {
+            name: timing.summary(reset=True)
+            for name, timing in self._processing_timings.items()
+        }
+        if not summaries["total"].count:
+            return
+        total = summaries["total"]
+        self.get_logger().info(
+            "WildOS 视觉性能, "
+            f"频率={self._processing_rate.sample(reset=True):.2f}Hz, "
+            f"总耗时=平均{total.average_ms:.0f}/95%上限{total.p95_ms:.0f}/"
+            f"最大{total.maximum_ms:.0f}ms, "
+            "阶段平均耗时="
+            f"图像解码{summaries['decode'].average_ms:.0f}ms/"
+            f"几何投影{summaries['project'].average_ms:.0f}ms/"
+            f"模型推理{summaries['inference'].average_ms:.0f}ms/"
+            f"目标检测{summaries['object'].average_ms:.0f}ms/"
+            f"边界评分{summaries['score'].average_ms:.0f}ms/"
+            f"结果发布{summaries['publish'].average_ms:.0f}ms"
         )
 
     def _log_object_missing(self, detection_rejections, confirmation_ready: bool) -> None:

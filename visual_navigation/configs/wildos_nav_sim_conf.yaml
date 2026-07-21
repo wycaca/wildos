@@ -55,6 +55,11 @@ qos_history_depth: 1
 syncsub_queue_size: 120
 syncsub_slop: 5.0
 
+# Low-frequency performance diagnostics
+callback_log_interval: 100
+diagnostics_log_period_sec: 30.0
+slow_processing_warning_ms: 1500.0
+
 # Object Search Config
 object_search_config:
     text_queries:

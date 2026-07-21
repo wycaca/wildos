@@ -4,6 +4,7 @@ from collections import deque
 import faulthandler
 import math
 import sys
+import time
 import traceback
 
 import numpy as np
@@ -29,6 +30,7 @@ from triangulation3d.target_particle_filter import (
     TargetEstimate as CoreTargetEstimate,
     TargetParticleFilter,
 )
+from visual_navigation.utils.performance_stats import EventRate, TimingWindow
 
 
 _LIDAR_BUFFER_SIZE = 40
@@ -55,6 +57,8 @@ class ObjectTargetFusion(Node):
         self.declare_parameter("stable_min_confidence", 0.6)
         self.declare_parameter("lidar_min_points", 30)
         self.declare_parameter("max_lidar_age_sec", 3.0)
+        self.declare_parameter("diagnostics_log_period_sec", 60.0)
+        self.declare_parameter("slow_callback_warning_ms", 500.0)
 
         self.max_depth = max(float(self.get_parameter("max_depth").value), 2.0)
         particle_config = ParticleFilterConfig(
@@ -79,6 +83,13 @@ class ObjectTargetFusion(Node):
         self._mask_ignored_reached = 0
         self._lidar_matched = 0
         self._lidar_refined = 0
+        self._last_slow_warning = 0.0
+        self._mask_rate = EventRate()
+        self._lidar_rate = EventRate()
+        self._timings = {
+            name: TimingWindow()
+            for name in ("decode", "vision", "lidar", "publish", "total")
+        }
 
         self.tf_buffer = Buffer(cache_time=Duration(seconds=10.0))
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -116,7 +127,11 @@ class ObjectTargetFusion(Node):
             self._on_completed,
             10,
         )
-        self.create_timer(10.0, self._log_health)
+        diagnostics_period = max(
+            float(self.get_parameter("diagnostics_log_period_sec").value),
+            10.0,
+        )
+        self.create_timer(diagnostics_period, self._log_health)
 
         self.get_logger().info(
             "目标融合已启动, "
@@ -129,6 +144,7 @@ class ObjectTargetFusion(Node):
 
     def _on_lidar(self, msg: PointCloud2) -> None:
         self.lidar_buffer.append((_stamp_seconds(msg.header.stamp), msg))
+        self._lidar_rate.tick()
 
     def _on_completed(self, msg: Bool) -> None:
         """只接受 Mux 最终完成通知, 未稳定估计不能提前终止融合"""
@@ -148,7 +164,9 @@ class ObjectTargetFusion(Node):
 
     def _on_object_mask(self, msg: ObjectMaskWithTf) -> None:
         """隔离单帧异常, 保留融合节点并记录完整处理阶段"""
+        callback_started = time.perf_counter()
         self._mask_received += 1
+        self._mask_rate.tick()
         self._set_mask_stage("received", _mask_message_summary(msg))
         try:
             self._process_object_mask(msg)
@@ -159,7 +177,11 @@ class ObjectTargetFusion(Node):
                 f"stage={self._mask_stage}\n{traceback.format_exc()}"
             )
         finally:
+            final_stage = self._mask_stage
             self._mask_stage = "idle"
+            elapsed = time.perf_counter() - callback_started
+            self._timings["total"].add_seconds(elapsed)
+            self._warn_if_slow(elapsed, final_stage)
 
     def _process_object_mask(self, msg: ObjectMaskWithTf) -> None:
         """每条确认 Mask 都先更新视觉粒子, 有近时刻点云时再追加 LiDAR 测量"""
@@ -167,11 +189,14 @@ class ObjectTargetFusion(Node):
             self._mask_ignored_reached += 1
             return
         self._set_mask_stage("decode_mask")
+        stage_started = time.perf_counter()
         try:
             observations = self._camera_observations(msg)
         except ValueError as exc:
             self.get_logger().warn(f"目标 Mask 数据无效, 已跳过: {exc}")
             return
+        finally:
+            self._timings["decode"].add_seconds(time.perf_counter() - stage_started)
         if not observations:
             self._mask_empty += 1
             return
@@ -181,7 +206,9 @@ class ObjectTargetFusion(Node):
         ]
 
         self._set_mask_stage("update_vision", f"observations={len(observations)}")
+        stage_started = time.perf_counter()
         estimate = self.particle_filter.update_vision(observations)
+        self._timings["vision"].add_seconds(time.perf_counter() - stage_started)
         self._set_mask_stage("match_lidar", f"buffer={len(self.lidar_buffer)}")
         lidar_msg = self._nearest_lidar(msg.header.stamp)
         if lidar_msg is not None:
@@ -190,7 +217,9 @@ class ObjectTargetFusion(Node):
                 "project_lidar",
                 f"frame={lidar_msg.header.frame_id}, points={lidar_msg.width * lidar_msg.height}",
             )
+            stage_started = time.perf_counter()
             lidar_measurement = self._lidar_measurement(observations, lidar_msg)
+            self._timings["lidar"].add_seconds(time.perf_counter() - stage_started)
             if lidar_measurement is not None:
                 position, support = lidar_measurement
                 self._lidar_refined += 1
@@ -204,10 +233,12 @@ class ObjectTargetFusion(Node):
             f"state={estimate.state}, views={estimate.accepted_views}, "
             f"lidar_support={estimate.lidar_support}",
         )
+        stage_started = time.perf_counter()
         self._log_estimate_state(estimate)
         self._publish_estimate(estimate, msg.header.stamp)
         self._publish_markers(estimate, msg.header.stamp)
         self._publish_particles(msg.header.stamp)
+        self._timings["publish"].add_seconds(time.perf_counter() - stage_started)
         self._mask_processed += 1
 
     def _set_mask_stage(self, stage: str, detail: str = "") -> None:
@@ -216,17 +247,44 @@ class ObjectTargetFusion(Node):
         if self._mask_received != 1:
             return
         suffix = f", {detail}" if detail else ""
-        self.get_logger().info(f"首帧目标 Mask 处理阶段={stage}{suffix}")
+        self.get_logger().debug(f"首帧目标 Mask 处理阶段={stage}{suffix}")
+
+    def _warn_if_slow(self, elapsed_seconds: float, stage: str) -> None:
+        """Report sustained-risk callbacks without logging every slow frame"""
+        threshold_ms = float(self.get_parameter("slow_callback_warning_ms").value)
+        now = time.monotonic()
+        if elapsed_seconds * 1000.0 < threshold_ms or now - self._last_slow_warning < 30.0:
+            return
+        self._last_slow_warning = now
+        self.get_logger().warn(
+            f"目标融合处理耗时偏高, total={elapsed_seconds * 1000.0:.1f}ms, "
+            f"threshold={threshold_ms:.1f}ms, stage={stage}"
+        )
 
     def _log_health(self) -> None:
         """周期报告融合存活状态和最近回调阶段"""
+        summaries = {
+            name: timing.summary(reset=True)
+            for name, timing in self._timings.items()
+        }
+        refine_ratio = 100.0 * self._lidar_refined / max(self._lidar_matched, 1)
+        total = summaries["total"]
         self.get_logger().info(
-            "目标融合运行统计, "
-            f"mask received={self._mask_received}, processed={self._mask_processed}, "
-            f"ignored_reached={self._mask_ignored_reached}, "
-            f"empty={self._mask_empty}, errors={self._mask_errors}, "
-            f"lidar matched={self._lidar_matched}, refined={self._lidar_refined}, "
-            f"stage={self._mask_stage}, fusion_state={self.particle_filter.state}"
+            "目标融合统计, "
+            f"Mask=收到{self._mask_received}/完成{self._mask_processed}/"
+            f"空数据{self._mask_empty}/错误{self._mask_errors}, "
+            f"输入频率=Mask {self._mask_rate.sample(reset=True):.2f}Hz/"
+            f"雷达{self._lidar_rate.sample(reset=True):.1f}Hz, "
+            f"雷达精修={self._lidar_refined}/{self._lidar_matched}"
+            f"({refine_ratio:.1f}%), "
+            f"融合状态={_estimate_state_name(self.particle_filter.state)}, "
+            f"总耗时=平均{total.average_ms:.0f}/95%上限{total.p95_ms:.0f}/"
+            f"最大{total.maximum_ms:.0f}ms, "
+            "阶段平均耗时="
+            f"Mask解析{summaries['decode'].average_ms:.0f}ms/"
+            f"视觉融合{summaries['vision'].average_ms:.0f}ms/"
+            f"雷达投影{summaries['lidar'].average_ms:.0f}ms/"
+            f"结果发布{summaries['publish'].average_ms:.0f}ms"
         )
 
     def _log_estimate_state(self, estimate: CoreTargetEstimate) -> None:
