@@ -4,6 +4,7 @@ import copy
 import math
 from collections import deque
 from dataclasses import dataclass
+import time
 
 import rclpy
 from geometry_msgs.msg import Quaternion, TransformStamped
@@ -19,11 +20,50 @@ from rclpy.qos import (
 from std_msgs.msg import Bool
 from tf2_msgs.msg import TFMessage
 
+from graph_construction.performance_stats import EventRate, TimingWindow
+
 
 @dataclass(frozen=True)
 class RigidTransform:
     translation: tuple[float, float, float]
     rotation: tuple[float, float, float, float]
+
+
+class HealthStateFilter:
+    """Debounce transient odometry errors and require stable recovery"""
+
+    def __init__(self, unhealthy_confirm_frames: int, healthy_confirm_frames: int) -> None:
+        self.unhealthy_confirm_frames = max(unhealthy_confirm_frames, 1)
+        self.healthy_confirm_frames = max(healthy_confirm_frames, 1)
+        self.state: bool | None = None
+        self._bad_count = 0
+        self._good_count = 0
+
+    def update(self, healthy: bool, force_unhealthy: bool = False) -> bool | None:
+        """Return a new stable state only when a transition is confirmed"""
+        if self.state is None:
+            self.state = healthy
+            return self.state
+        if force_unhealthy and self.state:
+            self.state = False
+            self._bad_count = 0
+            self._good_count = 0
+            return self.state
+        if self.state:
+            self._good_count = 0
+            self._bad_count = 0 if healthy else self._bad_count + 1
+            if self._bad_count < self.unhealthy_confirm_frames:
+                return None
+            self.state = False
+            self._bad_count = 0
+            return self.state
+        self._bad_count = 0
+        self._good_count = self._good_count + 1 if healthy else 0
+        if self._good_count < self.healthy_confirm_frames:
+            return None
+        self.state = True
+        self._good_count = 0
+        return self.state
 
 
 def odom_to_transform(
@@ -258,7 +298,20 @@ def is_odometry_healthy(
     max_linear_speed: float,
 ) -> tuple[bool, tuple[float, float, float]]:
     metrics = odometry_health_metrics(aligned, reference)
-    values = [
+    healthy = (
+        _odometry_values_are_finite(aligned, metrics)
+        and metrics[0] <= max_position_error
+        and metrics[1] <= max_orientation_error_deg
+        and metrics[2] <= max_linear_speed
+    )
+    return healthy, metrics
+
+
+def _odometry_values_are_finite(
+    aligned: Odometry,
+    metrics: tuple[float, float, float],
+) -> bool:
+    values = (
         aligned.pose.pose.position.x,
         aligned.pose.pose.position.y,
         aligned.pose.pose.position.z,
@@ -267,14 +320,8 @@ def is_odometry_healthy(
         aligned.pose.pose.orientation.z,
         aligned.pose.pose.orientation.w,
         *metrics,
-    ]
-    healthy = (
-        all(math.isfinite(value) for value in values)
-        and metrics[0] <= max_position_error
-        and metrics[1] <= max_orientation_error_deg
-        and metrics[2] <= max_linear_speed
     )
-    return healthy, metrics
+    return all(math.isfinite(value) for value in values)
 
 
 class DlioTfAdapter(Node):
@@ -305,6 +352,10 @@ class DlioTfAdapter(Node):
         self.declare_parameter("max_position_error", 0.5)
         self.declare_parameter("max_orientation_error_deg", 10.0)
         self.declare_parameter("max_linear_speed", 5.0)
+        self.declare_parameter("unhealthy_confirm_frames", 3)
+        self.declare_parameter("healthy_confirm_frames", 5)
+        self.declare_parameter("health_recovery_ratio", 0.8)
+        self.declare_parameter("diagnostic_interval", 30.0)
 
         self.input_odom_topic = str(
             self.get_parameter("input_odom_topic").value
@@ -338,6 +389,18 @@ class DlioTfAdapter(Node):
         self.max_linear_speed = float(
             self.get_parameter("max_linear_speed").value
         )
+        self.health_recovery_ratio = min(
+            max(float(self.get_parameter("health_recovery_ratio").value), 0.1),
+            1.0,
+        )
+        self.health_filter = HealthStateFilter(
+            int(self.get_parameter("unhealthy_confirm_frames").value),
+            int(self.get_parameter("healthy_confirm_frames").value),
+        )
+        diagnostic_interval = max(
+            float(self.get_parameter("diagnostic_interval").value),
+            5.0,
+        )
         self.reference_messages: deque[Odometry] = deque(maxlen=500)
         self.alignment: RigidTransform | None = None
         self.first_local_stamp_ns: int | None = None
@@ -345,6 +408,11 @@ class DlioTfAdapter(Node):
         self._logged_extrinsics = False
         self._logged_waiting = False
         self._health_status: bool | None = None
+        self._health_episodes = 0
+        self._raw_unhealthy_samples = 0
+        self._max_health_metrics = [0.0, 0.0, 0.0]
+        self._callback_timing = TimingWindow()
+        self._input_rate = EventRate()
         self.extrinsics_ready = not bool(self.reference_odom_topic)
 
         tf_qos = QoSProfile(
@@ -398,6 +466,7 @@ class DlioTfAdapter(Node):
                 translation=(0.0, 0.0, 0.0),
                 rotation=(0.0, 0.0, 0.0, 1.0),
             )
+        self.create_timer(diagnostic_interval, self._report_diagnostics)
         self.get_logger().info(
             f"DLIO TF adapter 已启动, odom={self.input_odom_topic}, "
             f"reference={self.reference_odom_topic or '<identity>'}, "
@@ -410,6 +479,8 @@ class DlioTfAdapter(Node):
         self.reference_messages.append(msg)
 
     def _on_odom(self, msg: Odometry) -> None:
+        callback_started = time.perf_counter()
+        self._input_rate.tick()
         if self.alignment is None:
             if not self.extrinsics_ready:
                 if not self._logged_waiting:
@@ -417,6 +488,7 @@ class DlioTfAdapter(Node):
                         "等待 DLIO IMU 标定完成并发布传感器外参"
                     )
                     self._logged_waiting = True
+                self._callback_timing.add_seconds(time.perf_counter() - callback_started)
                 return
             local_stamp_ns = _stamp_nanoseconds(msg)
             if self.first_local_stamp_ns is None:
@@ -429,6 +501,7 @@ class DlioTfAdapter(Node):
                         f"等待 DLIO IMU 标定稳定后再对齐, delay={delay_sec:.1f}s"
                     )
                     self._logged_waiting = True
+                self._callback_timing.add_seconds(time.perf_counter() - callback_started)
                 return
             reference = self._nearest_reference(msg)
             if reference is None:
@@ -437,6 +510,7 @@ class DlioTfAdapter(Node):
                         "等待与 DLIO 同时刻的参考 odom 以初始化全局坐标"
                     )
                     self._logged_waiting = True
+                self._callback_timing.add_seconds(time.perf_counter() - callback_started)
                 return
             self.alignment = alignment_from_odometry(reference, msg)
             stamp_delta_ns = abs(
@@ -464,19 +538,39 @@ class DlioTfAdapter(Node):
             self.max_orientation_error_deg,
             self.max_linear_speed,
         )
+        self._max_health_metrics = [
+            max(previous, current)
+            for previous, current in zip(self._max_health_metrics, metrics)
+        ]
         if not healthy:
-            if self._publish_health(False):
-                self.get_logger().error(
-                    "DLIO 位姿发散, 已暂停 odom、TF 和点云输出, "
+            self._raw_unhealthy_samples += 1
+        recovery_healthy, _ = is_odometry_healthy(
+            aligned_odom,
+            reference,
+            self.max_position_error * self.health_recovery_ratio,
+            self.max_orientation_error_deg * self.health_recovery_ratio,
+            self.max_linear_speed * self.health_recovery_ratio,
+        )
+        finite = _odometry_values_are_finite(aligned_odom, metrics)
+        candidate = recovery_healthy if self.health_filter.state is False else healthy
+        transition = self.health_filter.update(candidate, force_unhealthy=not finite)
+        if transition is not None:
+            self._publish_health(transition)
+            if not transition:
+                self._health_episodes += 1
+                self.get_logger().warn(
+                    "DLIO 位姿异常已确认, 已暂停 odom、TF 和点云输出, "
                     f"position_error={metrics[0]:.3f}m, "
                     f"orientation_error={metrics[1]:.2f}deg, "
                     f"speed={metrics[2]:.3f}m/s"
                 )
+            elif self._health_episodes:
+                self.get_logger().info(
+                    "DLIO 位姿持续稳定, 已恢复 odom、TF 和点云输出"
+                )
+        if self.health_filter.state is False:
+            self._callback_timing.add_seconds(time.perf_counter() - callback_started)
             return
-        recovered = self._health_status is False
-        self._publish_health(True)
-        if recovered:
-            self.get_logger().info("DLIO 位姿已恢复, 继续发布 odom、TF 和点云")
         alignment_tf = alignment_to_transform(
             self.alignment,
             msg.header.stamp,
@@ -500,6 +594,7 @@ class DlioTfAdapter(Node):
                 f"{position.z:.3f})"
             )
             self._logged_pose = True
+        self._callback_timing.add_seconds(time.perf_counter() - callback_started)
 
     def _publish_health(self, healthy: bool) -> bool:
         if self._health_status == healthy:
@@ -507,6 +602,25 @@ class DlioTfAdapter(Node):
         self.health_publisher.publish(Bool(data=healthy))
         self._health_status = healthy
         return True
+
+    def _report_diagnostics(self) -> None:
+        """Report bounded health and callback metrics at low frequency"""
+        timing = self._callback_timing.summary(reset=True)
+        input_rate = self._input_rate.sample(reset=True)
+        maxima = self._max_health_metrics
+        self.get_logger().info(
+            "DLIO 位姿状态, "
+            f"输入频率={input_rate:.1f}Hz, "
+            f"状态={'正常' if self.health_filter.state else '暂停'}, "
+            f"累计异常={self._health_episodes}次, "
+            f"本周期异常帧={self._raw_unhealthy_samples}, "
+            f"最大误差=位置{maxima[0]:.3f}m/角度{maxima[1]:.2f}度/"
+            f"速度{maxima[2]:.3f}m/s, "
+            f"回调耗时=平均{timing.average_ms:.1f}/95%上限{timing.p95_ms:.1f}/"
+            f"最大{timing.maximum_ms:.1f}ms"
+        )
+        self._raw_unhealthy_samples = 0
+        self._max_health_metrics = [0.0, 0.0, 0.0]
 
     def _nearest_reference(self, msg: Odometry) -> Odometry | None:
         if not self.reference_messages:

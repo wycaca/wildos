@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import fields
 from pathlib import Path
+import time
 from typing import Any, Dict, Mapping
 
 from ament_index_python.packages import get_package_share_directory
@@ -18,6 +19,7 @@ from visualization_msgs.msg import MarkerArray
 from graph_construction.graph_builder import GraphBuilderConfig, SparseGraphBuilder
 from graph_construction.grid_adapter import classify_grid_map
 from graph_construction.msg_utils import graph_to_msg
+from graph_construction.performance_stats import EventRate, TimingWindow
 from graph_construction.viz import GraphVisualizer
 
 
@@ -29,6 +31,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "viz_topic": "/spot1/graph_construction_viz",
     "viz_show_radius_markers": False,
     "publish_rate_hz": 2.0,
+    "diagnostics_log_period_sec": 30.0,
+    "slow_cycle_warning_ms": 250.0,
     "grid_map_traversability_layer": "traversability",
     "grid_map_elevation_layer": "elevation",
     "grid_map_free_threshold": 0.2,
@@ -71,6 +75,12 @@ class GraphConstructionNode(Node):
         self._logged_first_grid = False
         self._logged_first_odom = False
         self._logged_first_publish = False
+        self._last_slow_warning = 0.0
+        self._publish_rate = EventRate()
+        self._timings = {
+            name: TimingWindow()
+            for name in ("classify", "update", "message", "visualize", "total")
+        }
 
         self.nav_graph_pub = self.create_publisher(
             NavigationGraph,
@@ -95,6 +105,11 @@ class GraphConstructionNode(Node):
 
         publish_rate = float(self.config["publish_rate_hz"])
         self.create_timer(1.0 / publish_rate, self._on_timer)
+        diagnostics_period = max(
+            float(self.config["diagnostics_log_period_sec"]),
+            5.0,
+        )
+        self.create_timer(diagnostics_period, self._report_diagnostics)
 
         self.get_logger().info(
             f"Graph construction 已启动, grid_map={self.config['grid_map_topic']}, "
@@ -131,28 +146,41 @@ class GraphConstructionNode(Node):
         if self.latest_grid is None or self.latest_odom is None:
             return
 
+        cycle_started = time.perf_counter()
         try:
+            stage_started = time.perf_counter()
             classified_grid = self._classify_latest_grid()
+            self._timings["classify"].add_seconds(time.perf_counter() - stage_started)
+            stage_started = time.perf_counter()
             update_result = self.builder.update(
                 classified_grid,
                 _robot_position(self.latest_odom),
                 _stamp_to_seconds(self.latest_grid.header),
             )
+            self._timings["update"].add_seconds(time.perf_counter() - stage_started)
         except Exception as exc:
             self.get_logger().error(f"更新导航图失败: {exc}")
             return
 
+        stage_started = time.perf_counter()
         header = self._graph_header(self.latest_grid.header, classified_grid.frame_id)
         nav_graph = graph_to_msg(update_result.graph, header, TRAVERSABILITY_CLASS)
+        self._timings["message"].add_seconds(time.perf_counter() - stage_started)
 
         self.nav_graph_pub.publish(nav_graph)
 
+        stage_started = time.perf_counter()
         self.viz_pub.publish(
             self.visualizer.build_markers(
                 update_result.graph,
                 header,
             )
         )
+        self._timings["visualize"].add_seconds(time.perf_counter() - stage_started)
+        total_seconds = time.perf_counter() - cycle_started
+        self._timings["total"].add_seconds(total_seconds)
+        self._publish_rate.tick()
+        self._warn_if_slow(total_seconds)
 
         if not self._logged_first_publish:
             frontier_count = sum(
@@ -171,6 +199,39 @@ class GraphConstructionNode(Node):
                 f"frontier={frontier_count}{grid_stats}{robot_stats}"
             )
             self._logged_first_publish = True
+
+    def _warn_if_slow(self, elapsed_seconds: float) -> None:
+        """Throttle slow-cycle warnings to avoid hiding normal diagnostics"""
+        threshold_ms = float(self.config["slow_cycle_warning_ms"])
+        now = time.monotonic()
+        if elapsed_seconds * 1000.0 < threshold_ms or now - self._last_slow_warning < 30.0:
+            return
+        self._last_slow_warning = now
+        self.get_logger().warn(
+            f"导航图构建耗时偏高, total={elapsed_seconds * 1000.0:.1f}ms, "
+            f"threshold={threshold_ms:.1f}ms"
+        )
+
+    def _report_diagnostics(self) -> None:
+        """Report per-stage timing without per-cycle log traffic"""
+        summaries = {
+            name: timing.summary(reset=True)
+            for name, timing in self._timings.items()
+        }
+        if not summaries["total"].count:
+            return
+        total = summaries["total"]
+        self.get_logger().info(
+            "导航图性能, "
+            f"频率={self._publish_rate.sample(reset=True):.2f}Hz, "
+            f"总耗时=平均{total.average_ms:.0f}/95%上限{total.p95_ms:.0f}/"
+            f"最大{total.maximum_ms:.0f}ms, "
+            "阶段平均耗时="
+            f"地图分类{summaries['classify'].average_ms:.0f}ms/"
+            f"图更新{summaries['update'].average_ms:.0f}ms/"
+            f"消息转换{summaries['message'].average_ms:.0f}ms/"
+            f"可视化{summaries['visualize'].average_ms:.0f}ms"
+        )
 
     def _classify_latest_grid(self):
         """按配置的输入后端把 ROS 地图解码为统一 ClassifiedGrid
@@ -219,6 +280,10 @@ def _resolve_config(config: Mapping[str, Any]) -> Dict[str, Any]:
     resolved = {**DEFAULT_CONFIG, **config}
     if float(resolved["publish_rate_hz"]) <= 0.0:
         raise ValueError("publish_rate_hz must be greater than 0")
+    if float(resolved["diagnostics_log_period_sec"]) <= 0.0:
+        raise ValueError("diagnostics_log_period_sec must be greater than 0")
+    if float(resolved["slow_cycle_warning_ms"]) <= 0.0:
+        raise ValueError("slow_cycle_warning_ms must be greater than 0")
     if float(resolved["grid_map_obstacle_threshold"]) > float(resolved["grid_map_free_threshold"]):
         raise ValueError("grid_map_obstacle_threshold must not exceed grid_map_free_threshold")
 

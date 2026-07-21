@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import time
+
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import PointCloud2
 from std_msgs.msg import Bool
+
+from graph_construction.performance_stats import EventRate, TimingWindow
 
 
 class DlioOutputGuard(Node):
@@ -25,7 +29,7 @@ class DlioOutputGuard(Node):
             "health_topic",
             "/spot1/dlio/odom_node/healthy",
         )
-        self.declare_parameter("diagnostic_interval", 10.0)
+        self.declare_parameter("diagnostic_interval", 30.0)
 
         self.input_pointcloud_topic = str(
             self.get_parameter("input_pointcloud_topic").value
@@ -34,8 +38,9 @@ class DlioOutputGuard(Node):
             self.get_parameter("output_pointcloud_topic").value
         )
         self.health_topic = str(self.get_parameter("health_topic").value)
-        diagnostic_interval = float(
-            self.get_parameter("diagnostic_interval").value
+        diagnostic_interval = max(
+            float(self.get_parameter("diagnostic_interval").value),
+            5.0,
         )
 
         sensor_qos = QoSProfile(
@@ -69,6 +74,11 @@ class DlioOutputGuard(Node):
 
         self.forwarded = 0
         self.suppressed = 0
+        self._last_forwarded = 0
+        self._last_suppressed = 0
+        self._health_transitions = 0
+        self._callback_timing = TimingWindow()
+        self._input_rate = EventRate()
         self.healthy = False
         self.get_logger().info(
             "DLIO output guard 已启动, "
@@ -77,26 +87,39 @@ class DlioOutputGuard(Node):
         )
 
     def _on_pointcloud(self, msg: PointCloud2) -> None:
+        started = time.perf_counter()
+        self._input_rate.tick()
         if not self.healthy:
             self.suppressed += 1
+            self._callback_timing.add_seconds(time.perf_counter() - started)
             return
         self.pointcloud_publisher.publish(msg)
         self.forwarded += 1
+        self._callback_timing.add_seconds(time.perf_counter() - started)
 
     def _on_health(self, msg: Bool) -> None:
         previous = self.healthy
         self.healthy = bool(msg.data)
-        if self.healthy and not previous:
-            self.get_logger().info("DLIO 位姿健康, 开始转发对齐点云")
-        elif previous and not self.healthy:
-            self.get_logger().error("DLIO 位姿异常, 已暂停转发对齐点云")
+        if self.healthy != previous:
+            self._health_transitions += 1
 
     def _report_diagnostics(self) -> None:
+        forwarded = self.forwarded - self._last_forwarded
+        suppressed = self.suppressed - self._last_suppressed
+        total = forwarded + suppressed
+        suppressed_ratio = 100.0 * suppressed / total if total else 0.0
+        timing = self._callback_timing.summary(reset=True)
         self.get_logger().info(
-            "DLIO 输出点云统计, "
-            f"forwarded={self.forwarded}, suppressed={self.suppressed}, "
-            f"healthy={self.healthy}"
+            "DLIO 点云输出, "
+            f"输入频率={self._input_rate.sample(reset=True):.1f}Hz, "
+            f"转发={forwarded}, 拦截={suppressed}({suppressed_ratio:.1f}%), "
+            f"状态={'正常' if self.healthy else '暂停'}, "
+            f"状态切换={self._health_transitions}次, "
+            f"回调耗时=平均{timing.average_ms:.1f}/95%上限{timing.p95_ms:.1f}/"
+            f"最大{timing.maximum_ms:.1f}ms"
         )
+        self._last_forwarded = self.forwarded
+        self._last_suppressed = self.suppressed
 
 
 def main(args=None) -> None:

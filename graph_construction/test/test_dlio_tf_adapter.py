@@ -6,6 +6,7 @@ import pytest
 from tf2_msgs.msg import TFMessage
 
 from graph_construction.dlio_tf_adapter import (
+    HealthStateFilter,
     align_odometry,
     alignment_from_odometry,
     alignment_to_transform,
@@ -13,6 +14,41 @@ from graph_construction.dlio_tf_adapter import (
     odom_to_transform,
     relay_extrinsic_transforms,
 )
+
+
+def test_health_filter_ignores_single_bad_sample():
+    health_filter = HealthStateFilter(
+        unhealthy_confirm_frames=3,
+        healthy_confirm_frames=2,
+    )
+
+    assert health_filter.update(True) is True
+    assert health_filter.update(False) is None
+    assert health_filter.update(True) is None
+    assert health_filter.state is True
+
+
+def test_health_filter_requires_stable_failure_and_recovery():
+    health_filter = HealthStateFilter(
+        unhealthy_confirm_frames=2,
+        healthy_confirm_frames=3,
+    )
+
+    assert health_filter.update(True) is True
+    assert health_filter.update(False) is None
+    assert health_filter.update(False) is False
+    assert health_filter.update(True) is None
+    assert health_filter.update(False) is None
+    assert health_filter.update(True) is None
+    assert health_filter.update(True) is None
+    assert health_filter.update(True) is True
+
+
+def test_health_filter_immediately_rejects_nonfinite_state():
+    health_filter = HealthStateFilter(5, 2)
+
+    assert health_filter.update(True) is True
+    assert health_filter.update(False, force_unhealthy=True) is False
 
 
 def test_odom_to_transform_preserves_pose_and_stamp():

@@ -5,6 +5,8 @@ grid_map_topic: /elevation_mapping_node/elevation_map_raw
 nav_graph_topic: /spot1/nav_graph
 viz_topic: /spot1/graph_construction_viz
 viz_show_radius_markers: false
+diagnostics_log_period_sec: 30.0
+slow_cycle_warning_ms: 250.0
 
 # GridMap 分类和小洞修复
 grid_map_free_threshold: 0.2

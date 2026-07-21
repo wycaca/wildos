@@ -4,6 +4,7 @@
     use_sim_time: true
     # Unity scans are sparse and contain many invalid zero points
     adaptive: false
+    debug/enabled: false
 
     frames/odom: dlio_odom
     frames/baselink: base_link

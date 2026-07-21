@@ -72,7 +72,7 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "visual_start_delay",
                 default_value="6.0",
-                description="Delay visual navigation startup so the base graph is available first",
+                description="Delay target fusion startup while WildOS loads immediately",
             ),
             DeclareLaunchArgument(
                 "planner_start_delay",
@@ -614,6 +614,53 @@ def _launch_setup(context):
         isolated_tf_remappings,
     )
 
+    planner_path_topic = (
+        f"/{normalized_ns}/graphnav_planner/path"
+        if normalized_ns
+        else "/graphnav_planner/path"
+    )
+    pipeline_performance_monitor = Node(
+        package="graph_construction",
+        executable="pipeline_performance_monitor",
+        output="screen",
+        **python_node_extra_args,
+        parameters=[
+            {"use_sim_time": use_sim_time},
+            {"raw_lidar_topic": wiring.dlio_pointcloud_input_topic},
+            {"raw_imu_topic": wiring.dlio_imu_input_topic},
+            {"aligned_pointcloud_topic": aligned_lidar_topic},
+            {"odom_topic": odom_output_topic},
+            {
+                "grid_map_topic": _value(
+                    context,
+                    profile,
+                    "elevation_grid_map_topic",
+                    "elevation_grid_map_topic",
+                )
+            },
+            {"nav_graph_topic": nav_graph_topic},
+            {"scored_nav_graph_topic": scored_nav_graph_topic},
+            {
+                "object_mask_topic": _value(
+                    context,
+                    profile,
+                    "object_mask_topic",
+                    "object_mask_topic",
+                )
+            },
+            {
+                "target_estimate_topic": _value(
+                    context,
+                    profile,
+                    "object_target_estimate_topic",
+                    "object_target_estimate_topic",
+                )
+            },
+            {"goal_topic": goal_pose_topic},
+            {"path_topic": planner_path_topic},
+        ],
+    )
+
     localization_actions = _localization_actions(
         context,
         profile_name,
@@ -640,6 +687,7 @@ def _launch_setup(context):
             LaunchConfiguration("fastdds_profile"),
             condition=LaunchConfigurationNotEquals("fastdds_profile", ""),
         ),
+        wildos,
         *localization_actions,
         odom_adapter,
         *([camera_stamp_adapter] if camera_stamp_mode == "now" else []),
@@ -666,8 +714,9 @@ def _launch_setup(context):
             isolated_tf_remappings,
         ),
         elevation_mapping,
+        pipeline_performance_monitor,
         TimerAction(period=LaunchConfiguration("graph_start_delay"), actions=[graph_construction]),
-        TimerAction(period=LaunchConfiguration("visual_start_delay"), actions=[wildos, object_target_fusion]),
+        TimerAction(period=LaunchConfiguration("visual_start_delay"), actions=[object_target_fusion]),
         TimerAction(period=LaunchConfiguration("planner_start_delay"), actions=[object_search_goal_mux, planner]),
     ]
 
@@ -705,6 +754,7 @@ def _localization_actions(
             ns,
             use_sim_time,
             log_level,
+            python_node_extra_args,
         ),
         _dlio_tf_adapter(
             context,
@@ -725,6 +775,7 @@ def _dlio_node(
     ns,
     use_sim_time,
     log_level,
+    python_node_extra_args,
 ):
     """Launch official DLIO with its scan-rate TF isolated as raw diagnostics"""
     topic_root = _value(context, profile, "dlio_topic_root", "dlio_topic_root").rstrip("/")
@@ -742,6 +793,10 @@ def _dlio_node(
         name="dlio_odom_node",
         namespace=ns,
         output="log",
+        prefix=(
+            f"{python_node_extra_args['prefix']}"
+            "-m graph_construction.quiet_stdout "
+        ),
         parameters=[
             config_file,
             {
@@ -932,13 +987,16 @@ def _lidar_static_tf(context, profile):
         name="unitree_lidar_static_tf",
         output="screen",
         arguments=[
-            "0",
-            "0",
-            "0",
-            "0",
-            "0",
-            "0",
+            "--x", "0",
+            "--y", "0",
+            "--z", "0",
+            "--qx", "0",
+            "--qy", "0",
+            "--qz", "0",
+            "--qw", "1",
+            "--frame-id",
             _value(context, profile, "lidar_parent_frame", "lidar_parent_frame"),
+            "--child-frame-id",
             _value(context, profile, "lidar_frame", "lidar_frame"),
         ],
         condition=IfCondition(LaunchConfiguration("publish_lidar_static_tf")),
@@ -946,12 +1004,23 @@ def _lidar_static_tf(context, profile):
 
 
 def _camera_static_tf(name, parent_frame, transform_args, condition, tf_remappings):
+    x, y, z, qx, qy, qz, qw = transform_args
     return Node(
         package="tf2_ros",
         executable="static_transform_publisher",
         name=f"unitree_{name}_camera_static_tf",
         output="screen",
-        arguments=[*transform_args, parent_frame, f"{name}_camera"],
+        arguments=[
+            "--x", x,
+            "--y", y,
+            "--z", z,
+            "--qx", qx,
+            "--qy", qy,
+            "--qz", qz,
+            "--qw", qw,
+            "--frame-id", parent_frame,
+            "--child-frame-id", f"{name}_camera",
+        ],
         remappings=tf_remappings,
         condition=IfCondition(condition),
     )

@@ -102,6 +102,9 @@ def test_unity_dlio_launch_owns_dlio_and_skips_xyz_adapter():
         and _expanded(context, action.node_executable) == "dlio_odom_node"
     )
     remappings = _remappings(context, dlio_node)
+    assert _node_prefix(context, dlio_node).strip().endswith(
+        ".venv/bin/python3 -m graph_construction.quiet_stdout"
+    )
     assert ("pointcloud", "/livox/lidar") in remappings
     assert ("imu", "/livox/imu") in remappings
     assert (
@@ -158,6 +161,7 @@ def test_all_python_nodes_use_uv_environment_python():
         "object_search_goal_mux",
         "object_target_fusion",
         "odom_frame_adapter",
+        "pipeline_performance_monitor",
         "pointcloud_axis_adapter",
         "wildos",
     }
@@ -184,3 +188,52 @@ def test_system_python_is_rejected_for_python_nodes():
 
     with pytest.raises(RuntimeError, match="不是 uv 创建"):
         module._launch_setup(context)
+
+
+def test_static_transform_publishers_use_named_arguments():
+    module = _load_launch_module()
+    context = _context_with_defaults(module)
+    nodes = list(_all_nodes(module._launch_setup(context)))
+    static_nodes = [
+        node
+        for node in nodes
+        if _expanded(context, node.node_executable) == "static_transform_publisher"
+    ]
+
+    assert static_nodes
+    for node in static_nodes:
+        arguments = [
+            _expanded(context, argument)
+            for argument in node._Node__arguments
+        ]
+        assert "--frame-id" in arguments
+        assert "--child-frame-id" in arguments
+
+
+def test_wildos_starts_before_heavy_pipeline_nodes():
+    module = _load_launch_module()
+    context = _context_with_defaults(module)
+    actions = module._launch_setup(context)
+
+    wildos_index = next(
+        index
+        for index, action in enumerate(actions)
+        if isinstance(action, Node)
+        and _expanded(context, action.node_executable) == "wildos"
+    )
+    elevation_index = next(
+        index
+        for index, action in enumerate(actions)
+        if isinstance(action, Node)
+        and _expanded(context, action.node_executable) == "elevation_mapping_node.py"
+    )
+    delayed_executables = {
+        _expanded(context, node.node_executable)
+        for action in actions
+        if isinstance(action, TimerAction)
+        for node in _all_nodes([action])
+    }
+
+    assert wildos_index < elevation_index
+    assert "wildos" not in delayed_executables
+    assert "object_target_fusion" in delayed_executables

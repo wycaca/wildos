@@ -43,6 +43,7 @@ setup(
             "dlio_output_guard = graph_construction.dlio_output_guard:main",
             "dlio_tf_adapter = graph_construction.dlio_tf_adapter:main",
             "graph_construction = graph_construction.node:main",
+            "pipeline_performance_monitor = graph_construction.pipeline_performance_monitor:main",
             "pointcloud_axis_adapter = graph_construction.pointcloud_axis_adapter:main",
         ],
     },
