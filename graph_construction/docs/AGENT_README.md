@@ -114,6 +114,22 @@ ros2 launch graphnav_planner path_follower.launch.py
 - 完整镜像必须包含 RADIO、Frontier、Traversability 和 SigLIP2 权重
 - Unity、Isaac Sim、传感器驱动和底盘控制不属于 WildOS 容器，由外部 ROS2 系统提供 topic
 
+## 实机计算与 Sim-to-Real 风险
+
+论文实机使用 Boston Dynamics Spot、Ouster OS0-128、VectorNav VN-100 和三台 RealSense D455。Intel NUC i7 运行 DLIO 和 Nav2，Jetson AGX Orin 运行高程图和 WildOS，论文未注明 NUC 具体型号及 Orin 显存版本
+
+三路 `540x960` 图像同步后组成一个 FP16 batch，由同一个 ExploRFM 模型约以 1.4Hz 处理，点云独立进入 DLIO 和高程图，不与三路图像共同输入视觉模型
+
+实机部署风险:
+
+- 三相机、LiDAR 和 IMU 必须使用统一时钟和真实采样时间，不能用消息到达时间代替
+- LiDAR 与 IMU 不同步会破坏 DLIO，LiDAR 与相机不同步会让目标 Mask 和点云投影错位
+- 三相机、LiDAR、IMU 到 `base_link` 的外参必须完成实机标定，不能直接复用仿真值
+- 点云必须提供有效逐点时间，运动场景启用 deskew 前必须完成转向和快速行走验证
+- 三路图像、点云和 ROS2 通信可能受 USB、网口和 DDS 带宽限制，必须检查掉帧、延迟和队列积压
+- 单机部署会同时竞争 CPU、GPU 和显存，优先复现论文的 NUC 与 Orin 分工，并验证持续负载下的温度和降频
+- 当前 `robot` profile 仍是占位配置，完成时间同步、外参、频率、动态定位和完整目标搜索闭环前不得视为可部署状态
+
 ## DLIO 定位
 
 - 真机默认必须接入 DLIO, 或提供经过同等验证的 6DoF LiDAR-inertial odometry
