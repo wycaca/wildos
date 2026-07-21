@@ -9,8 +9,14 @@
 #include <graphnav_msgs/msg/navigation_graph.hpp>
 #include <std_msgs/msg/header.hpp>
 #include <std_msgs/msg/string.hpp>
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <deque>
+#include <numeric>
 #include <optional>
 #include <stdexcept>
+#include <vector>
 #include "graphnav_planner/planner.hpp"
 
 namespace graphnav_planner
@@ -38,6 +44,8 @@ public:
     this->declare_parameter("frontier_failure_merge_radius", 2.5);
     this->declare_parameter("path_invalid_confirm_duration", 1.5);
     this->declare_parameter("revisit_cost_factor", 1.0);
+    this->declare_parameter("diagnostics_log_period_sec", 30.0);
+    this->declare_parameter("slow_planning_warning_ms", 200.0);
 
     const auto nonnegative_parameter = [this](const std::string& name) {
       const double value = this->get_parameter(name).as_double();
@@ -71,6 +79,10 @@ public:
 
     this->declare_parameter("goal_radius", 3.0);
     goal_radius_ = this->get_parameter("goal_radius").as_double();
+    diagnostics_log_period_sec_ = std::max(
+      this->get_parameter("diagnostics_log_period_sec").as_double(), 5.0);
+    slow_planning_warning_ms_ = std::max(
+      this->get_parameter("slow_planning_warning_ms").as_double(), 1.0);
 
     graph_sub_ = this->create_subscription<graphnav_msgs::msg::NavigationGraph>(
         "~/nav_graph", 10, [this](const graphnav_msgs::msg::NavigationGraph::ConstSharedPtr msg) {
@@ -109,6 +121,9 @@ public:
     path_pub_ = this->create_publisher<nav_msgs::msg::Path>("~/path", 10);
     grid_map_debug_pub_ = this->create_publisher<grid_map_msgs::msg::GridMap>("~/unexplored_space_map", 10);
     scores_debug_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("~/frontier_scores", 10);
+    diagnostics_timer_ = this->create_wall_timer(
+      std::chrono::duration<double>(diagnostics_log_period_sec_),
+      [this]() { this->report_diagnostics(); });
   }
 
 private:
@@ -215,6 +230,7 @@ private:
       Eigen::Vector3d goal_vec(goal_in_graph_frame.pose.position.x, goal_in_graph_frame.pose.position.y,
                                goal_in_graph_frame.pose.position.z);
       std::optional<Eigen::Vector3d> robot_position;
+      std::optional<geometry_msgs::msg::PoseStamped> robot_pose_for_hold;
       if (odom_)
       {
         try
@@ -227,6 +243,7 @@ private:
           Eigen::Vector3d robot_vec(robot_in_graph_frame.pose.position.x, robot_in_graph_frame.pose.position.y,
                                     robot_in_graph_frame.pose.position.z);
           robot_position = robot_vec;
+          robot_pose_for_hold = robot_in_graph_frame;
           if (directional_exploration_mode_ && !planner_.has_directional_exploration())
           {
             const auto& orientation = goal_in_graph_frame.pose.orientation;
@@ -245,7 +262,7 @@ private:
           if (!directional_exploration_mode_ && (goal_vec - robot_vec).norm() < goal_radius_)
           {
             last_hold_goal_ = goal;
-            publish_hold_path(robot_in_graph_frame);
+            publish_hold_path(robot_in_graph_frame, "goal_within_radius");
             goal_pose_.reset();
             return;
           }
@@ -255,13 +272,24 @@ private:
           RCLCPP_WARN(this->get_logger(), "机器人位姿无法转换到导航图坐标系, 原因=%s", ex.what());
         }
       }
+      const auto planning_started = std::chrono::steady_clock::now();
       const auto planning_result = planner_.plan_to_goal(
         goal_vec,
         goal_radius_,
         this->get_clock()->now(),
         robot_position);
+      const double planning_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - planning_started).count();
+      record_planning_timing(planning_ms);
       if (planning_result.path_changed)
       {
+        path_changes_++;
+        if (planning_result.path.empty() && robot_pose_for_hold)
+        {
+          empty_paths_++;
+          publish_hold_path(*robot_pose_for_hold, "no_valid_route");
+          return;
+        }
         // Graph 高频更新只做路线验证, 仅提交分支改变或路线失效时发布新 Path
         nav_msgs::msg::Path path_msg;
         path_msg.header = *latest_graph_header_;
@@ -344,7 +372,9 @@ private:
     }
   }
 
-  void publish_hold_path(const geometry_msgs::msg::PoseStamped& robot_pose)
+  void publish_hold_path(
+    const geometry_msgs::msg::PoseStamped& robot_pose,
+    const char* reason)
   {
     // 目标已在到达半径内时发布单点 path, 让自研导航立即进入停止条件
     nav_msgs::msg::Path path_msg;
@@ -355,9 +385,61 @@ private:
     path_pub_->publish(path_msg);
     RCLCPP_INFO(
       this->get_logger(),
-      "已发布停止路径, type=hold, reason=goal_within_radius, poses=%zu, frame=%s",
+      "已发布停止路径, type=hold, reason=%s, poses=%zu, frame=%s",
+      reason,
       path_msg.poses.size(),
       path_msg.header.frame_id.c_str());
+  }
+
+  void record_planning_timing(double elapsed_ms)
+  {
+    planning_timings_ms_.push_back(elapsed_ms);
+    if (planning_timings_ms_.size() > 512)
+    {
+      planning_timings_ms_.pop_front();
+    }
+    planning_calls_++;
+    const auto now = std::chrono::steady_clock::now();
+    if (
+      elapsed_ms >= slow_planning_warning_ms_ &&
+      now - last_slow_warning_ >= std::chrono::seconds(30))
+    {
+      last_slow_warning_ = now;
+      RCLCPP_WARN(
+        this->get_logger(),
+        "路径规划耗时偏高, planning=%.1fms, threshold=%.1fms",
+        elapsed_ms,
+        slow_planning_warning_ms_);
+    }
+  }
+
+  void report_diagnostics()
+  {
+    if (planning_timings_ms_.empty())
+    {
+      return;
+    }
+    std::vector<double> samples(planning_timings_ms_.begin(), planning_timings_ms_.end());
+    std::sort(samples.begin(), samples.end());
+    const size_t p95_index = std::min(
+      static_cast<size_t>(std::ceil(samples.size() * 0.95)) - 1,
+      samples.size() - 1);
+    const double average = std::accumulate(samples.begin(), samples.end(), 0.0) / samples.size();
+    const double rate = planning_calls_ / diagnostics_log_period_sec_;
+    RCLCPP_INFO(
+      this->get_logger(),
+      "路径规划性能, 频率=%.2fHz, 规划耗时=平均%.1f/95%%上限%.1f/最大%.1fms, "
+      "路线变化=%zu次, 空路线=%zu次",
+      rate,
+      average,
+      samples[p95_index],
+      samples.back(),
+      path_changes_,
+      empty_paths_);
+    planning_timings_ms_.clear();
+    planning_calls_ = 0;
+    path_changes_ = 0;
+    empty_paths_ = 0;
   }
 
   rclcpp::Subscription<graphnav_msgs::msg::NavigationGraph>::SharedPtr graph_sub_;
@@ -367,6 +449,7 @@ private:
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
   rclcpp::Publisher<grid_map_msgs::msg::GridMap>::SharedPtr grid_map_debug_pub_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr scores_debug_pub_;
+  rclcpp::TimerBase::SharedPtr diagnostics_timer_;
 
   tf2_ros::Buffer tf_buffer_;
   tf2_ros::TransformListener tf_listener_;
@@ -378,6 +461,13 @@ private:
   std::string object_search_state_;
   bool directional_exploration_mode_ = false;
   double goal_radius_;
+  double diagnostics_log_period_sec_;
+  double slow_planning_warning_ms_;
+  std::deque<double> planning_timings_ms_;
+  size_t planning_calls_ = 0;
+  size_t path_changes_ = 0;
+  size_t empty_paths_ = 0;
+  std::chrono::steady_clock::time_point last_slow_warning_{};
 
   Planner planner_;
 };
