@@ -274,7 +274,7 @@ def test_single_view_pending_estimate_keeps_initial_goal(mux_node):
 
 
 def test_two_view_tracking_estimate_replaces_initial_goal(mux_node):
-    """论文式两视角粗定位形成后立即引导远距离导航"""
+    """两视角粗定位形成后先导航到目标外侧安全观察点"""
     mux_node._on_odom(_odom(0.0, 0.0, 0.0))
     estimate = _target_estimate(
         12.0,
@@ -289,8 +289,80 @@ def test_two_view_tracking_estimate_replaces_initial_goal(mux_node):
     state, coarse_goal = mux_node._select_goal()
 
     assert state == ObjectSearchState.TARGET_APPROACH_COARSE
-    assert coarse_goal.pose.position.x == pytest.approx(12.0)
-    assert coarse_goal.pose.position.y == pytest.approx(3.0)
+    target_distance = math.hypot(
+        coarse_goal.pose.position.x - 12.0,
+        coarse_goal.pose.position.y - 3.0,
+    )
+    assert target_distance == pytest.approx(2.75)
+    assert _yaw(coarse_goal) == pytest.approx(math.atan2(3.0, 12.0))
+
+
+def test_near_coarse_target_enters_facing_observation(mux_node):
+    """到达粗目标安全距离后保持位置并面向目标"""
+    mux_node.target_observation_duration_sec = 100.0
+    mux_node._on_odom(_odom(1.0, 1.0, math.pi))
+    mux_node._on_target_estimate(
+        _target_estimate(3.8, 1.0, stable=False, confidence=0.51)
+    )
+
+    state, observation_goal = mux_node._select_goal()
+
+    assert state == ObjectSearchState.TARGET_OBSERVATION
+    assert observation_goal.pose.position.x == pytest.approx(1.0)
+    assert observation_goal.pose.position.y == pytest.approx(1.0)
+    assert _yaw(observation_goal) == pytest.approx(0.0)
+
+
+def test_unstable_observation_moves_sideways_for_new_view(mux_node):
+    """静止观察超时后横向移动而不是完整原地旋转"""
+    mux_node.target_observation_duration_sec = 100.0
+    mux_node._on_odom(_odom(0.0, 0.0, 0.0))
+    mux_node._on_target_estimate(
+        _target_estimate(2.8, 0.0, stable=False, confidence=0.51)
+    )
+    first_state, _ = mux_node._select_goal()
+    mux_node.target_observation_duration_sec = 0.0
+
+    next_state, reposition_goal = mux_node._select_goal()
+
+    assert first_state == ObjectSearchState.TARGET_OBSERVATION
+    assert next_state == ObjectSearchState.TARGET_APPROACH_COARSE
+    assert reposition_goal.pose.position.x == pytest.approx(0.0)
+    assert abs(reposition_goal.pose.position.y) == pytest.approx(0.75)
+    assert _yaw(reposition_goal) == pytest.approx(math.atan2(0.75, 2.8))
+
+
+def test_observation_switches_to_metric_approach_when_target_stabilizes(mux_node):
+    """观察期间获得稳定融合结果后立即恢复精确目标接近"""
+    mux_node.target_observation_duration_sec = 100.0
+    mux_node._on_odom(_odom(0.0, 0.0, 0.0))
+    mux_node._on_target_estimate(
+        _target_estimate(2.8, 0.0, stable=False, confidence=0.51)
+    )
+    observation_state, _ = mux_node._select_goal()
+
+    mux_node._on_target_estimate(_target_estimate(2.8, 0.0, stable=True))
+    metric_state, metric_goal = mux_node._select_goal()
+
+    assert observation_state == ObjectSearchState.TARGET_OBSERVATION
+    assert metric_state == ObjectSearchState.TARGET_APPROACH_METRIC
+    assert metric_goal.pose.position.x == pytest.approx(2.8)
+
+
+def test_lost_target_uses_small_scan_around_predicted_bearing(mux_node):
+    """观察期间目标失联时只围绕预测方向做小角度重捕获"""
+    mux_node.target_observation_duration_sec = 100.0
+    mux_node._on_odom(_odom(0.0, 0.0, 0.0))
+    mux_node._on_target_estimate(
+        _target_estimate(2.8, 0.0, stable=False, confidence=0.51)
+    )
+    mux_node.latest_target_estimate_time = None
+
+    state, scan_goal = mux_node._select_goal()
+
+    assert state == ObjectSearchState.TARGET_OBSERVATION
+    assert _yaw(scan_goal) == pytest.approx(math.radians(20.0))
+    assert mux_node.target_observation_phase == "SCAN_LEFT"
 
 
 def test_coarse_target_cannot_trigger_final_completion(mux_node):
@@ -303,7 +375,7 @@ def test_coarse_target_cannot_trigger_final_completion(mux_node):
     mux_node._on_object_reached(Bool(data=True))
     state, _ = mux_node._select_goal()
 
-    assert state == ObjectSearchState.TARGET_APPROACH_COARSE
+    assert state == ObjectSearchState.TARGET_OBSERVATION
 
 
 def test_small_metric_updates_do_not_move_goal(mux_node):

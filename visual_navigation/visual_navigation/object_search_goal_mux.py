@@ -38,6 +38,15 @@ class ObjectSearchGoalMux(Node):
         self.declare_parameter("coarse_target_max_horizontal_std", 8.0)
         self.declare_parameter("target_update_min_distance", 0.75)
         self.declare_parameter("stable_target_update_min_distance", 0.3)
+        self.declare_parameter("coarse_observation_distance", 2.75)
+        self.declare_parameter("coarse_observation_entry_tolerance", 0.4)
+        self.declare_parameter("target_observation_duration_sec", 2.0)
+        self.declare_parameter("target_observation_reposition_distance", 0.75)
+        self.declare_parameter("target_observation_reposition_tolerance", 0.4)
+        self.declare_parameter("target_observation_lost_timeout_sec", 2.0)
+        self.declare_parameter("target_observation_scan_yaw_deg", 20.0)
+        self.declare_parameter("target_observation_scan_tolerance_deg", 5.0)
+        self.declare_parameter("target_observation_scan_hold_sec", 0.5)
         self.declare_parameter("nav_graph_topic", "/spot1/nav_graph")
         self.declare_parameter("scored_nav_graph_topic", "/spot1/scored_nav_graph")
         self.declare_parameter("startup_observation_enabled", True)
@@ -96,6 +105,43 @@ class ObjectSearchGoalMux(Node):
         )
         self.stable_target_update_min_distance = max(
             self._param_float("stable_target_update_min_distance"),
+            0.0,
+        )
+        self.coarse_observation_distance = max(
+            self._param_float("coarse_observation_distance"),
+            0.5,
+        )
+        self.coarse_observation_entry_tolerance = max(
+            self._param_float("coarse_observation_entry_tolerance"),
+            0.0,
+        )
+        self.target_observation_duration_sec = max(
+            self._param_float("target_observation_duration_sec"),
+            0.1,
+        )
+        self.target_observation_reposition_distance = max(
+            self._param_float("target_observation_reposition_distance"),
+            0.3,
+        )
+        self.target_observation_reposition_tolerance = max(
+            self._param_float("target_observation_reposition_tolerance"),
+            0.1,
+        )
+        self.target_observation_lost_timeout_sec = max(
+            self._param_float("target_observation_lost_timeout_sec"),
+            0.1,
+        )
+        self.target_observation_scan_yaw = math.radians(
+            min(max(self._param_float("target_observation_scan_yaw_deg"), 5.0), 45.0)
+        )
+        self.target_observation_scan_tolerance = math.radians(
+            min(
+                max(self._param_float("target_observation_scan_tolerance_deg"), 1.0),
+                15.0,
+            )
+        )
+        self.target_observation_scan_hold_sec = max(
+            self._param_float("target_observation_scan_hold_sec"),
             0.0,
         )
         self.nav_graph_topic = self._param_str("nav_graph_topic")
@@ -175,6 +221,12 @@ class ObjectSearchGoalMux(Node):
         self.startup_scan_phase = "WARMUP"
         self.startup_scan_phase_time = None
         self.startup_scan_phase_scored_frames = 0
+        self.latest_target_estimate_time = None
+        self.target_observation_started_time = None
+        self.target_observation_phase = "ALIGN"
+        self.target_observation_phase_time = None
+        self.target_reposition_goal: PoseStamped | None = None
+        self.target_reposition_attempts = 0
 
         self.goal_pub = self.create_publisher(PoseStamped, self.output_goal_topic, 10)
         self.status_pub = self.create_publisher(String, self.status_topic, 10)
@@ -304,6 +356,7 @@ class ObjectSearchGoalMux(Node):
         """两视角粗定位先引导导航, 稳定估计随后提升精度"""
         if self._reached_latch_is_active():
             return
+        self.latest_target_estimate_time = self.get_clock().now()
         coarse_ready = (
             int(msg.accepted_views) >= self.coarse_target_min_views
             and float(msg.confidence) >= self.coarse_target_min_confidence
@@ -346,10 +399,18 @@ class ObjectSearchGoalMux(Node):
             return
 
         first_metric_target = self.metric_target is None
+        target_moved = (
+            self.metric_target is not None
+            and self._pose_xy_distance(self.metric_target, target) >= update_min_distance
+        )
         self.metric_target = target
         self.metric_target_confidence = float(msg.confidence)
         self.metric_target_source = int(msg.source)
         self.metric_target_stable = bool(msg.stable)
+        if msg.stable:
+            self._reset_target_observation()
+        elif target_moved and self.target_reposition_goal is not None:
+            self.target_reposition_goal = None
         if first_metric_target and not msg.stable:
             self.get_logger().info(
                 "导航目标已切换为视觉粗定位, "
@@ -405,15 +466,12 @@ class ObjectSearchGoalMux(Node):
             return ObjectSearchState.TARGET_REACHED_VIEWPOINT, self._build_hold_goal(now)
 
         if self.metric_target is not None:
-            state = (
-                ObjectSearchState.TARGET_APPROACH_METRIC
-                if self.metric_target_stable
-                else ObjectSearchState.TARGET_APPROACH_COARSE
-            )
-            return (
-                state,
-                self._retime_pose(self.metric_target, now),
-            )
+            if self.metric_target_stable:
+                return (
+                    ObjectSearchState.TARGET_APPROACH_METRIC,
+                    self._retime_pose(self.metric_target, now),
+                )
+            return self._select_coarse_target_goal(now)
 
         if self.latest_odom is None:
             return ObjectSearchState.WAIT_FOR_ODOM, None
@@ -528,6 +586,195 @@ class ObjectSearchGoalMux(Node):
             f"前向Frontier={self.startup_forward_frontiers}"
         )
 
+    def _select_coarse_target_goal(self, now) -> tuple[str, PoseStamped]:
+        """先到安全观察距离, 再对准目标观察或移动形成新视差"""
+        assert self.metric_target is not None
+        assert self.latest_odom is not None
+
+        if self.target_reposition_goal is not None:
+            if self._odom_distance_to_pose(self.target_reposition_goal) > (
+                self.target_observation_reposition_tolerance
+            ):
+                return (
+                    ObjectSearchState.TARGET_APPROACH_COARSE,
+                    self._retime_pose(self.target_reposition_goal, now),
+                )
+            self.target_reposition_goal = None
+            self._start_target_observation(now, "到达新观察点")
+
+        target_distance = self._target_distance(self.metric_target)
+        observation_entry_distance = (
+            self.coarse_observation_distance
+            + self.coarse_observation_entry_tolerance
+        )
+        if (
+            self.target_observation_started_time is None
+            and target_distance > observation_entry_distance
+        ):
+            return (
+                ObjectSearchState.TARGET_APPROACH_COARSE,
+                self._build_coarse_observation_approach_goal(now),
+            )
+
+        if self.target_observation_started_time is None:
+            self._start_target_observation(now, "进入安全观察距离")
+
+        reposition_goal = self._update_target_observation(now)
+        if reposition_goal is not None:
+            return ObjectSearchState.TARGET_APPROACH_COARSE, reposition_goal
+        return (
+            ObjectSearchState.TARGET_OBSERVATION,
+            self._build_target_observation_goal(now),
+        )
+
+    def _start_target_observation(self, now, reason: str) -> None:
+        self.target_observation_started_time = now
+        self.target_observation_phase = "ALIGN"
+        self.target_observation_phase_time = now
+        self.get_logger().info(
+            f"开始粗目标观察, 原因={reason}, 距离={self._target_distance(self.metric_target):.2f}m"
+        )
+
+    def _update_target_observation(self, now) -> PoseStamped | None:
+        """目标可见时对准等待, 失联时局部扫描, 超时后横向换观察点"""
+        target_age = self._age_seconds(now, self.latest_target_estimate_time)
+        if target_age <= self.target_observation_lost_timeout_sec:
+            if self.target_observation_phase != "ALIGN":
+                self.target_observation_phase = "ALIGN"
+                self.target_observation_phase_time = now
+            if self._age_seconds(now, self.target_observation_started_time) < (
+                self.target_observation_duration_sec
+            ):
+                return None
+            return self._start_target_reposition(now, "静止观察后仍未稳定")
+
+        if self.target_observation_phase == "ALIGN":
+            self._set_target_observation_phase("SCAN_LEFT", now)
+            return None
+        if not self._target_observation_yaw_reached():
+            return None
+        if self._age_seconds(now, self.target_observation_phase_time) < (
+            self.target_observation_scan_hold_sec
+        ):
+            return None
+
+        next_phase = {
+            "SCAN_LEFT": "SCAN_RIGHT",
+            "SCAN_RIGHT": "SCAN_RETURN",
+        }.get(self.target_observation_phase)
+        if next_phase is not None:
+            self._set_target_observation_phase(next_phase, now)
+            return None
+        return self._start_target_reposition(now, "局部重捕获后仍未稳定")
+
+    def _set_target_observation_phase(self, phase: str, now) -> None:
+        self.target_observation_phase = phase
+        self.target_observation_phase_time = now
+        self.get_logger().info(
+            f"粗目标局部重捕获阶段切换, phase={phase}, "
+            f"target_yaw={math.degrees(self._target_observation_yaw()):.1f}deg"
+        )
+
+    def _start_target_reposition(self, now, reason: str) -> PoseStamped:
+        """沿目标切向移动, 产生粒子滤波所需的真实横向基线"""
+        assert self.metric_target is not None
+        assert self.latest_odom is not None
+        target = self.metric_target.pose.position
+        robot = self.latest_odom.pose.pose.position
+        radial_x = robot.x - target.x
+        radial_y = robot.y - target.y
+        radial_norm = math.hypot(radial_x, radial_y)
+        if radial_norm < 1e-6:
+            radial_x, radial_y, radial_norm = -1.0, 0.0, 1.0
+        side = 1.0 if self.target_reposition_attempts % 2 == 0 else -1.0
+        tangent_x = side * -radial_y / radial_norm
+        tangent_y = side * radial_x / radial_norm
+
+        goal = PoseStamped()
+        goal.header.frame_id = self.metric_target.header.frame_id
+        goal.header.stamp = now.to_msg()
+        goal.pose.position.x = robot.x + tangent_x * self.target_observation_reposition_distance
+        goal.pose.position.y = robot.y + tangent_y * self.target_observation_reposition_distance
+        goal.pose.position.z = robot.z
+        self._set_pose_yaw(goal, self._bearing_to_target(goal.pose.position))
+        self.target_reposition_attempts += 1
+        self.target_reposition_goal = copy.deepcopy(goal)
+        self.target_observation_started_time = None
+        self.get_logger().info(
+            f"粗目标观察需要新视差, 原因={reason}, "
+            f"横向移动={self.target_observation_reposition_distance:.2f}m, "
+            f"attempt={self.target_reposition_attempts}"
+        )
+        return goal
+
+    def _build_coarse_observation_approach_goal(self, now) -> PoseStamped:
+        """在目标与机器人连线上生成安全观察位姿"""
+        assert self.metric_target is not None
+        assert self.latest_odom is not None
+        target = self.metric_target.pose.position
+        robot = self.latest_odom.pose.pose.position
+        from_target_x = robot.x - target.x
+        from_target_y = robot.y - target.y
+        distance = max(math.hypot(from_target_x, from_target_y), 1e-6)
+        goal = PoseStamped()
+        goal.header.frame_id = self.metric_target.header.frame_id
+        goal.header.stamp = now.to_msg()
+        goal.pose.position.x = target.x + from_target_x / distance * self.coarse_observation_distance
+        goal.pose.position.y = target.y + from_target_y / distance * self.coarse_observation_distance
+        goal.pose.position.z = robot.z
+        self._set_pose_yaw(goal, self._bearing_to_target(goal.pose.position))
+        return goal
+
+    def _build_target_observation_goal(self, now) -> PoseStamped:
+        assert self.latest_odom is not None
+        goal = PoseStamped()
+        goal.header.frame_id = self.frame_id or self.latest_odom.header.frame_id
+        goal.header.stamp = now.to_msg()
+        goal.pose.position = copy.deepcopy(self.latest_odom.pose.pose.position)
+        self._set_pose_yaw(goal, self._target_observation_yaw())
+        return goal
+
+    def _target_observation_yaw(self) -> float:
+        assert self.latest_odom is not None
+        target_yaw = self._bearing_to_target(self.latest_odom.pose.pose.position)
+        offset = {
+            "SCAN_LEFT": self.target_observation_scan_yaw,
+            "SCAN_RIGHT": -self.target_observation_scan_yaw,
+        }.get(self.target_observation_phase, 0.0)
+        return _normalize_angle(target_yaw + offset)
+
+    def _target_observation_yaw_reached(self) -> bool:
+        assert self.latest_odom is not None
+        current_yaw = _yaw_from_quaternion(self.latest_odom.pose.pose.orientation)
+        error = _normalize_angle(current_yaw - self._target_observation_yaw())
+        return abs(error) <= self.target_observation_scan_tolerance
+
+    def _bearing_to_target(self, position) -> float:
+        assert self.metric_target is not None
+        return math.atan2(
+            self.metric_target.pose.position.y - position.y,
+            self.metric_target.pose.position.x - position.x,
+        )
+
+    def _odom_distance_to_pose(self, pose: PoseStamped) -> float:
+        assert self.latest_odom is not None
+        dx = pose.pose.position.x - self.latest_odom.pose.pose.position.x
+        dy = pose.pose.position.y - self.latest_odom.pose.pose.position.y
+        return math.hypot(dx, dy)
+
+    @staticmethod
+    def _set_pose_yaw(pose: PoseStamped, yaw: float) -> None:
+        pose.pose.orientation.x = 0.0
+        pose.pose.orientation.y = 0.0
+        pose.pose.orientation.z = math.sin(yaw * 0.5)
+        pose.pose.orientation.w = math.cos(yaw * 0.5)
+
+    def _reset_target_observation(self) -> None:
+        self.target_observation_started_time = None
+        self.target_observation_phase = "ALIGN"
+        self.target_observation_phase_time = None
+        self.target_reposition_goal = None
+
     @staticmethod
     def _age_seconds(now, then) -> float:
         if then is None:
@@ -591,6 +838,8 @@ class ObjectSearchGoalMux(Node):
         self.metric_target_confidence = 0.0
         self.metric_target_source = TargetEstimate.SOURCE_NONE
         self.metric_target_stable = False
+        self.latest_target_estimate_time = None
+        self._reset_target_observation()
 
     def _build_hold_goal(self, now) -> PoseStamped:
         """到达目标观察点后发布当前位置, 让 planner 不再继续追远处点"""
@@ -804,6 +1053,9 @@ def _object_search_state_name(state: str) -> str:
         ),
         ObjectSearchState.TARGET_APPROACH_COARSE: (
             "接近视觉粗目标(TARGET_APPROACH_COARSE)"
+        ),
+        ObjectSearchState.TARGET_OBSERVATION: (
+            "面向视觉粗目标观察(TARGET_OBSERVATION)"
         ),
         ObjectSearchState.TARGET_APPROACH_METRIC: (
             "接近稳定融合目标(TARGET_APPROACH_METRIC)"

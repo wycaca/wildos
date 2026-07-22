@@ -112,6 +112,8 @@ public:
 
     this->declare_parameter("goal_radius", 3.0);
     goal_radius_ = this->get_parameter("goal_radius").as_double();
+    this->declare_parameter("coarse_goal_radius", 0.75);
+    coarse_goal_radius_ = this->get_parameter("coarse_goal_radius").as_double();
     diagnostics_log_period_sec_ = std::max(
       this->get_parameter("diagnostics_log_period_sec").as_double(), 5.0);
     slow_planning_warning_ms_ = std::max(
@@ -195,6 +197,10 @@ private:
     if (state == "TARGET_APPROACH_COARSE")
     {
       return "接近视觉粗目标";
+    }
+    if (state == "TARGET_OBSERVATION")
+    {
+      return "面向视觉粗目标观察";
     }
     if (state == "TARGET_APPROACH_METRIC")
     {
@@ -328,6 +334,8 @@ private:
       }
       Eigen::Vector3d goal_vec(goal_in_graph_frame.pose.position.x, goal_in_graph_frame.pose.position.y,
                                goal_in_graph_frame.pose.position.z);
+      const double active_goal_radius = object_search_state_ == "TARGET_APPROACH_COARSE" ?
+        coarse_goal_radius_ : goal_radius_;
       std::optional<Eigen::Vector3d> robot_position;
       std::optional<geometry_msgs::msg::PoseStamped> robot_pose_for_hold;
       if (odom_)
@@ -358,7 +366,8 @@ private:
               heading,
               lookahead_distance);
           }
-          if (!directional_exploration_mode_ && (goal_vec - robot_vec).norm() < goal_radius_)
+          if (!directional_exploration_mode_ &&
+            (goal_vec - robot_vec).norm() < active_goal_radius)
           {
             last_hold_goal_ = goal;
             if (observation_mode_)
@@ -396,7 +405,7 @@ private:
       }
       const auto planning_result = planner_.plan_to_goal(
         goal_vec,
-        goal_radius_,
+        active_goal_radius,
         this->get_clock()->now(),
         robot_position,
         timing_inputs_healthy);
@@ -481,7 +490,8 @@ private:
                                    goal_in_odom_frame.pose.position.z);
           Eigen::Vector3d odom_vec(odom_->pose.pose.position.x, odom_->pose.pose.position.y,
                                    odom_->pose.pose.position.z);
-          if (!directional_exploration_mode_ && (goal_vec - odom_vec).norm() < goal_radius_)
+          if (!directional_exploration_mode_ &&
+            (goal_vec - odom_vec).norm() < active_goal_radius)
           {
             goal_pose_.reset();  // 清除已到达目标
           }
@@ -607,6 +617,7 @@ private:
   bool directional_exploration_mode_ = false;
   bool observation_mode_ = false;
   double goal_radius_;
+  double coarse_goal_radius_;
   double diagnostics_log_period_sec_;
   double slow_planning_warning_ms_;
   double max_graph_age_sec_;

@@ -24,5 +24,6 @@
     odom_reset_distance: 3.0
     odom_reset_speed: 12.0
     goal_radius: 3.0
+    coarse_goal_radius: 0.75
     diagnostics_log_period_sec: 30.0
     slow_planning_warning_ms: 200.0
