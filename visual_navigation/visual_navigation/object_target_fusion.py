@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import deque
+from collections import Counter, deque
 import faulthandler
 import math
 import sys
@@ -83,12 +83,18 @@ class ObjectTargetFusion(Node):
         self._mask_ignored_reached = 0
         self._lidar_matched = 0
         self._lidar_refined = 0
+        self._lidar_failures: Counter[str] = Counter()
+        self._first_event_stamps: dict[str, float] = {}
         self._last_slow_warning = 0.0
         self._mask_rate = EventRate()
         self._lidar_rate = EventRate()
         self._timings = {
             name: TimingWindow()
             for name in ("decode", "vision", "lidar", "publish", "total")
+        }
+        self._message_ages = {
+            name: TimingWindow()
+            for name in ("mask", "lidar_match")
         }
 
         self.tf_buffer = Buffer(cache_time=Duration(seconds=10.0))
@@ -167,6 +173,8 @@ class ObjectTargetFusion(Node):
         callback_started = time.perf_counter()
         self._mask_received += 1
         self._mask_rate.tick()
+        self._record_message_age("mask", msg.header.stamp)
+        self._record_timeline_event("first_mask", msg.header.stamp)
         self._set_mask_stage("received", _mask_message_summary(msg))
         try:
             self._process_object_mask(msg)
@@ -210,21 +218,30 @@ class ObjectTargetFusion(Node):
         estimate = self.particle_filter.update_vision(observations)
         self._timings["vision"].add_seconds(time.perf_counter() - stage_started)
         self._set_mask_stage("match_lidar", f"buffer={len(self.lidar_buffer)}")
-        lidar_msg = self._nearest_lidar(msg.header.stamp)
-        if lidar_msg is not None:
+        lidar_match = self._nearest_lidar(msg.header.stamp)
+        if lidar_match is not None:
+            lidar_msg, lidar_age = lidar_match
             self._lidar_matched += 1
+            self._message_ages["lidar_match"].add_seconds(lidar_age)
             self._set_mask_stage(
                 "project_lidar",
                 f"frame={lidar_msg.header.frame_id}, points={lidar_msg.width * lidar_msg.height}",
             )
             stage_started = time.perf_counter()
-            lidar_measurement = self._lidar_measurement(observations, lidar_msg)
+            lidar_measurement, failure_reason = self._lidar_measurement(
+                observations,
+                lidar_msg,
+            )
             self._timings["lidar"].add_seconds(time.perf_counter() - stage_started)
             if lidar_measurement is not None:
                 position, support = lidar_measurement
                 self._lidar_refined += 1
                 self._set_mask_stage("update_lidar", f"support={support}")
                 estimate = self.particle_filter.update_lidar(position, support)
+            elif failure_reason is not None:
+                self._lidar_failures[failure_reason] += 1
+        else:
+            self._lidar_failures["no_time_matched_cloud"] += 1
 
         if estimate is None:
             return
@@ -240,6 +257,25 @@ class ObjectTargetFusion(Node):
         self._publish_particles(msg.header.stamp)
         self._timings["publish"].add_seconds(time.perf_counter() - stage_started)
         self._mask_processed += 1
+
+    def _record_message_age(self, name: str, stamp) -> None:
+        now = self.get_clock().now().nanoseconds * 1e-9
+        age = now - _stamp_seconds(stamp)
+        if math.isfinite(age) and age >= 0.0:
+            self._message_ages[name].add_seconds(age)
+
+    def _record_timeline_event(self, name: str, stamp, detail: str = "") -> None:
+        """关键状态只记录首次发生时间, 避免逐帧重复日志"""
+        if name in self._first_event_stamps:
+            return
+        event_stamp = _stamp_seconds(stamp)
+        self._first_event_stamps[name] = event_stamp
+        first_stamp = self._first_event_stamps.get("first_mask", event_stamp)
+        suffix = f", {detail}" if detail else ""
+        self.get_logger().info(
+            f"目标定位时间线, event={name}, stamp={event_stamp:.3f}, "
+            f"since_first_mask={event_stamp - first_stamp:.2f}s{suffix}"
+        )
 
     def _set_mask_stage(self, stage: str, detail: str = "") -> None:
         """首帧逐阶段记录, 后续由周期统计报告当前阶段"""
@@ -267,6 +303,10 @@ class ObjectTargetFusion(Node):
             name: timing.summary(reset=True)
             for name, timing in self._timings.items()
         }
+        age_summaries = {
+            name: timing.summary(reset=True)
+            for name, timing in self._message_ages.items()
+        }
         refine_ratio = 100.0 * self._lidar_refined / max(self._lidar_matched, 1)
         total = summaries["total"]
         self.get_logger().info(
@@ -277,6 +317,12 @@ class ObjectTargetFusion(Node):
             f"雷达{self._lidar_rate.sample(reset=True):.1f}Hz, "
             f"雷达精修={self._lidar_refined}/{self._lidar_matched}"
             f"({refine_ratio:.1f}%), "
+            f"精修失败={_counter_summary(self._lidar_failures)}, "
+            "消息年龄="
+            f"Mask平均{age_summaries['mask'].average_ms:.0f}/"
+            f"95%上限{age_summaries['mask'].p95_ms:.0f}ms, "
+            f"匹配点云时间差平均{age_summaries['lidar_match'].average_ms:.0f}/"
+            f"95%上限{age_summaries['lidar_match'].p95_ms:.0f}ms, "
             f"融合状态={_estimate_state_name(self.particle_filter.state)}, "
             f"总耗时=平均{total.average_ms:.0f}/95%上限{total.p95_ms:.0f}/"
             f"最大{total.maximum_ms:.0f}ms, "
@@ -291,6 +337,11 @@ class ObjectTargetFusion(Node):
         if estimate.state == self._last_logged_state:
             return
         self._last_logged_state = estimate.state
+        self._record_timeline_event(
+            estimate.state.lower(),
+            self.get_clock().now().to_msg(),
+            f"views={estimate.accepted_views}, confidence={estimate.confidence:.2f}",
+        )
         self.get_logger().info(
             f"目标融合状态变化, 状态={_estimate_state_name(estimate.state)}, "
             f"位置=({estimate.position[0]:.2f}, {estimate.position[1]:.2f}, "
@@ -338,7 +389,7 @@ class ObjectTargetFusion(Node):
             )
         return observations
 
-    def _nearest_lidar(self, stamp) -> PointCloud2 | None:
+    def _nearest_lidar(self, stamp) -> tuple[PointCloud2, float] | None:
         if not self.lidar_buffer:
             return None
         target_time = _stamp_seconds(stamp)
@@ -349,20 +400,20 @@ class ObjectTargetFusion(Node):
             ),
             key=lambda item: item[0],
         )
-        return lidar_msg if age <= self.max_lidar_age_sec else None
+        return (lidar_msg, age) if age <= self.max_lidar_age_sec else None
 
     def _lidar_measurement(
         self,
         observations: list[CameraObservation],
         lidar_msg: PointCloud2,
-    ) -> tuple[np.ndarray, int] | None:
+    ) -> tuple[tuple[np.ndarray, int] | None, str | None]:
         """把点云转到目标全局坐标系, 仅保留投影落入任一目标 Mask 的点"""
         points = _xyz_points(lidar_msg)
         if points.size == 0:
-            return None
+            return None, "empty_cloud"
         world_points = self._points_in_global_frame(points, lidar_msg)
         if world_points is None:
-            return None
+            return None, "tf_unavailable"
 
         mask_points = []
         for observation in observations:
@@ -388,12 +439,12 @@ class ObjectTargetFusion(Node):
 
         supported = [points for points in mask_points if points.size > 0]
         if not supported:
-            return None
+            return None, "no_points_in_mask"
         supported_points = np.vstack(supported)
         if supported_points.shape[0] < self.lidar_min_points:
-            return None
+            return None, "mask_points_insufficient"
 
-        measurement = _target_surface_measurement(
+        measurement, failure_reason = _target_surface_measurement_with_reason(
             supported_points,
             self.lidar_min_points,
             reference_position=np.mean(
@@ -402,8 +453,8 @@ class ObjectTargetFusion(Node):
             ),
         )
         if measurement is None:
-            return None
-        return measurement
+            return None, failure_reason
+        return measurement, None
 
     def _points_in_global_frame(
         self,
@@ -541,9 +592,23 @@ def _target_surface_measurement(
     reference_position: np.ndarray | None = None,
 ) -> tuple[np.ndarray, int] | None:
     """先移除局部地面, 再从有效高点簇中选择最近可见前景"""
+    measurement, _ = _target_surface_measurement_with_reason(
+        points,
+        minimum_support,
+        reference_position,
+    )
+    return measurement
+
+
+def _target_surface_measurement_with_reason(
+    points: np.ndarray,
+    minimum_support: int,
+    reference_position: np.ndarray | None = None,
+) -> tuple[tuple[np.ndarray, int] | None, str | None]:
+    """返回目标表面测量和失败阶段, 供周期诊断汇总"""
     points = np.asarray(points, dtype=np.float64).reshape(-1, 3)
     if points.shape[0] < minimum_support:
-        return None
+        return None, "mask_points_insufficient"
 
     ground_height = float(np.quantile(points[:, 2], 0.2))
     elevated = points[
@@ -551,6 +616,7 @@ def _target_surface_measurement(
     ]
     elevated_minimum = max(6, minimum_support // 3)
     candidates = elevated if elevated.shape[0] >= elevated_minimum else points
+    used_ground_fallback = elevated.shape[0] < elevated_minimum
 
     tree = cKDTree(candidates[:, :2])
     neighborhoods = tree.query_ball_point(
@@ -562,7 +628,12 @@ def _target_surface_measurement(
         indices for indices in neighborhoods if len(indices) >= required_cluster_size
     ]
     if not valid_neighborhoods:
-        return None
+        failure_reason = (
+            "ground_filter_insufficient"
+            if used_ground_fallback
+            else "foreground_cluster_insufficient"
+        )
+        return None, failure_reason
     if reference_position is None:
         selected_indices = max(valid_neighborhoods, key=len)
     else:
@@ -574,7 +645,25 @@ def _target_surface_measurement(
 
         selected_indices = min(valid_neighborhoods, key=median_range)
     cluster = candidates[np.asarray(selected_indices, dtype=np.int64)]
-    return np.median(cluster, axis=0), int(cluster.shape[0])
+    return (np.median(cluster, axis=0), int(cluster.shape[0])), None
+
+
+def _counter_summary(counter: Counter[str]) -> str:
+    if not counter:
+        return "无"
+    names = {
+        "no_time_matched_cloud": "无时间匹配点云",
+        "empty_cloud": "空点云",
+        "tf_unavailable": "点云TF不可用",
+        "no_points_in_mask": "Mask内无投影点",
+        "mask_points_insufficient": "Mask内点数不足",
+        "ground_filter_insufficient": "地面过滤后不足",
+        "foreground_cluster_insufficient": "前景簇不足",
+    }
+    return "/".join(
+        f"{names.get(reason, reason)}{count}"
+        for reason, count in sorted(counter.items())
+    )
 
 
 def _target_marker(estimate: CoreTargetEstimate, frame_id: str, stamp) -> Marker:

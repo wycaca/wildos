@@ -12,6 +12,7 @@ from visual_navigation.object_target_fusion import (
     _mask_array,
     _target_ray_marker,
     _target_surface_measurement,
+    _target_surface_measurement_with_reason,
     _target_marker,
     _xyz_points,
 )
@@ -72,6 +73,12 @@ def test_mask_callback_logs_exception_without_terminating_node():
             raise RuntimeError("synthetic callback failure")
 
         def _warn_if_slow(self, elapsed_seconds, stage):
+            pass
+
+        def _record_message_age(self, name, stamp):
+            pass
+
+        def _record_timeline_event(self, name, stamp, detail=""):
             pass
 
     harness = CallbackHarness()
@@ -254,3 +261,28 @@ def test_lidar_measurement_prefers_nearest_foreground_cluster():
     position, support = measurement
     assert support >= 10
     assert np.linalg.norm(position - np.array([4.0, 0.0, 0.7])) < 0.5
+
+
+def test_lidar_failure_reports_insufficient_mask_points():
+    """Mask 内点数不足需要有独立失败代码"""
+    measurement, reason = _target_surface_measurement_with_reason(
+        np.zeros((5, 3)),
+        minimum_support=30,
+    )
+
+    assert measurement is None
+    assert reason == "mask_points_insufficient"
+
+
+def test_lidar_failure_reports_foreground_cluster_shortage():
+    """高点存在但不能形成空间簇时需要区分为前景聚类失败"""
+    x = np.arange(30, dtype=float) * 2.0
+    points = np.column_stack((x, np.zeros_like(x), x * 0.1))
+
+    measurement, reason = _target_surface_measurement_with_reason(
+        points,
+        minimum_support=18,
+    )
+
+    assert measurement is None
+    assert reason == "foreground_cluster_insufficient"
