@@ -7,6 +7,7 @@ from tf2_msgs.msg import TFMessage
 
 from graph_construction.dlio_tf_adapter import (
     HealthStateFilter,
+    OdometryHealthMonitor,
     align_odometry,
     alignment_from_odometry,
     alignment_to_transform,
@@ -45,6 +46,13 @@ def test_health_filter_requires_stable_failure_and_recovery():
 
 
 def test_health_filter_immediately_rejects_nonfinite_state():
+    health_filter = HealthStateFilter(5, 2)
+
+    assert health_filter.update(True) is True
+    assert health_filter.update(False, force_unhealthy=True) is False
+
+
+def test_health_filter_immediately_rejects_pose_jump():
     health_filter = HealthStateFilter(5, 2)
 
     assert health_filter.update(True) is True
@@ -177,8 +185,84 @@ def test_health_check_rejects_excessive_speed():
     assert metrics[2] == pytest.approx(6.0)
 
 
-def _odom(x: float, y: float, z: float, yaw_deg: float) -> Odometry:
+def test_health_monitor_warns_but_keeps_gradual_reference_drift():
+    monitor = _health_monitor()
+    reference = _odom(0.0, 0.0, 0.0, 0.0, stamp_sec=1)
+    initial = _odom(0.0, 0.0, 0.0, 0.0, stamp_sec=1)
+    drifted = _odom(0.6, 0.0, 0.0, 12.0, stamp_sec=1, stamp_nanosec=100_000_000)
+
+    assert monitor.evaluate(initial, reference).hard_healthy
+    evaluation = monitor.evaluate(drifted, reference)
+
+    assert not evaluation.warning_healthy
+    assert evaluation.hard_healthy
+    assert evaluation.jump_metrics[0] == pytest.approx(0.6)
+
+
+def test_health_monitor_rejects_abrupt_residual_jump():
+    monitor = _health_monitor(max_position_jump=0.5)
+    reference = _odom(0.0, 0.0, 0.0, 0.0, stamp_sec=1)
+    initial = _odom(0.0, 0.0, 0.0, 0.0, stamp_sec=1)
+    jumped = _odom(1.0, 0.0, 0.0, 0.0, stamp_sec=1, stamp_nanosec=100_000_000)
+
+    monitor.evaluate(initial, reference)
+    evaluation = monitor.evaluate(jumped, reference)
+
+    assert not evaluation.hard_healthy
+    assert not evaluation.instantaneous_healthy
+    assert evaluation.jump_metrics[0] == pytest.approx(1.0)
+
+
+def test_health_monitor_resets_jump_baseline_after_long_gap():
+    monitor = _health_monitor(max_position_jump=0.5, jump_reset_sec=0.5)
+    reference = _odom(0.0, 0.0, 0.0, 0.0, stamp_sec=1)
+    initial = _odom(0.0, 0.0, 0.0, 0.0, stamp_sec=1)
+    after_gap = _odom(1.0, 0.0, 0.0, 0.0, stamp_sec=2)
+
+    monitor.evaluate(initial, reference)
+    evaluation = monitor.evaluate(after_gap, reference)
+
+    assert evaluation.hard_healthy
+    assert evaluation.jump_metrics == (0.0, 0.0)
+
+
+def test_health_monitor_rejects_catastrophic_absolute_error():
+    monitor = _health_monitor(hard_max_position_error=5.0)
+    reference = _odom(0.0, 0.0, 0.0, 0.0, stamp_sec=1)
+    aligned = _odom(5.1, 0.0, 0.0, 0.0, stamp_sec=1)
+
+    evaluation = monitor.evaluate(aligned, reference)
+
+    assert not evaluation.hard_healthy
+
+
+def _health_monitor(**overrides) -> OdometryHealthMonitor:
+    parameters = {
+        "max_position_error": 0.5,
+        "max_orientation_error_deg": 10.0,
+        "max_linear_speed": 5.0,
+        "max_position_jump": 1.0,
+        "max_orientation_jump_deg": 20.0,
+        "hard_max_position_error": 5.0,
+        "hard_max_orientation_error_deg": 60.0,
+        "recovery_ratio": 0.8,
+        "jump_reset_sec": 0.5,
+    }
+    parameters.update(overrides)
+    return OdometryHealthMonitor(**parameters)
+
+
+def _odom(
+    x: float,
+    y: float,
+    z: float,
+    yaw_deg: float,
+    stamp_sec: int = 0,
+    stamp_nanosec: int = 0,
+) -> Odometry:
     odom = Odometry()
+    odom.header.stamp.sec = stamp_sec
+    odom.header.stamp.nanosec = stamp_nanosec
     odom.pose.pose.position.x = x
     odom.pose.pose.position.y = y
     odom.pose.pose.position.z = z

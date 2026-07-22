@@ -29,6 +29,151 @@ class RigidTransform:
     rotation: tuple[float, float, float, float]
 
 
+@dataclass(frozen=True)
+class OdometryHealthEvaluation:
+    """区分参考漂移告警和需要断流的硬异常"""
+
+    metrics: tuple[float, float, float]
+    jump_metrics: tuple[float, float]
+    warning_healthy: bool
+    hard_healthy: bool
+    recovery_healthy: bool
+    instantaneous_healthy: bool
+    finite: bool
+
+
+class OdometryHealthMonitor:
+    """监测参考残差变化, 避免累计漂移永久关闭里程计链路"""
+
+    def __init__(
+        self,
+        max_position_error: float,
+        max_orientation_error_deg: float,
+        max_linear_speed: float,
+        max_position_jump: float,
+        max_orientation_jump_deg: float,
+        hard_max_position_error: float,
+        hard_max_orientation_error_deg: float,
+        recovery_ratio: float,
+        jump_reset_sec: float,
+    ) -> None:
+        self.max_position_error = max(0.0, float(max_position_error))
+        self.max_orientation_error_deg = max(
+            0.0,
+            float(max_orientation_error_deg),
+        )
+        self.max_linear_speed = max(0.0, float(max_linear_speed))
+        self.max_position_jump = max(0.0, float(max_position_jump))
+        self.max_orientation_jump_deg = max(
+            0.0,
+            float(max_orientation_jump_deg),
+        )
+        self.hard_max_position_error = max(
+            self.max_position_error,
+            float(hard_max_position_error),
+        )
+        self.hard_max_orientation_error_deg = max(
+            self.max_orientation_error_deg,
+            float(hard_max_orientation_error_deg),
+        )
+        self.recovery_ratio = min(max(float(recovery_ratio), 0.1), 1.0)
+        self.jump_reset_ns = int(max(0.0, float(jump_reset_sec)) * 1.0e9)
+        self._previous_residual: RigidTransform | None = None
+        self._previous_stamp_ns: int | None = None
+
+    def evaluate(
+        self,
+        aligned: Odometry,
+        reference: Odometry | None,
+    ) -> OdometryHealthEvaluation:
+        """累计参考误差只告警, 突变和灾难性误差才触发硬门控"""
+        metrics = odometry_health_metrics(aligned, reference)
+        finite = _odometry_values_are_finite(aligned, metrics)
+        jump_metrics = self._residual_jump(aligned, reference)
+        warning_healthy = (
+            finite
+            and metrics[0] <= self.max_position_error
+            and metrics[1] <= self.max_orientation_error_deg
+        )
+        instantaneous_healthy = (
+            finite
+            and jump_metrics[0] <= self.max_position_jump
+            and jump_metrics[1] <= self.max_orientation_jump_deg
+        )
+        hard_healthy = self._within_hard_limits(
+            metrics,
+            jump_metrics,
+            ratio=1.0,
+            finite=finite,
+        )
+        recovery_healthy = self._within_hard_limits(
+            metrics,
+            jump_metrics,
+            ratio=self.recovery_ratio,
+            finite=finite,
+        )
+        return OdometryHealthEvaluation(
+            metrics=metrics,
+            jump_metrics=jump_metrics,
+            warning_healthy=warning_healthy,
+            hard_healthy=hard_healthy,
+            recovery_healthy=recovery_healthy,
+            instantaneous_healthy=instantaneous_healthy,
+            finite=finite,
+        )
+
+    def _within_hard_limits(
+        self,
+        metrics: tuple[float, float, float],
+        jump_metrics: tuple[float, float],
+        ratio: float,
+        finite: bool,
+    ) -> bool:
+        """检查速度、瞬时残差跳变和灾难性累计偏差"""
+        return (
+            finite
+            and metrics[0] <= self.hard_max_position_error * ratio
+            and metrics[1] <= self.hard_max_orientation_error_deg * ratio
+            and metrics[2] <= self.max_linear_speed * ratio
+            and jump_metrics[0] <= self.max_position_jump * ratio
+            and jump_metrics[1] <= self.max_orientation_jump_deg * ratio
+        )
+
+    def _residual_jump(
+        self,
+        aligned: Odometry,
+        reference: Odometry | None,
+    ) -> tuple[float, float]:
+        """计算相邻帧参考残差的位姿变化"""
+        if reference is None:
+            self._previous_residual = None
+            self._previous_stamp_ns = None
+            return (0.0, 0.0)
+
+        residual = _compose(_inverse(_pose_to_rigid(reference)), _pose_to_rigid(aligned))
+        stamp_ns = _stamp_nanoseconds(aligned)
+        if self._should_reset_jump_history(stamp_ns):
+            jump_metrics = (0.0, 0.0)
+        else:
+            delta = _compose(_inverse(self._previous_residual), residual)
+            jump_metrics = (
+                math.sqrt(sum(value * value for value in delta.translation)),
+                _rotation_angle_deg(delta.rotation),
+            )
+        self._previous_residual = residual
+        self._previous_stamp_ns = stamp_ns
+        return jump_metrics
+
+    def _should_reset_jump_history(self, stamp_ns: int) -> bool:
+        """时间回退或长时间断帧后重新建立突变基线"""
+        if self._previous_residual is None or self._previous_stamp_ns is None:
+            return True
+        delta_ns = stamp_ns - self._previous_stamp_ns
+        if delta_ns <= 0:
+            return True
+        return self.jump_reset_ns > 0 and delta_ns > self.jump_reset_ns
+
+
 class HealthStateFilter:
     """Debounce transient odometry errors and require stable recovery"""
 
@@ -241,6 +386,14 @@ def _normalize_quaternion(
     return tuple(value / norm for value in rotation)
 
 
+def _rotation_angle_deg(
+    rotation: tuple[float, float, float, float],
+) -> float:
+    """返回单位四元数表示的最小旋转角"""
+    normalized = _normalize_quaternion(rotation)
+    return math.degrees(2.0 * math.acos(min(1.0, abs(normalized[3]))))
+
+
 def _stamp_nanoseconds(msg: Odometry) -> int:
     return msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
 
@@ -352,6 +505,11 @@ class DlioTfAdapter(Node):
         self.declare_parameter("max_position_error", 0.5)
         self.declare_parameter("max_orientation_error_deg", 10.0)
         self.declare_parameter("max_linear_speed", 5.0)
+        self.declare_parameter("max_position_jump", 0.5)
+        self.declare_parameter("max_orientation_jump_deg", 20.0)
+        self.declare_parameter("hard_max_position_error", 5.0)
+        self.declare_parameter("hard_max_orientation_error_deg", 60.0)
+        self.declare_parameter("health_jump_reset_sec", 0.5)
         self.declare_parameter("unhealthy_confirm_frames", 3)
         self.declare_parameter("healthy_confirm_frames", 5)
         self.declare_parameter("health_recovery_ratio", 0.8)
@@ -389,6 +547,21 @@ class DlioTfAdapter(Node):
         self.max_linear_speed = float(
             self.get_parameter("max_linear_speed").value
         )
+        self.max_position_jump = float(
+            self.get_parameter("max_position_jump").value
+        )
+        self.max_orientation_jump_deg = float(
+            self.get_parameter("max_orientation_jump_deg").value
+        )
+        self.hard_max_position_error = float(
+            self.get_parameter("hard_max_position_error").value
+        )
+        self.hard_max_orientation_error_deg = float(
+            self.get_parameter("hard_max_orientation_error_deg").value
+        )
+        self.health_jump_reset_sec = float(
+            self.get_parameter("health_jump_reset_sec").value
+        )
         self.health_recovery_ratio = min(
             max(float(self.get_parameter("health_recovery_ratio").value), 0.1),
             1.0,
@@ -396,6 +569,17 @@ class DlioTfAdapter(Node):
         self.health_filter = HealthStateFilter(
             int(self.get_parameter("unhealthy_confirm_frames").value),
             int(self.get_parameter("healthy_confirm_frames").value),
+        )
+        self.health_monitor = OdometryHealthMonitor(
+            max_position_error=self.max_position_error,
+            max_orientation_error_deg=self.max_orientation_error_deg,
+            max_linear_speed=self.max_linear_speed,
+            max_position_jump=self.max_position_jump,
+            max_orientation_jump_deg=self.max_orientation_jump_deg,
+            hard_max_position_error=self.hard_max_position_error,
+            hard_max_orientation_error_deg=self.hard_max_orientation_error_deg,
+            recovery_ratio=self.health_recovery_ratio,
+            jump_reset_sec=self.health_jump_reset_sec,
         )
         diagnostic_interval = max(
             float(self.get_parameter("diagnostic_interval").value),
@@ -410,7 +594,10 @@ class DlioTfAdapter(Node):
         self._health_status: bool | None = None
         self._health_episodes = 0
         self._raw_unhealthy_samples = 0
+        self._reference_warning_samples = 0
+        self._last_reference_warning = 0.0
         self._max_health_metrics = [0.0, 0.0, 0.0]
+        self._max_jump_metrics = [0.0, 0.0]
         self._callback_timing = TimingWindow()
         self._input_rate = EventRate()
         self.extrinsics_ready = not bool(self.reference_odom_topic)
@@ -531,29 +718,33 @@ class DlioTfAdapter(Node):
             self.base_frame,
         )
         reference = self._nearest_reference(msg)
-        healthy, metrics = is_odometry_healthy(
-            aligned_odom,
-            reference,
-            self.max_position_error,
-            self.max_orientation_error_deg,
-            self.max_linear_speed,
-        )
+        evaluation = self.health_monitor.evaluate(aligned_odom, reference)
+        metrics = evaluation.metrics
         self._max_health_metrics = [
             max(previous, current)
             for previous, current in zip(self._max_health_metrics, metrics)
         ]
-        if not healthy:
+        self._max_jump_metrics = [
+            max(previous, current)
+            for previous, current in zip(
+                self._max_jump_metrics,
+                evaluation.jump_metrics,
+            )
+        ]
+        if not evaluation.hard_healthy:
             self._raw_unhealthy_samples += 1
-        recovery_healthy, _ = is_odometry_healthy(
-            aligned_odom,
-            reference,
-            self.max_position_error * self.health_recovery_ratio,
-            self.max_orientation_error_deg * self.health_recovery_ratio,
-            self.max_linear_speed * self.health_recovery_ratio,
+        if not evaluation.warning_healthy:
+            self._reference_warning_samples += 1
+            self._warn_reference_drift(metrics)
+        candidate = (
+            evaluation.recovery_healthy
+            if self.health_filter.state is False
+            else evaluation.hard_healthy
         )
-        finite = _odometry_values_are_finite(aligned_odom, metrics)
-        candidate = recovery_healthy if self.health_filter.state is False else healthy
-        transition = self.health_filter.update(candidate, force_unhealthy=not finite)
+        transition = self.health_filter.update(
+            candidate,
+            force_unhealthy=not evaluation.instantaneous_healthy,
+        )
         if transition is not None:
             self._publish_health(transition)
             if not transition:
@@ -562,7 +753,9 @@ class DlioTfAdapter(Node):
                     "DLIO 位姿异常已确认, 已暂停 odom、TF 和点云输出, "
                     f"position_error={metrics[0]:.3f}m, "
                     f"orientation_error={metrics[1]:.2f}deg, "
-                    f"speed={metrics[2]:.3f}m/s"
+                    f"speed={metrics[2]:.3f}m/s, "
+                    f"position_jump={evaluation.jump_metrics[0]:.3f}m, "
+                    f"orientation_jump={evaluation.jump_metrics[1]:.2f}deg"
                 )
             elif self._health_episodes:
                 self.get_logger().info(
@@ -596,6 +789,21 @@ class DlioTfAdapter(Node):
             self._logged_pose = True
         self._callback_timing.add_seconds(time.perf_counter() - callback_started)
 
+    def _warn_reference_drift(
+        self,
+        metrics: tuple[float, float, float],
+    ) -> None:
+        """参考累计漂移只做低频告警, 不直接中断 DLIO 输出"""
+        now = time.monotonic()
+        if now - self._last_reference_warning < 30.0:
+            return
+        self._last_reference_warning = now
+        self.get_logger().warn(
+            "DLIO 与参考里程计存在累计漂移, 继续输出并监测瞬时稳定性, "
+            f"position_error={metrics[0]:.3f}m, "
+            f"orientation_error={metrics[1]:.2f}deg"
+        )
+
     def _publish_health(self, healthy: bool) -> bool:
         if self._health_status == healthy:
             return False
@@ -608,19 +816,25 @@ class DlioTfAdapter(Node):
         timing = self._callback_timing.summary(reset=True)
         input_rate = self._input_rate.sample(reset=True)
         maxima = self._max_health_metrics
+        jump_maxima = self._max_jump_metrics
         self.get_logger().info(
             "DLIO 位姿状态, "
             f"输入频率={input_rate:.1f}Hz, "
             f"状态={'正常' if self.health_filter.state else '暂停'}, "
             f"累计异常={self._health_episodes}次, "
-            f"本周期异常帧={self._raw_unhealthy_samples}, "
+            f"本周期硬异常帧={self._raw_unhealthy_samples}, "
+            f"参考漂移告警帧={self._reference_warning_samples}, "
             f"最大误差=位置{maxima[0]:.3f}m/角度{maxima[1]:.2f}度/"
             f"速度{maxima[2]:.3f}m/s, "
+            f"最大瞬时跳变=位置{jump_maxima[0]:.3f}m/"
+            f"角度{jump_maxima[1]:.2f}度, "
             f"回调耗时=平均{timing.average_ms:.1f}/95%上限{timing.p95_ms:.1f}/"
             f"最大{timing.maximum_ms:.1f}ms"
         )
         self._raw_unhealthy_samples = 0
+        self._reference_warning_samples = 0
         self._max_health_metrics = [0.0, 0.0, 0.0]
+        self._max_jump_metrics = [0.0, 0.0]
 
     def _nearest_reference(self, msg: Odometry) -> Odometry | None:
         if not self.reference_messages:
