@@ -50,6 +50,13 @@ dependencies = [
   "shapely>=2.1.2",
 ]
 
+[dependency-groups]
+test = [
+  "flake8",
+  "pydocstyle",
+  "pytest>=7,<9",
+]
+
 [tool.uv.sources]
 explorfm = { path = "explorfm", editable = true }
 nvidia-radio = { path = "nvidia_radio", editable = true }
