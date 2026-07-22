@@ -47,6 +47,7 @@ class ObjectSearchGoalMux(Node):
         self.declare_parameter("target_observation_scan_yaw_deg", 20.0)
         self.declare_parameter("target_observation_scan_tolerance_deg", 5.0)
         self.declare_parameter("target_observation_scan_hold_sec", 0.5)
+        self.declare_parameter("pending_evidence_protection_sec", 3.0)
         self.declare_parameter("nav_graph_topic", "/spot1/nav_graph")
         self.declare_parameter("scored_nav_graph_topic", "/spot1/scored_nav_graph")
         self.declare_parameter("startup_observation_enabled", True)
@@ -144,6 +145,10 @@ class ObjectSearchGoalMux(Node):
             self._param_float("target_observation_scan_hold_sec"),
             0.0,
         )
+        self.pending_evidence_protection_sec = max(
+            self._param_float("pending_evidence_protection_sec"),
+            0.0,
+        )
         self.nav_graph_topic = self._param_str("nav_graph_topic")
         self.scored_nav_graph_topic = self._param_str("scored_nav_graph_topic")
         self.startup_observation_enabled = bool(
@@ -227,6 +232,7 @@ class ObjectSearchGoalMux(Node):
         self.target_observation_phase_time = None
         self.target_reposition_goal: PoseStamped | None = None
         self.target_reposition_attempts = 0
+        self.pending_evidence_time = None
 
         self.goal_pub = self.create_publisher(PoseStamped, self.output_goal_topic, 10)
         self.status_pub = self.create_publisher(String, self.status_topic, 10)
@@ -362,6 +368,22 @@ class ObjectSearchGoalMux(Node):
             and float(msg.confidence) >= self.coarse_target_min_confidence
             and msg.state in {"TRACKING", "STABLE_VISION", "LIDAR_LOCKED"}
         )
+        if (
+            not msg.stable
+            and not coarse_ready
+            and int(msg.accepted_views) >= 1
+            and msg.state in {"PENDING", "TRACKING"}
+        ):
+            protection_was_active = self._pending_evidence_protection_active(
+                self.latest_target_estimate_time
+            )
+            self.pending_evidence_time = self.latest_target_estimate_time
+            if not protection_was_active:
+                self.get_logger().info(
+                    "目标候选证据保护已启用, "
+                    f"duration={self.pending_evidence_protection_sec:.1f}s, "
+                    "保持当前探索分支并冻结失败计时"
+                )
         if not msg.stable and not coarse_ready:
             return
         if self.metric_target_stable and not msg.stable:
@@ -407,6 +429,7 @@ class ObjectSearchGoalMux(Node):
         self.metric_target_confidence = float(msg.confidence)
         self.metric_target_source = int(msg.source)
         self.metric_target_stable = bool(msg.stable)
+        self.pending_evidence_time = None
         if msg.stable:
             self._reset_target_observation()
         elif target_moved and self.target_reposition_goal is not None:
@@ -1015,7 +1038,17 @@ class ObjectSearchGoalMux(Node):
             f"{goal.pose.position.y:.2f},"
             f"{goal.pose.position.z:.2f})",
         ]
+        if (
+            state == ObjectSearchState.SEARCHING_WITH_INITIAL_GOAL
+            and self._pending_evidence_protection_active(self.get_clock().now())
+        ):
+            parts.append("pending_protection=true")
         return ", ".join(parts)
+
+    def _pending_evidence_protection_active(self, now) -> bool:
+        return self._age_seconds(now, self.pending_evidence_time) <= (
+            self.pending_evidence_protection_sec
+        )
 
 
 def _yaw_from_quaternion(q) -> float:

@@ -271,6 +271,10 @@ def test_single_view_pending_estimate_keeps_initial_goal(mux_node):
 
     assert state == ObjectSearchState.SEARCHING_WITH_INITIAL_GOAL
     assert goal.pose.position.x == pytest.approx(20.0)
+    assert "pending_protection=true" in mux_node._status_text(state, goal)
+
+    mux_node.pending_evidence_protection_sec = -1.0
+    assert "pending_protection=true" not in mux_node._status_text(state, goal)
 
 
 def test_two_view_tracking_estimate_replaces_initial_goal(mux_node):

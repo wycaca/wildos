@@ -215,6 +215,17 @@ private:
 
   void on_object_search_status(const std_msgs::msg::String& msg)
   {
+    const bool target_evidence_pending =
+      msg.data.find("pending_protection=true") != std::string::npos;
+    if (target_evidence_pending != target_evidence_pending_)
+    {
+      target_evidence_pending_ = target_evidence_pending;
+      RCLCPP_INFO(
+        this->get_logger(),
+        "目标候选证据保护%s, 探索分支失败计时=%s",
+        target_evidence_pending_ ? "启用" : "结束",
+        target_evidence_pending_ ? "冻结" : "恢复");
+    }
     const std::string state = object_search_state(msg.data);
     if (state.empty() || state == object_search_state_)
     {
@@ -408,7 +419,7 @@ private:
         active_goal_radius,
         this->get_clock()->now(),
         robot_position,
-        timing_inputs_healthy);
+        timing_inputs_healthy && !target_evidence_pending_);
       const double planning_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - planning_started).count();
       record_planning_timing(planning_ms);
@@ -616,6 +627,7 @@ private:
   std::string object_search_state_;
   bool directional_exploration_mode_ = false;
   bool observation_mode_ = false;
+  bool target_evidence_pending_ = false;
   double goal_radius_;
   double coarse_goal_radius_;
   double diagnostics_log_period_sec_;
