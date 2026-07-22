@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from math import hypot
 from typing import Dict, Iterable, List, Tuple
 
@@ -8,6 +9,17 @@ from scipy.spatial import cKDTree
 
 from graph_construction.graph_memory import GraphState, InternalEdge
 from graph_construction.grid_types import ClassifiedGrid
+
+
+@dataclass
+class EdgeBuildStats:
+    """记录最近一帧边候选和碰撞检查工作量"""
+
+    candidate_pair_count: int = 0
+    clearance_check_count: int = 0
+    historical_check_count: int = 0
+    anchor_check_count: int = 0
+    selected_edge_count: int = 0
 
 
 class EdgeBuilder:
@@ -23,10 +35,13 @@ class EdgeBuilder:
         edge_radius: float,
         max_neighbors_per_node: int = 4,
         current_node_max_neighbors: int = 12,
+        max_candidates_per_node: int = 24,
     ) -> None:
         self.edge_radius = edge_radius
         self.max_neighbors_per_node = max_neighbors_per_node
         self.current_node_max_neighbors = current_node_max_neighbors
+        self.max_candidates_per_node = max(1, int(max_candidates_per_node))
+        self.last_stats = EdgeBuildStats()
 
     def build_edges(
         self,
@@ -61,36 +76,64 @@ class EdgeBuilder:
             if focus_node_ids is None
             else set(focus_node_ids)
         )
+        self.last_stats = EdgeBuildStats()
         selected_edges: Dict[Tuple[int, int], InternalEdge] = {}
         candidate_edges: Dict[int, List[Tuple[float, int, InternalEdge]]] = {
             node.node_id: []
             for node in nodes
         }
 
-        if len(nodes) >= 2:
+        output_nodes = (
+            nodes
+            if focus_ids is None
+            else [node for node in nodes if node.node_id in focus_ids]
+        )
+        nearby_pairs: set[Tuple[int, int]] = set()
+        if len(nodes) >= 2 and output_nodes:
             positions = np.asarray(
                 [(node.position[0], node.position[1]) for node in nodes],
                 dtype=np.float64,
             )
+            node_index = {
+                node.node_id: index
+                for index, node in enumerate(nodes)
+            }
             spatial_index = cKDTree(positions)
-            nearby_pairs = sorted(spatial_index.query_pairs(self.edge_radius))
-        else:
-            nearby_pairs = []
+            query_count = min(
+                len(nodes),
+                self.max_candidates_per_node + 1,
+            )
+            for node in output_nodes:
+                index_a = node_index[node.node_id]
+                distances, indices = spatial_index.query(
+                    positions[index_a],
+                    k=query_count,
+                    distance_upper_bound=self.edge_radius,
+                )
+                for distance, index_b in zip(
+                    np.atleast_1d(distances),
+                    np.atleast_1d(indices),
+                ):
+                    if (
+                        not np.isfinite(distance)
+                        or int(index_b) >= len(nodes)
+                        or int(index_b) == index_a
+                    ):
+                        continue
+                    nearby_pairs.add(
+                        tuple(sorted((index_a, int(index_b))))
+                    )
+        self.last_stats.candidate_pair_count = len(nearby_pairs)
 
-        for index_a, index_b in nearby_pairs:
+        for index_a, index_b in sorted(nearby_pairs):
             node_a = nodes[index_a]
             node_b = nodes[index_b]
-            if (
-                focus_ids is not None
-                and node_a.node_id not in focus_ids
-                and node_b.node_id not in focus_ids
-            ):
-                continue
             dx = node_a.position[0] - node_b.position[0]
             dy = node_a.position[1] - node_b.position[1]
             distance = hypot(dx, dy)
 
             # 只有整条走廊都远离 obstacle 和 unknown, 才允许 planner 使用这条边
+            self.last_stats.clearance_check_count += 1
             if not _edge_has_clearance(
                 grid,
                 (node_a.position[0], node_a.position[1]),
@@ -106,14 +149,15 @@ class EdgeBuilder:
                 to_id=node_b.node_id,
                 cost=distance,
             )
-            candidate_edges[node_a.node_id].append((distance, node_b.node_id, edge))
-            candidate_edges[node_b.node_id].append((distance, node_a.node_id, edge))
+            if focus_ids is None or node_a.node_id in focus_ids:
+                candidate_edges[node_a.node_id].append(
+                    (distance, node_b.node_id, edge)
+                )
+            if focus_ids is None or node_b.node_id in focus_ids:
+                candidate_edges[node_b.node_id].append(
+                    (distance, node_a.node_id, edge)
+                )
 
-        output_nodes = (
-            nodes
-            if focus_ids is None
-            else [node for node in nodes if node.node_id in focus_ids]
-        )
         for node in output_nodes:
             max_neighbors = self._neighbor_limit(graph, node.node_id)
             sorted_candidates = sorted(
@@ -124,6 +168,7 @@ class EdgeBuilder:
                 key = _edge_key(edge.from_id, edge.to_id)
                 selected_edges[key] = edge
 
+        self.last_stats.selected_edge_count = len(selected_edges)
         return list(selected_edges.values())
 
     def merge_historical_edges(
@@ -164,6 +209,7 @@ class EdgeBuilder:
             dy = node_a.position[1] - node_b.position[1]
             if hypot(dx, dy) > self.edge_radius:
                 continue
+            self.last_stats.historical_check_count += 1
             if not _historical_edge_has_no_local_contradiction(
                 grid,
                 (node_a.position[0], node_a.position[1]),
@@ -221,6 +267,7 @@ class EdgeBuilder:
             distance = hypot(dx, dy)
             if distance > radius:
                 continue
+            self.last_stats.anchor_check_count += 1
             if not _historical_edge_has_no_local_contradiction(
                 grid,
                 (anchor.position[0], anchor.position[1]),

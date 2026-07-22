@@ -220,6 +220,43 @@ def test_edge_builder_focus_connects_to_stable_neighbor():
     } == {(focus.node_id, neighbor.node_id)}
 
 
+def test_edge_builder_limits_candidates_for_focused_update():
+    """局部边更新只检查 focus 节点的有限近邻"""
+    grid = ClassifiedGrid(
+        width=60,
+        height=3,
+        resolution=1.0,
+        origin_x=0.0,
+        origin_y=0.0,
+        frame_id="map",
+        free=np.ones((3, 60), dtype=bool),
+        obstacle=np.zeros((3, 60), dtype=bool),
+        unknown=np.zeros((3, 60), dtype=bool),
+    )
+    graph = GraphState()
+    nodes = [
+        graph.create_node((index + 0.5, 1.5, 0.0), stamp_seconds=1.0)
+        for index in range(50)
+    ]
+    edge_builder = EdgeBuilder(
+        edge_radius=50.0,
+        max_neighbors_per_node=4,
+        max_candidates_per_node=6,
+    )
+
+    edges = edge_builder.build_edges(
+        graph,
+        grid,
+        distance_to_mask(grid.obstacle, grid.resolution),
+        distance_to_mask(grid.unknown, grid.resolution),
+        focus_node_ids={nodes[25].node_id},
+    )
+
+    assert len(edges) == 4
+    assert edge_builder.last_stats.candidate_pair_count == 6
+    assert edge_builder.last_stats.clearance_check_count == 6
+
+
 def test_historical_edge_is_kept_when_current_grid_becomes_unknown():
     """验证当前局部图变 unknown 时不会误删历史边"""
     free = np.zeros((3, 5), dtype=bool)

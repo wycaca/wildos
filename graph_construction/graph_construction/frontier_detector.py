@@ -48,14 +48,19 @@ class FrontierDetector:
         )
         self._latest_frontier_mask: np.ndarray | None = None
         self._latest_frontier_grid_id: int | None = None
+        self.last_candidate_count = 0
 
     @property
     def active_owner_count(self) -> int:
         """返回当前活动 Frontier owner 数量"""
         return len(self._active_owner_ids)
 
-    def detect_frontier_cells(self, grid: ClassifiedGrid) -> List[GridIndex]:
-        """扫描所有 free cell, 找出和 unknown 相邻的边界 cell"""
+    def detect_frontier_cells(
+        self,
+        grid: ClassifiedGrid,
+        candidate_region: np.ndarray | None = None,
+    ) -> List[GridIndex]:
+        """更新完整 Frontier mask, 只返回变化区域内的新候选"""
         touches_unknown = ndimage.binary_dilation(
             grid.unknown,
             structure=np.ones((3, 3), dtype=bool),
@@ -73,9 +78,14 @@ class FrontierDetector:
             frontier[:, -margin_cells:] = False
         self._latest_frontier_mask = frontier
         self._latest_frontier_grid_id = id(grid)
+        candidates = frontier
+        if candidate_region is not None:
+            if candidate_region.shape != frontier.shape:
+                raise ValueError("candidate_region shape must match frontier mask")
+            candidates = frontier & candidate_region
         return [
             (int(ix), int(iy))
-            for iy, ix in np.argwhere(frontier)
+            for iy, ix in np.argwhere(candidates)
         ]
 
     def assign_frontiers(
@@ -106,6 +116,7 @@ class FrontierDetector:
         )
 
         candidate_cells = self._select_frontier_candidates(grid, frontier_cells)
+        self.last_candidate_count = len(candidate_cells)
         updated_owner_ids: set[int] = set()
 
         for ix, iy in candidate_cells:

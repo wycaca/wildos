@@ -39,6 +39,7 @@ class GraphBuilderConfig:
     edge_radius: float = 3.0
     max_edge_neighbors: int = 6
     current_node_max_edge_neighbors: int = 10
+    max_edge_candidates_per_node: int = 24
     frontier_assign_radius: float = 5.0
     frontier_min_points: int = 4
     frontier_min_span: float = 0.6
@@ -67,6 +68,11 @@ class GraphUpdateStats:
     dirty_cell_count: int = 0
     newly_free_cell_count: int = 0
     edge_rebuild_node_count: int = 0
+    edge_candidate_pair_count: int = 0
+    edge_clearance_check_count: int = 0
+    historical_edge_check_count: int = 0
+    anchor_edge_check_count: int = 0
+    frontier_candidate_count: int = 0
     active_frontier_owner_count: int = 0
     stage_seconds: dict[str, float] = field(default_factory=dict)
 
@@ -111,6 +117,7 @@ class SparseGraphBuilder:
             edge_radius=config.edge_radius,
             max_neighbors_per_node=config.max_edge_neighbors,
             current_node_max_neighbors=config.current_node_max_edge_neighbors,
+            max_candidates_per_node=config.max_edge_candidates_per_node,
         )
         self.robot_anchor_node_id: int | None = None
         self._previous_grid_state: _GridStateSnapshot | None = None
@@ -231,7 +238,15 @@ class SparseGraphBuilder:
 
         # frontier cell 需要绑定到附近可用图节点
         stage_started = perf_counter()
-        frontier_cells = self.frontier_detector.detect_frontier_cells(grid)
+        frontier_refresh_region = ndimage.binary_dilation(
+            dirty_cells,
+            structure=np.ones((3, 3), dtype=bool),
+            border_value=0,
+        )
+        frontier_cells = self.frontier_detector.detect_frontier_cells(
+            grid,
+            candidate_region=frontier_refresh_region,
+        )
         local_node_ids = self._node_ids_in_grid(grid)
         self.frontier_detector.assign_frontiers(
             self.graph,
@@ -254,17 +269,11 @@ class SparseGraphBuilder:
         # 只重建变化 cell 和移动 anchor 附近的边
         stage_started = perf_counter()
         local_node_ids = self._node_ids_in_grid(grid)
-        dirty_edge_keys = self._edge_keys_intersecting_dirty_cells(
+        edge_rebuild_node_ids = self._edge_rebuild_node_ids(
             grid,
             dirty_cells,
         )
-        edge_rebuild_node_ids = self._edge_rebuild_node_ids(
-            grid,
-            newly_free_cells,
-        )
         edge_rebuild_node_ids.update(topology_dirty_node_ids)
-        for edge_key in dirty_edge_keys:
-            edge_rebuild_node_ids.update(edge_key)
         edge_rebuild_node_ids.update(
             node_id
             for node_id in range(first_new_node_id, self.graph.next_node_id)
@@ -277,7 +286,6 @@ class SparseGraphBuilder:
             )
         )
         affected_edge_keys = self.graph.edge_keys_for_nodes(edge_rebuild_node_ids)
-        affected_edge_keys.update(dirty_edge_keys)
         next_edges = self.edge_builder.build_edges(
             self.graph,
             grid,
@@ -325,6 +333,21 @@ class SparseGraphBuilder:
                 dirty_cell_count=int(np.count_nonzero(dirty_cells)),
                 newly_free_cell_count=int(np.count_nonzero(newly_free_cells)),
                 edge_rebuild_node_count=len(edge_rebuild_node_ids),
+                edge_candidate_pair_count=(
+                    self.edge_builder.last_stats.candidate_pair_count
+                ),
+                edge_clearance_check_count=(
+                    self.edge_builder.last_stats.clearance_check_count
+                ),
+                historical_edge_check_count=(
+                    self.edge_builder.last_stats.historical_check_count
+                ),
+                anchor_edge_check_count=(
+                    self.edge_builder.last_stats.anchor_check_count
+                ),
+                frontier_candidate_count=(
+                    self.frontier_detector.last_candidate_count
+                ),
                 active_frontier_owner_count=(
                     self.frontier_detector.active_owner_count
                 ),
@@ -372,7 +395,11 @@ class SparseGraphBuilder:
         grid: ClassifiedGrid,
         dirty_cells: np.ndarray,
     ) -> set[int]:
-        """选择可能连接或穿过变化 cell 的局部节点"""
+        """用变化 cell 的端点距离上界选择需要重建边的节点
+
+        任意长度不超过 edge_radius 的边穿过变化位置时, 至少一个端点到该位置
+        不超过半条边, 因此无需逐条栅格化扫描当前窗口的全部历史边
+        """
         dirty_count = int(np.count_nonzero(dirty_cells))
         if dirty_count == 0:
             return set()
@@ -384,72 +411,30 @@ class SparseGraphBuilder:
             return candidate_ids
 
         world_x, world_y = _grid_world_coordinates(grid)
-        dirty_points = np.column_stack(
-            (world_x[dirty_cells], world_y[dirty_cells])
-        )
+        dirty_points = np.column_stack((world_x[dirty_cells], world_y[dirty_cells]))
         dirty_index = cKDTree(dirty_points)
         influence_radius = (
             0.5 * self.config.edge_radius
             + self.config.min_obstacle_clearance
             + 1.5 * grid.resolution
         )
-        rebuild_ids = set()
-        for node_id in candidate_ids:
-            node = self.graph.nodes.get(node_id)
-            if node is None:
-                continue
-            distance, _ = dirty_index.query(node.position[:2], k=1)
-            if float(distance) <= influence_radius:
-                rebuild_ids.add(node_id)
-        return rebuild_ids
-
-    def _edge_keys_intersecting_dirty_cells(
-        self,
-        grid: ClassifiedGrid,
-        dirty_cells: np.ndarray,
-    ) -> set[tuple[int, int]]:
-        """查找走廊实际穿过变化区域的已有边"""
-        if not np.any(dirty_cells):
+        candidate_node_ids = [
+            node_id
+            for node_id in candidate_ids
+            if node_id in self.graph.nodes
+        ]
+        if not candidate_node_ids:
             return set()
-        clearance_cells = max(
-            0,
-            int(
-                math.ceil(
-                    self.config.min_obstacle_clearance
-                    / max(grid.resolution, 1e-6)
-                )
-            ),
+        candidate_positions = np.asarray(
+            [self.graph.nodes[node_id].position[:2] for node_id in candidate_node_ids],
+            dtype=np.float64,
         )
-        dirty_corridor = dirty_cells
-        if clearance_cells > 0:
-            dirty_corridor = ndimage.binary_dilation(
-                dirty_cells,
-                structure=np.ones((3, 3), dtype=bool),
-                iterations=clearance_cells,
-                border_value=0,
-            )
-
-        nearby_nodes = self._node_ids_near_grid(grid, self.config.edge_radius)
-        candidate_keys = self.graph.edge_keys_for_nodes(nearby_nodes)
-        affected_keys = set()
-        for edge_key in candidate_keys:
-            edge = self.graph.edges.get(edge_key)
-            if edge is None:
-                continue
-            node_a = self.graph.nodes.get(edge.from_id)
-            node_b = self.graph.nodes.get(edge.to_id)
-            if node_a is None or node_b is None:
-                continue
-            cells = grid.world_line_cells_clipped(
-                node_a.position[:2],
-                node_b.position[:2],
-            )
-            cell_array = np.asarray(list(cells), dtype=np.int64)
-            if cell_array.size == 0:
-                continue
-            if np.any(dirty_corridor[cell_array[:, 1], cell_array[:, 0]]):
-                affected_keys.add(edge_key)
-        return affected_keys
+        distances, _ = dirty_index.query(candidate_positions, k=1)
+        return {
+            node_id
+            for node_id, distance in zip(candidate_node_ids, distances)
+            if float(distance) <= influence_radius
+        }
 
     def _current_node_edge_neighborhood(
         self,

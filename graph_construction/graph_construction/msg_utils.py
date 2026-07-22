@@ -36,9 +36,7 @@ class GraphMessageCache:
         msg.trav_classes = [trav_class]
 
         node_ids = tuple(sorted(graph.nodes))
-        if node_ids != self._node_ids:
-            self._edge_cache.clear()
-            self._node_ids = node_ids
+        self._node_ids = node_ids
         id_to_index = {
             node_id: index
             for index, node_id in enumerate(node_ids)
@@ -53,20 +51,29 @@ class GraphMessageCache:
             for edge_key, edge in sorted(graph.edges.items())
             if edge.from_id in id_to_index and edge.to_id in id_to_index
         ]
-        self._node_cache = {
-            node_id: self._node_cache[node_id]
-            for node_id in node_ids
-            if node_id in self._node_cache
-        }
-        active_edge_keys = set(graph.edges)
-        self._edge_cache = {
-            edge_key: cached
-            for edge_key, cached in self._edge_cache.items()
-            if edge_key in active_edge_keys
-        }
+        self._prune_stale_entries(set(node_ids), set(graph.edges))
 
         msg.current_node_idx = id_to_index.get(graph.current_node_id, 0)
         return msg
+
+    def _prune_stale_entries(
+        self,
+        active_node_ids: set[int],
+        active_edge_keys: set[Tuple[int, int]],
+    ) -> None:
+        """缓存明显膨胀时再清理, 避免每帧复制完整缓存字典"""
+        if len(self._node_cache) > len(active_node_ids) + 64:
+            self._node_cache = {
+                node_id: cached
+                for node_id, cached in self._node_cache.items()
+                if node_id in active_node_ids
+            }
+        if len(self._edge_cache) > len(active_edge_keys) + 128:
+            self._edge_cache = {
+                edge_key: cached
+                for edge_key, cached in self._edge_cache.items()
+                if edge_key in active_edge_keys
+            }
 
     def _cached_node(self, node: InternalNode) -> Node:
         signature = (

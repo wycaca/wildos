@@ -368,6 +368,10 @@ def test_identical_grid_skips_stable_edge_rebuild():
     assert second.stats.dirty_cell_count == 0
     assert second.stats.edge_rebuild_node_count == 0
     assert second.stats.affected_edge_count == 0
+    assert second.stats.edge_candidate_pair_count == 0
+    assert second.stats.edge_clearance_check_count == 0
+    assert second.stats.anchor_edge_check_count > 0
+    assert second.stats.frontier_candidate_count == 0
     assert second.graph.edges == stable_edges
 
 

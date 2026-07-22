@@ -29,6 +29,7 @@ def test_resolve_config_rejects_removed_or_misspelled_keys():
     [
         {"grid_input_type": "image"},
         {"publish_rate_hz": 0.0},
+        {"viz_publish_rate_hz": 0.0},
         {"max_grid_odom_time_delta_sec": 0.0},
         {"diagnostics_log_period_sec": 0.0},
         {"slow_cycle_warning_ms": 0.0},

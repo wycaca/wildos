@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import fields
+import math
 from pathlib import Path
 import time
 from typing import Any, Dict, Mapping
@@ -30,6 +31,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "nav_graph_topic": "/spot1/nav_graph",
     "viz_topic": "/spot1/graph_construction_viz",
     "viz_show_radius_markers": False,
+    "viz_publish_rate_hz": 1.0,
     "publish_rate_hz": 2.0,
     "max_grid_odom_time_delta_sec": 0.5,
     "diagnostics_log_period_sec": 30.0,
@@ -112,6 +114,7 @@ class GraphConstructionNode(Node):
         self._logged_first_odom = False
         self._logged_first_publish = False
         self._last_slow_warning = 0.0
+        self._last_viz_publish_time = -math.inf
         self._publish_rate = EventRate()
         self._timings = {
             name: TimingWindow()
@@ -250,7 +253,12 @@ class GraphConstructionNode(Node):
 
         self.nav_graph_pub.publish(nav_graph)
 
-        if self.viz_pub.get_subscription_count() > 0:
+        now = time.monotonic()
+        viz_rate = max(float(self.config["viz_publish_rate_hz"]), 0.01)
+        if (
+            self.viz_pub.get_subscription_count() > 0
+            and now - self._last_viz_publish_time >= 1.0 / viz_rate
+        ):
             stage_started = time.perf_counter()
             self.viz_pub.publish(
                 self.visualizer.build_markers(
@@ -261,6 +269,7 @@ class GraphConstructionNode(Node):
             self._timings["visualize"].add_seconds(
                 time.perf_counter() - stage_started
             )
+            self._last_viz_publish_time = now
         total_seconds = time.perf_counter() - cycle_started
         self._timings["total"].add_seconds(total_seconds)
         self._publish_rate.tick()
@@ -343,6 +352,11 @@ class GraphConstructionNode(Node):
             f"新增free栅格{stats.newly_free_cell_count}, "
             f"重建边节点{stats.edge_rebuild_node_count}, "
             f"受影响边{stats.affected_edge_count}/{stats.total_edge_count}, "
+            f"边候选{stats.edge_candidate_pair_count}, "
+            f"边碰撞检查{stats.edge_clearance_check_count}, "
+            f"历史边复查{stats.historical_edge_check_count}, "
+            f"anchor边检查{stats.anchor_edge_check_count}, "
+            f"Frontier候选{stats.frontier_candidate_count}, "
             f"活动Frontier owner{stats.active_frontier_owner_count}"
         )
 
@@ -433,6 +447,8 @@ def _resolve_config(config: Mapping[str, Any]) -> Dict[str, Any]:
     resolved = {**DEFAULT_CONFIG, **config}
     if float(resolved["publish_rate_hz"]) <= 0.0:
         raise ValueError("publish_rate_hz must be greater than 0")
+    if float(resolved["viz_publish_rate_hz"]) <= 0.0:
+        raise ValueError("viz_publish_rate_hz must be greater than 0")
     if float(resolved["max_grid_odom_time_delta_sec"]) <= 0.0:
         raise ValueError("max_grid_odom_time_delta_sec must be greater than 0")
     if float(resolved["diagnostics_log_period_sec"]) <= 0.0:
