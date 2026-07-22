@@ -44,3 +44,17 @@ def test_window_is_never_smaller_than_required_frames():
     assert not window.update(True)
     assert not window.update(True)
     assert window.update(True)
+
+
+def test_peak_threshold_drops_only_after_entry_evidence():
+    """0.115 只能确认已有候选, 不能单独创建候选"""
+    window = DetectionConfirmationWindow(required_frames=2, window_frames=3)
+
+    assert window.active_threshold(0.12, 0.115) == 0.12
+    assert not window.update(True)
+    assert window.active_threshold(0.12, 0.115) == 0.115
+
+    window.update(False)
+    window.update(False)
+    window.update(False)
+    assert window.active_threshold(0.12, 0.115) == 0.12

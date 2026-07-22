@@ -180,6 +180,10 @@ def generate_launch_description():
             _profile_arg("object_search_reached_confirm_frames", "object_search_reached_confirm_frames"),
             _profile_arg("object_search_detection_min_peak_score", "object_search_detection_min_peak_score"),
             _profile_arg(
+                "object_search_detection_confirm_min_peak_score",
+                "object_search_detection_confirm_min_peak_score",
+            ),
+            _profile_arg(
                 "object_search_detection_min_component_pixels",
                 "object_search_detection_min_component_pixels",
             ),
@@ -324,6 +328,12 @@ def _launch_setup(context):
                 profile,
                 "object_search_detection_min_peak_score",
                 "object_search_detection_min_peak_score",
+            ),
+            "object_search_config.detection_confirm_min_peak_score": _value(
+                context,
+                profile,
+                "object_search_detection_confirm_min_peak_score",
+                "object_search_detection_confirm_min_peak_score",
             ),
             "object_search_config.detection_min_component_pixels": _value(
                 context,

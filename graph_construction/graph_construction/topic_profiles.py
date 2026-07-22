@@ -59,6 +59,7 @@ PROFILE_KEY_DESCRIPTIONS = {
     "object_search_mask_threshold": "文本相似度图生成目标 mask 的阈值",
     "object_search_detection_confirm_frames": "视觉目标确认所需证据帧数",
     "object_search_detection_confirm_window_frames": "视觉目标确认滑动窗口帧数",
+    "object_search_detection_confirm_min_peak_score": "已有视觉候选的后续确认峰值门槛",
     "object_target_max_depth": "目标粒子沿相机射线采样的最大深度",
     "visual_frontiers_range": "WildOS 取参与视觉评分的 frontier 范围",
     "visual_frontier_threshold": "视觉 frontier 像素筛选阈值",

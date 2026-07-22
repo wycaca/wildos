@@ -121,6 +121,7 @@ class WildOS_Nav(TFLookupSubscriber):
             "pixel_level_seg": False,
             "mask_threshold": 0.09,
             "detection_min_peak_score": 0.12,
+            "detection_confirm_min_peak_score": 0.115,
             "detection_min_component_pixels": 300,
             "detection_min_component_fraction": 0.0005,
             "detection_confirm_frames": 2,
@@ -197,6 +198,12 @@ class WildOS_Nav(TFLookupSubscriber):
                     self.mask_threshold + 0.03,
                 )
             )
+            self.object_detection_confirm_min_peak_score = float(
+                config.object_search_config.get(
+                    "detection_confirm_min_peak_score",
+                    self.object_detection_min_peak_score,
+                )
+            )
             self.object_detection_min_component_pixels = max(
                 int(config.object_search_config.get("detection_min_component_pixels", 300)),
                 1,
@@ -245,7 +252,8 @@ class WildOS_Nav(TFLookupSubscriber):
             self.get_logger().info(
                 f"目标搜索已启用, 查询目标={list(self.text_queries)}, "
                 f"Mask阈值={self.mask_threshold:.3f}, "
-                f"峰值门槛={self.object_detection_min_peak_score:.3f}, "
+                f"进入/确认峰值门槛={self.object_detection_min_peak_score:.3f}/"
+                f"{self.object_detection_confirm_min_peak_score:.3f}, "
                 f"最小区域像素={self.object_detection_min_component_pixels}"
             )
 
@@ -590,11 +598,17 @@ class WildOS_Nav(TFLookupSubscriber):
                     pixel_level_seg=self.pixel_level_seg,
                     mask_threshold=self.mask_threshold
                 )
+                active_peak_threshold = (
+                    self.object_detection_confirmation.active_threshold(
+                        self.object_detection_min_peak_score,
+                        self.object_detection_confirm_min_peak_score,
+                    )
+                )
                 binary_mask, detection_components, detection_rejections = (
                     analyze_object_detection_mask(
                         text_sim_spatial,
                         binary_mask,
-                        min_peak_score=self.object_detection_min_peak_score,
+                        min_peak_score=active_peak_threshold,
                         min_component_pixels=self.object_detection_min_component_pixels,
                         min_component_fraction=self.object_detection_min_component_fraction,
                     )

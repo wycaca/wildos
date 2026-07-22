@@ -24,6 +24,16 @@ class DetectionConfirmationWindow:
     def ready(self) -> bool:
         return self.evidence_count >= self.required_frames
 
+    def active_threshold(
+        self,
+        entry_threshold: float,
+        confirmation_threshold: float,
+    ) -> float:
+        """首帧使用进入门槛, 窗口已有证据后使用确认门槛"""
+        if self.evidence_count == 0:
+            return float(entry_threshold)
+        return min(float(entry_threshold), float(confirmation_threshold))
+
     def update(self, has_evidence: bool) -> bool:
         """记录当前帧, 仅在当前帧有证据且窗口达标时确认"""
         self._history.append(bool(has_evidence))
