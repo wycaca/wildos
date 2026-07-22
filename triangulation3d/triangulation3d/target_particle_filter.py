@@ -29,8 +29,11 @@ class ParticleFilterConfig:
     min_depth: float = 1.0
     max_depth: float = 100.0
     max_observations: int = 12
-    min_view_translation: float = 0.3
-    min_view_angle_deg: float = 3.0
+    independent_view_translation: float = 0.12
+    duplicate_view_translation: float = 0.03
+    duplicate_view_angle_deg: float = 0.5
+    full_quality_translation: float = 0.3
+    full_quality_angle_deg: float = 3.0
     resample_ess_ratio: float = 0.5
     resample_jitter: float = 0.25
     injected_particle_ratio: float = 0.2
@@ -85,6 +88,15 @@ class CameraObservation:
 
 
 @dataclass(frozen=True)
+class _AcceptedView:
+    """保存观测质量和是否形成独立视差"""
+
+    observation: CameraObservation
+    quality: float
+    independent: bool
+
+
+@dataclass(frozen=True)
 class TargetEstimate:
     position: np.ndarray
     covariance: np.ndarray
@@ -104,8 +116,11 @@ class TargetParticleFilter:
         self.rng = np.random.default_rng(seed)
         self.particles: np.ndarray | None = None
         self.weights: np.ndarray | None = None
-        self.observations: deque[CameraObservation] = deque(maxlen=config.max_observations)
+        self.observations: deque[_AcceptedView] = deque(maxlen=config.max_observations)
         self.accepted_views = 0
+        self.view_support = 0.0
+        self.weak_view_updates = 0
+        self.duplicate_views_rejected = 0
         self.lidar_support = 0
         self.lidar_consistent_frames = 0
         self.last_lidar_position: np.ndarray | None = None
@@ -124,26 +139,32 @@ class TargetParticleFilter:
         self.state = FusionState.REACHED
 
     def update_vision(self, observations: list[CameraObservation]) -> TargetEstimate | None:
-        """只接纳具有新视差的观测, 更新固定数量粒子并返回当前估计"""
+        """过滤重复帧, 让弱视角按质量参与粒子更新"""
         if self.completed:
             return self.estimate()
 
-        accepted = []
+        accepted: list[_AcceptedView] = []
         for observation in observations:
-            if not self._is_distinct_view(observation, accepted):
-                continue
             if not self._is_associated_with_track(observation):
                 continue
-            accepted.append(observation)
+            accepted_view = self._assess_view(observation, accepted)
+            if accepted_view is not None:
+                accepted.append(accepted_view)
         if not accepted:
             return self.estimate()
 
-        for observation in accepted:
-            self.observations.append(observation)
-        self.accepted_views += len(accepted)
+        self.observations.extend(accepted)
+        independent_views = [view for view in accepted if view.independent]
+        self.accepted_views += len(independent_views)
+        self.view_support += sum(view.quality for view in independent_views)
+        self.weak_view_updates += len(accepted) - len(independent_views)
+        accepted_observations = [view.observation for view in accepted]
 
         if self.particles is None:
-            self.particles = self._sample_from_observations(accepted, self.config.particle_count)
+            self.particles = self._sample_from_observations(
+                accepted_observations,
+                self.config.particle_count,
+            )
             self.weights = np.full(self.config.particle_count, 1.0 / self.config.particle_count)
         else:
             inject_count = max(
@@ -156,7 +177,7 @@ class TargetParticleFilter:
                 replace=False,
             )
             self.particles[replace_indices] = self._sample_from_observations(
-                accepted,
+                accepted_observations,
                 inject_count,
             )
             self.weights[replace_indices] = 1.0 / self.config.particle_count
@@ -241,35 +262,48 @@ class TargetParticleFilter:
             state=self.state,
         )
 
-    def _is_distinct_view(
+    def _assess_view(
         self,
         observation: CameraObservation,
-        pending: list[CameraObservation],
-    ) -> bool:
-        previous_observations = [*self.observations, *pending]
-        if not previous_observations:
-            return True
+        pending: list[_AcceptedView],
+    ) -> _AcceptedView | None:
+        """丢弃完全重复帧, 用最弱几何关系评估新增视角质量"""
+        previous_views = [*self.observations, *pending]
+        if not previous_views:
+            return _AcceptedView(observation, quality=1.0, independent=True)
+
         origin, direction, _ = observation.center_ray()
-        for previous in previous_observations:
-            previous_origin, previous_direction, _ = previous.center_ray()
-            baseline = origin - previous_origin
-            mean_direction = direction + previous_direction
-            mean_direction_norm = np.linalg.norm(mean_direction)
-            if mean_direction_norm < 1e-6:
-                return False
-            mean_direction /= mean_direction_norm
-            lateral_baseline = np.linalg.norm(
-                baseline - np.dot(baseline, mean_direction) * mean_direction
+        geometry = []
+        for previous_view in previous_views:
+            previous_origin, previous_direction, _ = (
+                previous_view.observation.center_ray()
             )
-            angle = math.degrees(
-                math.acos(float(np.clip(np.dot(direction, previous_direction), -1.0, 1.0)))
+            lateral_baseline, angle = _view_geometry(
+                origin,
+                direction,
+                previous_origin,
+                previous_direction,
             )
             if (
-                lateral_baseline < self.config.min_view_translation
-                or angle < self.config.min_view_angle_deg
+                lateral_baseline < self.config.duplicate_view_translation
+                and angle < self.config.duplicate_view_angle_deg
             ):
-                return False
-        return True
+                self.duplicate_views_rejected += 1
+                return None
+            if previous_view.independent:
+                geometry.append((lateral_baseline, angle))
+
+        if not geometry:
+            return _AcceptedView(observation, quality=0.1, independent=False)
+        quality = min(
+            _view_quality(self.config, lateral_baseline, angle)
+            for lateral_baseline, angle in geometry
+        )
+        independent = all(
+            lateral_baseline >= self.config.independent_view_translation
+            for lateral_baseline, _ in geometry
+        )
+        return _AcceptedView(observation, quality=quality, independent=independent)
 
     def _is_associated_with_track(self, observation: CameraObservation) -> bool:
         """稳定轨迹形成后使用射线距离门控, 防止远处误检污染持久目标"""
@@ -325,9 +359,10 @@ class TargetParticleFilter:
             particles[selected] = world_points.T
         return particles
 
-    def _apply_camera_likelihood(self, observations: list[CameraObservation]) -> None:
+    def _apply_camera_likelihood(self, observations: list[_AcceptedView]) -> None:
         log_weights = np.log(np.maximum(self.weights, 1e-12))
-        for observation in observations:
+        for accepted_view in observations:
+            observation = accepted_view.observation
             camera_from_world = observation.rotation_world_from_camera.T
             camera_points = (
                 camera_from_world
@@ -357,7 +392,9 @@ class TargetParticleFilter:
             ray_likelihood = np.exp(-0.5 * np.square(ray_distance / ray_sigma))
             mask_likelihood = np.where(inside_mask, 1.0, 0.05)
             likelihood = np.maximum(ray_likelihood * mask_likelihood, 1e-12)
-            observation_weight = 0.5 + 0.5 * observation.confidence
+            observation_weight = (
+                0.5 + 0.5 * observation.confidence
+            ) * accepted_view.quality
             log_weights += observation_weight * np.log(likelihood)
 
         log_weights -= np.max(log_weights)
@@ -413,7 +450,10 @@ class TargetParticleFilter:
             self.state = FusionState.PENDING
 
     def _confidence(self, horizontal_std: float) -> float:
-        view_score = min(self.accepted_views / max(self.config.stable_min_views, 1), 1.0)
+        view_score = min(
+            self.view_support / max(self.config.stable_min_views, 1),
+            1.0,
+        )
         spread_score = math.exp(
             -horizontal_std / max(self.config.stable_max_horizontal_std, 1e-6)
         )
@@ -429,3 +469,42 @@ class TargetParticleFilter:
         )
         confidence = 0.35 * view_score + 0.45 * spread_score + 0.20 * lidar_score
         return float(np.clip(confidence, 0.0, 1.0))
+
+
+def _view_geometry(
+    origin: np.ndarray,
+    direction: np.ndarray,
+    previous_origin: np.ndarray,
+    previous_direction: np.ndarray,
+) -> tuple[float, float]:
+    """计算两个视角的横向基线和射线夹角"""
+    baseline = origin - previous_origin
+    mean_direction = direction + previous_direction
+    mean_direction_norm = np.linalg.norm(mean_direction)
+    if mean_direction_norm < 1e-6:
+        return 0.0, 180.0
+    mean_direction /= mean_direction_norm
+    lateral_baseline = float(
+        np.linalg.norm(baseline - np.dot(baseline, mean_direction) * mean_direction)
+    )
+    angle = math.degrees(
+        math.acos(float(np.clip(np.dot(direction, previous_direction), -1.0, 1.0)))
+    )
+    return lateral_baseline, angle
+
+
+def _view_quality(
+    config: ParticleFilterConfig,
+    lateral_baseline: float,
+    angle_deg: float,
+) -> float:
+    """将视角几何转换为连续权重, 夹角不再作为硬门槛"""
+    translation_score = min(
+        lateral_baseline / max(config.full_quality_translation, 1e-6),
+        1.0,
+    )
+    angle_score = min(
+        angle_deg / max(config.full_quality_angle_deg, 1e-6),
+        1.0,
+    )
+    return float(np.clip(0.7 * translation_score + 0.3 * angle_score, 0.1, 1.0))

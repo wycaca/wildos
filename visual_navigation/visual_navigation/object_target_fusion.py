@@ -55,6 +55,11 @@ class ObjectTargetFusion(Node):
         self.declare_parameter("particle_count", 1500)
         self.declare_parameter("max_depth", 100.0)
         self.declare_parameter("stable_min_confidence", 0.6)
+        self.declare_parameter("independent_view_translation", 0.12)
+        self.declare_parameter("duplicate_view_translation", 0.03)
+        self.declare_parameter("duplicate_view_angle_deg", 0.5)
+        self.declare_parameter("full_quality_translation", 0.3)
+        self.declare_parameter("full_quality_angle_deg", 3.0)
         self.declare_parameter("lidar_min_points", 30)
         self.declare_parameter("max_lidar_age_sec", 3.0)
         self.declare_parameter("diagnostics_log_period_sec", 60.0)
@@ -65,6 +70,26 @@ class ObjectTargetFusion(Node):
             particle_count=max(int(self.get_parameter("particle_count").value), 100),
             max_depth=self.max_depth,
             stable_min_confidence=float(self.get_parameter("stable_min_confidence").value),
+            independent_view_translation=max(
+                float(self.get_parameter("independent_view_translation").value),
+                0.01,
+            ),
+            duplicate_view_translation=max(
+                float(self.get_parameter("duplicate_view_translation").value),
+                0.0,
+            ),
+            duplicate_view_angle_deg=max(
+                float(self.get_parameter("duplicate_view_angle_deg").value),
+                0.0,
+            ),
+            full_quality_translation=max(
+                float(self.get_parameter("full_quality_translation").value),
+                0.01,
+            ),
+            full_quality_angle_deg=max(
+                float(self.get_parameter("full_quality_angle_deg").value),
+                0.1,
+            ),
         )
         self.particle_filter = TargetParticleFilter(particle_config)
         self.global_frame = str(self.get_parameter("global_frame").value)
@@ -145,6 +170,9 @@ class ObjectTargetFusion(Node):
             f"雷达话题={self.get_parameter('lidar_topic').value}, "
             f"估计话题={self.get_parameter('target_estimate_topic').value}, "
             f"最大深度={self.max_depth:.1f}m, "
+            f"独立视角横向基线={particle_config.independent_view_translation:.2f}m, "
+            f"重复帧门槛={particle_config.duplicate_view_translation:.2f}m/"
+            f"{particle_config.duplicate_view_angle_deg:.1f}deg, "
             f"python={sys.executable}, numpy={np.__version__}, scipy={scipy.__version__}"
         )
 
@@ -318,6 +346,10 @@ class ObjectTargetFusion(Node):
             f"雷达精修={self._lidar_refined}/{self._lidar_matched}"
             f"({refine_ratio:.1f}%), "
             f"精修失败={_counter_summary(self._lidar_failures)}, "
+            f"视角=独立{self.particle_filter.accepted_views}/"
+            f"有效权重{self.particle_filter.view_support:.2f}/"
+            f"弱更新{self.particle_filter.weak_view_updates}/"
+            f"重复丢弃{self.particle_filter.duplicate_views_rejected}, "
             "消息年龄="
             f"Mask平均{age_summaries['mask'].average_ms:.0f}/"
             f"95%上限{age_summaries['mask'].p95_ms:.0f}ms, "
@@ -347,6 +379,7 @@ class ObjectTargetFusion(Node):
             f"位置=({estimate.position[0]:.2f}, {estimate.position[1]:.2f}, "
             f"{estimate.position[2]:.2f}), 置信度={estimate.confidence:.2f}, "
             f"有效视角={estimate.accepted_views}, "
+            f"视角权重={self.particle_filter.view_support:.2f}, "
             f"雷达支持点={estimate.lidar_support}"
         )
 

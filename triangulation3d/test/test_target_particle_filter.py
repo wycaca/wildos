@@ -74,6 +74,7 @@ def test_repeated_view_does_not_increase_support():
 
     assert first.accepted_views == 1
     assert second.accepted_views == 1
+    assert particle_filter.duplicate_views_rejected == 1
 
 
 def test_forward_motion_does_not_create_triangulation_parallax():
@@ -91,6 +92,49 @@ def test_forward_motion_does_not_create_triangulation_parallax():
     assert first.accepted_views == 1
     assert second.accepted_views == 1
     assert second.state == FusionState.PENDING
+
+
+def test_far_target_accepts_lateral_view_without_three_degree_angle():
+    """远目标有横向基线时不再被固定三度夹角丢弃"""
+    target = np.array([20.0, 0.0, 1.0])
+    particle_filter = TargetParticleFilter(
+        ParticleFilterConfig(particle_count=1000, max_depth=30.0),
+        seed=12,
+    )
+
+    particle_filter.update_vision([
+        _observation(np.array([0.0, 0.0, 1.0]), target, "front-0"),
+    ])
+    estimate = particle_filter.update_vision([
+        _observation(np.array([0.0, 0.15, 1.0]), target, "front-1"),
+    ])
+
+    assert estimate.accepted_views == 2
+    assert estimate.state in {FusionState.TRACKING, FusionState.STABLE_VISION}
+    assert 1.0 < particle_filter.view_support < 2.0
+
+
+def test_weak_view_updates_particles_without_increasing_independent_views():
+    """较小横向位移可低权重更新, 但不能伪装成完整独立视角"""
+    target = np.array([12.0, 0.0, 1.0])
+    particle_filter = TargetParticleFilter(
+        ParticleFilterConfig(particle_count=800, max_depth=20.0),
+        seed=13,
+    )
+    particle_filter.update_vision([
+        _observation(np.array([0.0, 0.0, 1.0]), target, "front-0"),
+    ])
+    particles_before = particle_filter.particles.copy()
+
+    estimate = particle_filter.update_vision([
+        _observation(np.array([0.0, 0.06, 1.0]), target, "front-weak"),
+    ])
+
+    assert estimate.accepted_views == 1
+    assert estimate.state == FusionState.PENDING
+    assert len(particle_filter.observations) == 2
+    assert particle_filter.weak_view_updates == 1
+    assert not np.array_equal(particle_filter.particles, particles_before)
 
 
 def test_lidar_requires_consistent_frames_and_reached_is_terminal():
