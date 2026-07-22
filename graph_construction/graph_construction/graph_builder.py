@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections import deque
 from dataclasses import dataclass, field
 from math import hypot
 import math
@@ -8,6 +7,8 @@ from time import perf_counter
 from typing import Tuple
 
 import numpy as np
+from scipy import ndimage
+from scipy.spatial import cKDTree
 
 from graph_construction.edge_builder import EdgeBuilder
 from graph_construction.frontier_detector import FrontierDetector
@@ -63,8 +64,28 @@ class GraphUpdateStats:
     total_node_count: int = 0
     affected_edge_count: int = 0
     total_edge_count: int = 0
+    dirty_cell_count: int = 0
+    newly_free_cell_count: int = 0
+    edge_rebuild_node_count: int = 0
     active_frontier_owner_count: int = 0
     stage_seconds: dict[str, float] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class _GridStateSnapshot:
+    """保存上一帧分类栅格及其世界坐标信息"""
+
+    state: np.ndarray
+    resolution: float
+    origin_x: float
+    origin_y: float
+    frame_id: str
+    center_x: float | None
+    center_y: float | None
+    length_x: float | None
+    length_y: float | None
+    yaw: float
+    convention: bool
 
 
 class SparseGraphBuilder:
@@ -92,6 +113,7 @@ class SparseGraphBuilder:
             current_node_max_neighbors=config.current_node_max_edge_neighbors,
         )
         self.robot_anchor_node_id: int | None = None
+        self._previous_grid_state: _GridStateSnapshot | None = None
 
     def update(
         self,
@@ -111,36 +133,38 @@ class SparseGraphBuilder:
         if max_step <= 0.0:
             return
 
-        h, w = grid.height, grid.width
-        curtain_indices = []
-
-        for iy in range(h):
-            for ix in range(w):
-                val = float(grid.elevation[iy, ix])
-                if not math.isfinite(val):
+        elevation = np.asarray(grid.elevation)
+        height, width = elevation.shape
+        neighbors = []
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if dx == 0 and dy == 0:
                     continue
-                neighbor_values = []
-                for dy in (-1, 0, 1):
-                    for dx in (-1, 0, 1):
-                        if dx == 0 and dy == 0:
-                            continue
-                        nx, ny = ix + dx, iy + dy
-                        if 0 <= nx < w and 0 <= ny < h:
-                            n_val = float(grid.elevation[ny, nx])
-                            if math.isfinite(n_val):
-                                neighbor_values.append(n_val)
-                if len(neighbor_values) < 3:
-                    continue
-                neighbor_values.sort()
-                median = neighbor_values[len(neighbor_values) // 2]
-                if abs(val - median) > max_step:
-                    curtain_indices.append((ix, iy))
+                shifted = np.full((height, width), np.inf, dtype=elevation.dtype)
+                src_y, dst_y = _shift_slices(height, dy)
+                src_x, dst_x = _shift_slices(width, dx)
+                values = elevation[src_y, src_x]
+                shifted[dst_y, dst_x] = np.where(np.isfinite(values), values, np.inf)
+                neighbors.append(shifted)
 
-        for ix, iy in curtain_indices:
-            grid.elevation[iy, ix] = math.nan
-            grid.unknown[iy, ix] = True
-            grid.free[iy, ix] = False
-            grid.obstacle[iy, ix] = False
+        neighbor_values = np.stack(neighbors)
+        neighbor_values.sort(axis=0)
+        finite_count = np.sum(np.isfinite(neighbor_values), axis=0)
+        median_index = np.minimum(finite_count // 2, len(neighbors) - 1)
+        upper_median = np.take_along_axis(
+            neighbor_values,
+            median_index[np.newaxis, ...],
+            axis=0,
+        )[0]
+        curtain = (
+            np.isfinite(elevation)
+            & (finite_count >= 3)
+            & (np.abs(elevation - upper_median) > max_step)
+        )
+        grid.elevation[curtain] = math.nan
+        grid.unknown[curtain] = True
+        grid.free[curtain] = False
+        grid.obstacle[curtain] = False
 
     def _update_classified_grid(
         self,
@@ -149,6 +173,12 @@ class SparseGraphBuilder:
         stamp_seconds: float,
     ) -> GraphUpdateResult:
         stage_seconds: dict[str, float] = {}
+        previous_current_id = self.graph.current_node_id
+        previous_current_position = None
+        if previous_current_id in self.graph.nodes:
+            previous_current_position = self.graph.nodes[previous_current_id].position
+        first_new_node_id = self.graph.next_node_id
+
         stage_started = perf_counter()
         self._sanitize_grid_surface(grid)
         self._repair_robot_blind_zone(grid, robot_position)
@@ -160,6 +190,10 @@ class SparseGraphBuilder:
             self.graph.append_trajectory_point(robot_ground_position, 0.25)
         reachable_free = self._reachable_free_mask(grid, robot_ground_position)
         stage_seconds["preprocess"] = perf_counter() - stage_started
+
+        stage_started = perf_counter()
+        dirty_cells, newly_free_cells = self._grid_change_masks(grid)
+        stage_seconds["dirty"] = perf_counter() - stage_started
 
         stage_started = perf_counter()
         # 距离场用于节点 clearance 和 frontier 生命周期判断
@@ -175,7 +209,7 @@ class SparseGraphBuilder:
         # 后续阶段共享同一局部查询结果, 避免重复扫描历史节点
         stage_started = perf_counter()
         local_node_ids = self._node_ids_in_grid(grid)
-        self._update_existing_nodes(
+        topology_dirty_node_ids = self._update_existing_nodes(
             grid,
             sdf_obstacle,
             sdf_unknown,
@@ -217,11 +251,33 @@ class SparseGraphBuilder:
         )
         stage_seconds["current"] = perf_counter() - stage_started
 
-        # 边只更新当前窗口及其 edge radius 邻域, 远处历史边保持不动
+        # 只重建变化 cell 和移动 anchor 附近的边
         stage_started = perf_counter()
         local_node_ids = self._node_ids_in_grid(grid)
-        edge_node_ids = self._node_ids_near_grid(grid, self.config.edge_radius)
-        affected_edge_keys = self.graph.edge_keys_for_nodes(edge_node_ids)
+        dirty_edge_keys = self._edge_keys_intersecting_dirty_cells(
+            grid,
+            dirty_cells,
+        )
+        edge_rebuild_node_ids = self._edge_rebuild_node_ids(
+            grid,
+            newly_free_cells,
+        )
+        edge_rebuild_node_ids.update(topology_dirty_node_ids)
+        for edge_key in dirty_edge_keys:
+            edge_rebuild_node_ids.update(edge_key)
+        edge_rebuild_node_ids.update(
+            node_id
+            for node_id in range(first_new_node_id, self.graph.next_node_id)
+            if node_id in self.graph.nodes
+        )
+        edge_rebuild_node_ids.update(
+            self._current_node_edge_neighborhood(
+                previous_current_id,
+                previous_current_position,
+            )
+        )
+        affected_edge_keys = self.graph.edge_keys_for_nodes(edge_rebuild_node_ids)
+        affected_edge_keys.update(dirty_edge_keys)
         next_edges = self.edge_builder.build_edges(
             self.graph,
             grid,
@@ -229,6 +285,7 @@ class SparseGraphBuilder:
             sdf_unknown,
             self.config.min_obstacle_clearance,
             node_ids=local_node_ids,
+            focus_node_ids=edge_rebuild_node_ids,
         )
         next_edges = self.edge_builder.merge_historical_edges(
             self.graph,
@@ -255,6 +312,7 @@ class SparseGraphBuilder:
             )
         self.graph.replace_edges(affected_edge_keys, next_edges)
         stage_seconds["edges"] = perf_counter() - stage_started
+        self._previous_grid_state = _snapshot_grid_state(grid)
 
         return GraphUpdateResult(
             graph=self.graph,
@@ -264,12 +322,161 @@ class SparseGraphBuilder:
                 total_node_count=len(self.graph.nodes),
                 affected_edge_count=len(affected_edge_keys),
                 total_edge_count=len(self.graph.edges),
+                dirty_cell_count=int(np.count_nonzero(dirty_cells)),
+                newly_free_cell_count=int(np.count_nonzero(newly_free_cells)),
+                edge_rebuild_node_count=len(edge_rebuild_node_ids),
                 active_frontier_owner_count=(
                     self.frontier_detector.active_owner_count
                 ),
                 stage_seconds=stage_seconds,
             ),
         )
+
+    def _grid_change_masks(
+        self,
+        grid: ClassifiedGrid,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """返回分类变化 cell 和新变为 free 的 cell"""
+        current_state = _grid_state_codes(grid)
+        snapshot = self._previous_grid_state
+        if snapshot is None:
+            dirty = np.ones((grid.height, grid.width), dtype=bool)
+            return dirty, current_state == 1
+        if (
+            snapshot.frame_id != grid.frame_id
+            or snapshot.convention != grid.grid_map_convention
+            or not math.isclose(snapshot.resolution, grid.resolution, abs_tol=1e-6)
+        ):
+            dirty = np.ones((grid.height, grid.width), dtype=bool)
+            return dirty, current_state == 1
+
+        world_x, world_y = _grid_world_coordinates(grid)
+        previous_x, previous_y, valid = _world_to_snapshot_indices(
+            snapshot,
+            world_x,
+            world_y,
+        )
+        dirty = ~valid
+        newly_free = ~valid & (current_state == 1)
+        if np.any(valid):
+            previous_state = snapshot.state[previous_y[valid], previous_x[valid]]
+            dirty[valid] = current_state[valid] != previous_state
+            newly_free[valid] = (
+                (current_state[valid] == 1)
+                & (previous_state != 1)
+            )
+        return dirty, newly_free
+
+    def _edge_rebuild_node_ids(
+        self,
+        grid: ClassifiedGrid,
+        dirty_cells: np.ndarray,
+    ) -> set[int]:
+        """选择可能连接或穿过变化 cell 的局部节点"""
+        dirty_count = int(np.count_nonzero(dirty_cells))
+        if dirty_count == 0:
+            return set()
+
+        candidate_ids = self._node_ids_near_grid(grid, self.config.edge_radius)
+        if not candidate_ids:
+            return set()
+        if dirty_count * 3 >= dirty_cells.size:
+            return candidate_ids
+
+        world_x, world_y = _grid_world_coordinates(grid)
+        dirty_points = np.column_stack(
+            (world_x[dirty_cells], world_y[dirty_cells])
+        )
+        dirty_index = cKDTree(dirty_points)
+        influence_radius = (
+            0.5 * self.config.edge_radius
+            + self.config.min_obstacle_clearance
+            + 1.5 * grid.resolution
+        )
+        rebuild_ids = set()
+        for node_id in candidate_ids:
+            node = self.graph.nodes.get(node_id)
+            if node is None:
+                continue
+            distance, _ = dirty_index.query(node.position[:2], k=1)
+            if float(distance) <= influence_radius:
+                rebuild_ids.add(node_id)
+        return rebuild_ids
+
+    def _edge_keys_intersecting_dirty_cells(
+        self,
+        grid: ClassifiedGrid,
+        dirty_cells: np.ndarray,
+    ) -> set[tuple[int, int]]:
+        """查找走廊实际穿过变化区域的已有边"""
+        if not np.any(dirty_cells):
+            return set()
+        clearance_cells = max(
+            0,
+            int(
+                math.ceil(
+                    self.config.min_obstacle_clearance
+                    / max(grid.resolution, 1e-6)
+                )
+            ),
+        )
+        dirty_corridor = dirty_cells
+        if clearance_cells > 0:
+            dirty_corridor = ndimage.binary_dilation(
+                dirty_cells,
+                structure=np.ones((3, 3), dtype=bool),
+                iterations=clearance_cells,
+                border_value=0,
+            )
+
+        nearby_nodes = self._node_ids_near_grid(grid, self.config.edge_radius)
+        candidate_keys = self.graph.edge_keys_for_nodes(nearby_nodes)
+        affected_keys = set()
+        for edge_key in candidate_keys:
+            edge = self.graph.edges.get(edge_key)
+            if edge is None:
+                continue
+            node_a = self.graph.nodes.get(edge.from_id)
+            node_b = self.graph.nodes.get(edge.to_id)
+            if node_a is None or node_b is None:
+                continue
+            cells = grid.world_line_cells_clipped(
+                node_a.position[:2],
+                node_b.position[:2],
+            )
+            cell_array = np.asarray(list(cells), dtype=np.int64)
+            if cell_array.size == 0:
+                continue
+            if np.any(dirty_corridor[cell_array[:, 1], cell_array[:, 0]]):
+                affected_keys.add(edge_key)
+        return affected_keys
+
+    def _current_node_edge_neighborhood(
+        self,
+        previous_node_id: int | None,
+        previous_position: Tuple[float, float, float] | None,
+    ) -> set[int]:
+        """机器人 anchor 移动或切换时刷新两端局部连边"""
+        current_node_id = self.graph.current_node_id
+        current_node = self.graph.nodes.get(current_node_id)
+        current_position = current_node.position if current_node is not None else None
+        position_changed = (
+            previous_position is None
+            or current_position is None
+            or hypot(
+                previous_position[0] - current_position[0],
+                previous_position[1] - current_position[1],
+            ) > 1e-6
+        )
+        if previous_node_id == current_node_id and not position_changed:
+            return set()
+
+        node_ids = set()
+        if previous_node_id in self.graph.nodes:
+            node_ids.add(previous_node_id)
+        if current_node_id in self.graph.nodes:
+            node_ids.add(current_node_id)
+        return node_ids
 
     def _repair_robot_blind_zone(
         self,
@@ -301,70 +508,83 @@ class SparseGraphBuilder:
             self.config.robot_blind_zone_elevation_search_radius,
         )
         search_cells = max(1, int(math.ceil(search_radius / resolution)))
-        samples = []
         center_x, center_y = center
-        for offset_y in range(-search_cells, search_cells + 1):
-            for offset_x in range(-search_cells, search_cells + 1):
-                ix = center_x + offset_x
-                iy = center_y + offset_y
-                distance = hypot(offset_x * resolution, offset_y * resolution)
-                if distance > search_radius or not (
-                    0 <= ix < grid.width and 0 <= iy < grid.height
-                ):
-                    continue
-                if grid.is_obstacle_index(ix, iy):
-                    continue
-                elevation = float(grid.elevation[iy, ix])
-                if math.isfinite(elevation):
-                    samples.append((distance, elevation))
-        samples.sort(key=lambda item: item[0])
-        expected_ground = robot_position[2] - self.config.robot_ground_height_offset
-        plausible_samples = [
-            sample
-            for sample in samples
-            if abs(sample[1] + grid.z_offset - expected_ground)
-            <= self.config.robot_ground_elevation_tolerance
+        min_x = max(0, center_x - search_cells)
+        max_x = min(grid.width, center_x + search_cells + 1)
+        min_y = max(0, center_y - search_cells)
+        max_y = min(grid.height, center_y + search_cells + 1)
+        offset_y, offset_x = np.ogrid[
+            min_y - center_y:max_y - center_y,
+            min_x - center_x:max_x - center_x,
         ]
+        distances = np.hypot(offset_x * resolution, offset_y * resolution)
+        local_elevation = grid.elevation[min_y:max_y, min_x:max_x]
+        sample_mask = (
+            (distances <= search_radius)
+            & ~grid.obstacle[min_y:max_y, min_x:max_x]
+            & np.isfinite(local_elevation)
+        )
+        sample_distances = distances[sample_mask]
+        sample_elevations = local_elevation[sample_mask]
+        order = np.argsort(sample_distances)
+        sample_distances = sample_distances[order]
+        sample_elevations = sample_elevations[order]
+        expected_ground = robot_position[2] - self.config.robot_ground_height_offset
+        plausible = (
+            np.abs(sample_elevations + grid.z_offset - expected_ground)
+            <= self.config.robot_ground_elevation_tolerance
+        )
         ground_source = "map"
-        if plausible_samples:
-            samples = plausible_samples
+        if np.any(plausible):
+            sample_distances = sample_distances[plausible]
+            sample_elevations = sample_elevations[plausible]
         else:
-            samples = [(0.0, expected_ground - grid.z_offset)]
+            sample_distances = np.asarray([0.0])
+            sample_elevations = np.asarray([expected_ground - grid.z_offset])
             ground_source = "odom"
 
-        nearest_distance = samples[0][0]
+        nearest_distance = float(sample_distances[0])
         grid.stats["robot_blind_zone_nearest_ground"] = round(nearest_distance, 3)
         grid.stats["robot_blind_zone_ground_source"] = ground_source
         sample_band = nearest_distance + max(0.4, 2.0 * resolution)
-        ground_samples = [
-            elevation
-            for distance, elevation in samples
-            if distance <= sample_band
-        ][:32]
+        ground_samples = sample_elevations[sample_distances <= sample_band][:32]
         ground_elevation = float(np.median(ground_samples))
 
         repair_cells = max(
             1,
             int(math.ceil(self.config.robot_blind_zone_radius / resolution)),
         )
-        repaired = 0
-        for offset_y in range(-repair_cells, repair_cells + 1):
-            for offset_x in range(-repair_cells, repair_cells + 1):
-                if (
-                    hypot(offset_x * resolution, offset_y * resolution)
-                    > self.config.robot_blind_zone_radius
-                ):
-                    continue
-                ix = center_x + offset_x
-                iy = center_y + offset_y
-                if not (0 <= ix < grid.width and 0 <= iy < grid.height):
-                    continue
-                if grid.is_obstacle_index(ix, iy) or not grid.is_unknown_index(ix, iy):
-                    continue
-                grid.unknown[iy, ix] = False
-                grid.free[iy, ix] = True
-                grid.elevation[iy, ix] = ground_elevation
-                repaired += 1
+        repair_min_x = max(0, center_x - repair_cells)
+        repair_max_x = min(grid.width, center_x + repair_cells + 1)
+        repair_min_y = max(0, center_y - repair_cells)
+        repair_max_y = min(grid.height, center_y + repair_cells + 1)
+        repair_offset_y, repair_offset_x = np.ogrid[
+            repair_min_y - center_y:repair_max_y - center_y,
+            repair_min_x - center_x:repair_max_x - center_x,
+        ]
+        repair_region = np.hypot(
+            repair_offset_x * resolution,
+            repair_offset_y * resolution,
+        ) <= self.config.robot_blind_zone_radius
+        region_unknown = grid.unknown[
+            repair_min_y:repair_max_y,
+            repair_min_x:repair_max_x,
+        ]
+        region_obstacle = grid.obstacle[
+            repair_min_y:repair_max_y,
+            repair_min_x:repair_max_x,
+        ]
+        repair_mask = repair_region & region_unknown & ~region_obstacle
+        repaired = int(np.count_nonzero(repair_mask))
+        region_unknown[repair_mask] = False
+        grid.free[
+            repair_min_y:repair_max_y,
+            repair_min_x:repair_max_x,
+        ][repair_mask] = True
+        grid.elevation[
+            repair_min_y:repair_max_y,
+            repair_min_x:repair_max_x,
+        ][repair_mask] = ground_elevation
 
         if repaired > 0:
             grid.stats["robot_blind_zone_filled"] = repaired
@@ -382,8 +602,9 @@ class SparseGraphBuilder:
         sdf_unknown,
         stamp_seconds: float,
         local_node_ids: set[int],
-    ) -> None:
+    ) -> set[int]:
         """用可靠局部观测刷新历史节点, unknown 和窗口外区域不否定记忆"""
+        topology_dirty_node_ids = set()
         for node_id in tuple(local_node_ids):
             node = self.graph.nodes.get(node_id)
             if node is None:
@@ -399,7 +620,10 @@ class SparseGraphBuilder:
 
             ix, iy = grid_index
             if grid.is_obstacle_index(ix, iy):
+                for edge_key in self.graph.adjacency.get(node_id, ()):
+                    topology_dirty_node_ids.update(edge_key)
                 self.graph.remove_node(node_id)
+                topology_dirty_node_ids.discard(node_id)
                 continue
             if not grid.is_free_index(ix, iy):
                 continue
@@ -413,7 +637,10 @@ class SparseGraphBuilder:
             # min_obstacle_clearance 是新节点和新边的部署安全阈值
             # 历史节点只在自由圆完全消失时删除, 避免局部地图噪声擦除已走过路线
             if free_radius <= 0.0:
+                for edge_key in self.graph.adjacency.get(node_id, ()):
+                    topology_dirty_node_ids.update(edge_key)
                 self.graph.remove_node(node_id)
+                topology_dirty_node_ids.discard(node_id)
                 continue
 
             node.free_radius = free_radius
@@ -425,6 +652,7 @@ class SparseGraphBuilder:
                     (node.position[0], node.position[1], surface_z),
                 )
             node.last_seen_time = stamp_seconds
+        return topology_dirty_node_ids
 
     def _sample_new_nodes(
         self,
@@ -538,27 +766,21 @@ class SparseGraphBuilder:
         if start is None:
             return reachable
 
-        queue = deque()
-
-        def flood_fill(seed: tuple[int, int]) -> None:
-            """从单个 seed 扩展完整 free 分量"""
-            queue.append(seed)
-            reachable[seed[1], seed[0]] = True
-            while queue:
-                current_x, current_y = queue.popleft()
-                for offset_x, offset_y in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-                    next_x = current_x + offset_x
-                    next_y = current_y + offset_y
-                    if (
-                        not grid.is_free_index(next_x, next_y)
-                        or reachable[next_y, next_x]
-                    ):
-                        continue
-                    reachable[next_y, next_x] = True
-                    queue.append((next_x, next_y))
-
-        queue.clear()
-        flood_fill(start)
+        labels, _ = ndimage.label(
+            grid.free,
+            structure=np.asarray(
+                (
+                    (0, 1, 0),
+                    (1, 1, 1),
+                    (0, 1, 0),
+                ),
+                dtype=np.uint8,
+            ),
+        )
+        start_label = int(labels[start[1], start[0]])
+        if start_label <= 0:
+            return reachable
+        reachable = labels == start_label
 
         # 修补后的脚下小岛仍需跨 unknown 盲区引导采样外围 free 分量
         max_radius_cells = max(
@@ -572,7 +794,9 @@ class SparseGraphBuilder:
             excluded=reachable,
         )
         if outer_start is not None:
-            flood_fill(outer_start)
+            outer_label = int(labels[outer_start[1], outer_start[0]])
+            if outer_label > 0:
+                reachable |= labels == outer_label
         return reachable
 
     def _nearest_free_neighbor(
@@ -702,6 +926,97 @@ class SparseGraphBuilder:
             min(point[1] for point in corners) - safe_margin,
             max(point[1] for point in corners) + safe_margin,
         )
+
+
+def _snapshot_grid_state(grid: ClassifiedGrid) -> _GridStateSnapshot:
+    """复制增量更新需要的轻量分类快照"""
+    return _GridStateSnapshot(
+        state=_grid_state_codes(grid),
+        resolution=float(grid.resolution),
+        origin_x=float(grid.origin_x),
+        origin_y=float(grid.origin_y),
+        frame_id=grid.frame_id,
+        center_x=grid.grid_map_center_x,
+        center_y=grid.grid_map_center_y,
+        length_x=grid.grid_map_length_x,
+        length_y=grid.grid_map_length_y,
+        yaw=float(grid.grid_map_yaw),
+        convention=bool(grid.grid_map_convention),
+    )
+
+
+def _grid_state_codes(grid: ClassifiedGrid) -> np.ndarray:
+    """将分类数组压缩为可直接比较的单字节状态"""
+    state = np.zeros((grid.height, grid.width), dtype=np.uint8)
+    state[grid.free] = 1
+    state[grid.obstacle] = 2
+    return state
+
+
+def _grid_world_coordinates(grid: ClassifiedGrid) -> tuple[np.ndarray, np.ndarray]:
+    """一次计算当前栅格所有 cell 的世界坐标"""
+    index_y, index_x = np.indices((grid.height, grid.width), dtype=float)
+    if not grid.grid_map_convention:
+        return (
+            grid.origin_x + (index_x + 0.5) * grid.resolution,
+            grid.origin_y + (index_y + 0.5) * grid.resolution,
+        )
+
+    length_x = grid.grid_map_length_x or grid.height * grid.resolution
+    length_y = grid.grid_map_length_y or grid.width * grid.resolution
+    local_x = length_x * 0.5 - (index_y + 0.5) * grid.resolution
+    local_y = length_y * 0.5 - (index_x + 0.5) * grid.resolution
+    center_x = grid.grid_map_center_x if grid.grid_map_center_x is not None else grid.origin_x
+    center_y = grid.grid_map_center_y if grid.grid_map_center_y is not None else grid.origin_y
+    yaw_cos = math.cos(grid.grid_map_yaw)
+    yaw_sin = math.sin(grid.grid_map_yaw)
+    return (
+        center_x + yaw_cos * local_x - yaw_sin * local_y,
+        center_y + yaw_sin * local_x + yaw_cos * local_y,
+    )
+
+
+def _world_to_snapshot_indices(
+    snapshot: _GridStateSnapshot,
+    world_x: np.ndarray,
+    world_y: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """将世界坐标批量映射到上一帧 cell"""
+    if snapshot.convention:
+        center_x = snapshot.center_x if snapshot.center_x is not None else snapshot.origin_x
+        center_y = snapshot.center_y if snapshot.center_y is not None else snapshot.origin_y
+        dx = world_x - center_x
+        dy = world_y - center_y
+        yaw_cos = math.cos(snapshot.yaw)
+        yaw_sin = math.sin(snapshot.yaw)
+        local_x = yaw_cos * dx + yaw_sin * dy
+        local_y = -yaw_sin * dx + yaw_cos * dy
+        length_x = snapshot.length_x or snapshot.state.shape[0] * snapshot.resolution
+        length_y = snapshot.length_y or snapshot.state.shape[1] * snapshot.resolution
+        index_y = np.floor((length_x * 0.5 - local_x) / snapshot.resolution)
+        index_x = np.floor((length_y * 0.5 - local_y) / snapshot.resolution)
+    else:
+        index_x = np.floor((world_x - snapshot.origin_x) / snapshot.resolution)
+        index_y = np.floor((world_y - snapshot.origin_y) / snapshot.resolution)
+
+    index_x = index_x.astype(np.int64)
+    index_y = index_y.astype(np.int64)
+    valid = (
+        (index_x >= 0)
+        & (index_y >= 0)
+        & (index_x < snapshot.state.shape[1])
+        & (index_y < snapshot.state.shape[0])
+    )
+    return index_x, index_y, valid
+
+
+def _shift_slices(size: int, offset: int) -> tuple[slice, slice]:
+    """返回数组平移使用的源和目标切片"""
+    if offset < 0:
+        return slice(-offset, size), slice(0, size + offset)
+    if offset > 0:
+        return slice(0, size - offset), slice(offset, size)
+    return slice(0, size), slice(0, size)
 
 
 def _adaptive_lattice_multiple(free_radius: float, base_spacing: float) -> int:

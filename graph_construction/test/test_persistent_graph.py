@@ -339,3 +339,89 @@ def test_graph_update_only_touches_local_history():
     assert remote_key not in result.graph.edge_keys_for_nodes(
         result.graph.node_ids_in_bounds(-3.0, 9.0, -3.0, 6.0)
     )
+
+
+def test_identical_grid_skips_stable_edge_rebuild():
+    """地图和机器人未变化时不重复重建稳定边"""
+    builder = SparseGraphBuilder(
+        GraphBuilderConfig(
+            sample_stride=2,
+            min_node_separation=0.1,
+            min_obstacle_clearance=0.0,
+            edge_radius=3.0,
+        )
+    )
+
+    first = builder.update(
+        _grid(width=12, height=12),
+        robot_position=(5.5, 5.5, 0.0),
+        stamp_seconds=1.0,
+    )
+    stable_edges = dict(first.graph.edges)
+    second = builder.update(
+        _grid(width=12, height=12),
+        robot_position=(5.5, 5.5, 0.0),
+        stamp_seconds=2.0,
+    )
+
+    assert first.stats.edge_rebuild_node_count > 0
+    assert second.stats.dirty_cell_count == 0
+    assert second.stats.edge_rebuild_node_count == 0
+    assert second.stats.affected_edge_count == 0
+    assert second.graph.edges == stable_edges
+
+
+def test_rolling_grid_marks_only_entering_cells_dirty():
+    """平移一格的地图只把新进入窗口的 cell 标为变化"""
+    builder = SparseGraphBuilder(
+        GraphBuilderConfig(
+            sample_stride=10,
+            min_node_separation=0.1,
+            min_obstacle_clearance=0.0,
+            edge_radius=2.0,
+        )
+    )
+    builder.update(
+        _grid(width=6, height=6),
+        robot_position=(1.5, 2.5, 0.0),
+        stamp_seconds=1.0,
+    )
+
+    shifted = builder.update(
+        _grid(width=6, height=6, origin_x=1.0),
+        robot_position=(1.5, 2.5, 0.0),
+        stamp_seconds=2.0,
+    )
+
+    assert shifted.stats.dirty_cell_count == 6
+
+
+def test_single_cell_change_rebuilds_only_nearby_edges():
+    """局部障碍变化不应触发整个窗口的边更新"""
+    builder = SparseGraphBuilder(
+        GraphBuilderConfig(
+            sample_stride=1,
+            min_node_separation=0.1,
+            min_obstacle_clearance=0.0,
+            edge_radius=2.0,
+        )
+    )
+    builder.update(
+        _grid(width=20, height=20),
+        robot_position=(2.5, 2.5, 0.0),
+        stamp_seconds=1.0,
+    )
+    free = np.ones((20, 20), dtype=bool)
+    obstacle = np.zeros((20, 20), dtype=bool)
+    free[10, 10] = False
+    obstacle[10, 10] = True
+
+    changed = builder.update(
+        _grid(width=20, height=20, free=free, obstacle=obstacle),
+        robot_position=(2.5, 2.5, 0.0),
+        stamp_seconds=2.0,
+    )
+
+    assert changed.stats.dirty_cell_count == 1
+    assert 0 < changed.stats.edge_rebuild_node_count < changed.stats.local_node_count
+    assert changed.stats.affected_edge_count < changed.stats.total_edge_count

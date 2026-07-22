@@ -36,6 +36,7 @@ class EdgeBuilder:
         sdf_unknown: np.ndarray | None = None,
         min_clearance: float = 0.0,
         node_ids: Iterable[int] | None = None,
+        focus_node_ids: Iterable[int] | None = None,
     ) -> List[InternalEdge]:
         """重建当前图的无向边集合
 
@@ -55,6 +56,11 @@ class EdgeBuilder:
                 continue
             if grid.world_to_grid(node.position[0], node.position[1]) is not None:
                 nodes.append(node)
+        focus_ids = (
+            None
+            if focus_node_ids is None
+            else set(focus_node_ids)
+        )
         selected_edges: Dict[Tuple[int, int], InternalEdge] = {}
         candidate_edges: Dict[int, List[Tuple[float, int, InternalEdge]]] = {
             node.node_id: []
@@ -74,6 +80,12 @@ class EdgeBuilder:
         for index_a, index_b in nearby_pairs:
             node_a = nodes[index_a]
             node_b = nodes[index_b]
+            if (
+                focus_ids is not None
+                and node_a.node_id not in focus_ids
+                and node_b.node_id not in focus_ids
+            ):
+                continue
             dx = node_a.position[0] - node_b.position[0]
             dy = node_a.position[1] - node_b.position[1]
             distance = hypot(dx, dy)
@@ -97,7 +109,12 @@ class EdgeBuilder:
             candidate_edges[node_a.node_id].append((distance, node_b.node_id, edge))
             candidate_edges[node_b.node_id].append((distance, node_a.node_id, edge))
 
-        for node in nodes:
+        output_nodes = (
+            nodes
+            if focus_ids is None
+            else [node for node in nodes if node.node_id in focus_ids]
+        )
+        for node in output_nodes:
             max_neighbors = self._neighbor_limit(graph, node.node_id)
             sorted_candidates = sorted(
                 candidate_edges[node.node_id],
@@ -245,15 +262,18 @@ def _edge_has_clearance(
     line_cells = list(grid.world_line_cells(start_xy, end_xy))
     if not line_cells:
         return False
-    for ix, iy in line_cells:
-        if grid.is_obstacle_index(ix, iy) or grid.is_unknown_index(ix, iy):
-            return False
-        if min_clearance <= 0.0 or sdf_obstacle is None or sdf_unknown is None:
-            continue
-        clearance = min(float(sdf_obstacle[iy, ix]), float(sdf_unknown[iy, ix]))
-        if clearance < min_clearance:
-            return False
-    return True
+    cell_array = np.asarray(line_cells, dtype=np.int64)
+    index_x = cell_array[:, 0]
+    index_y = cell_array[:, 1]
+    if np.any(grid.obstacle[index_y, index_x] | grid.unknown[index_y, index_x]):
+        return False
+    if min_clearance <= 0.0 or sdf_obstacle is None or sdf_unknown is None:
+        return True
+    clearance = np.minimum(
+        sdf_obstacle[index_y, index_x],
+        sdf_unknown[index_y, index_x],
+    )
+    return bool(np.all(clearance >= min_clearance))
 
 
 def _historical_edge_has_no_local_contradiction(
@@ -267,13 +287,12 @@ def _historical_edge_has_no_local_contradiction(
     line_cells = list(grid.world_line_cells_clipped(start_xy, end_xy))
     if not line_cells:
         return True
-    for ix, iy in line_cells:
-        if grid.is_obstacle_index(ix, iy):
-            return False
-        if grid.is_unknown_index(ix, iy):
-            continue
-        if min_clearance <= 0.0 or sdf_obstacle is None:
-            continue
-        if float(sdf_obstacle[iy, ix]) < min_clearance:
-            return False
-    return True
+    cell_array = np.asarray(line_cells, dtype=np.int64)
+    index_x = cell_array[:, 0]
+    index_y = cell_array[:, 1]
+    if np.any(grid.obstacle[index_y, index_x]):
+        return False
+    if min_clearance <= 0.0 or sdf_obstacle is None:
+        return True
+    known = ~grid.unknown[index_y, index_x]
+    return bool(np.all(sdf_obstacle[index_y[known], index_x[known]] >= min_clearance))

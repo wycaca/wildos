@@ -18,7 +18,7 @@ from visualization_msgs.msg import MarkerArray
 
 from graph_construction.graph_builder import GraphBuilderConfig, SparseGraphBuilder
 from graph_construction.grid_adapter import classify_grid_map
-from graph_construction.msg_utils import graph_to_msg
+from graph_construction.msg_utils import GraphMessageCache, graph_to_msg
 from graph_construction.performance_stats import EventRate, TimingWindow
 from graph_construction.viz import GraphVisualizer
 
@@ -93,6 +93,7 @@ class GraphConstructionNode(Node):
         super().__init__("graph_construction")
         self.config = _resolve_config(config)
         self.builder = SparseGraphBuilder(_builder_config(self.config))
+        self._message_cache = GraphMessageCache()
         self.visualizer = GraphVisualizer(
             show_radius_markers=bool(
                 self.config.get("viz_show_radius_markers", False)
@@ -120,6 +121,7 @@ class GraphConstructionNode(Node):
             name: TimingWindow()
             for name in (
                 "preprocess",
+                "dirty",
                 "distance",
                 "nodes",
                 "sampling",
@@ -238,7 +240,12 @@ class GraphConstructionNode(Node):
 
         stage_started = time.perf_counter()
         header = self._graph_header(grid_msg.header, classified_grid.frame_id)
-        nav_graph = graph_to_msg(update_result.graph, header, TRAVERSABILITY_CLASS)
+        nav_graph = graph_to_msg(
+            update_result.graph,
+            header,
+            TRAVERSABILITY_CLASS,
+            cache=self._message_cache,
+        )
         self._timings["message"].add_seconds(time.perf_counter() - stage_started)
 
         self.nav_graph_pub.publish(nav_graph)
@@ -315,6 +322,7 @@ class GraphConstructionNode(Node):
             f"可视化{summaries['visualize'].average_ms:.0f}ms, "
             "图内平均耗时="
             f"预处理{update_summaries['preprocess'].average_ms:.0f}ms/"
+            f"变化检测{update_summaries['dirty'].average_ms:.0f}ms/"
             f"距离场{update_summaries['distance'].average_ms:.0f}ms/"
             f"节点{update_summaries['nodes'].average_ms:.0f}ms/"
             f"采样{update_summaries['sampling'].average_ms:.0f}ms/"
@@ -331,6 +339,9 @@ class GraphConstructionNode(Node):
         return (
             ", 最近工作量="
             f"局部节点{stats.local_node_count}/{stats.total_node_count}, "
+            f"变化栅格{stats.dirty_cell_count}, "
+            f"新增free栅格{stats.newly_free_cell_count}, "
+            f"重建边节点{stats.edge_rebuild_node_count}, "
             f"受影响边{stats.affected_edge_count}/{stats.total_edge_count}, "
             f"活动Frontier owner{stats.active_frontier_owner_count}"
         )

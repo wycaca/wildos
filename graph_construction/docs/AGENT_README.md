@@ -232,6 +232,16 @@ graph_construction/graph_construction/
 - rolling GridMap 的坐标、层布局和 frame 约定必须有测试或运行证据
 - 运行期诊断使用 ROS 日志和 topic 工具，不把内部 stage timing 混入核心返回类型
 
+## 当前 TODO
+
+### 改善目标探索和回头策略
+
+- 将实际路径弧长和下一路点接近作为主要进度, 固定方向只作为候选偏好
+- 输入不健康或不新鲜时冻结失败计时, 路径失效使用多帧确认
+- 实时 Frontier 和 deferred branch 统一评分
+- 普通探索使用回退硬限制, 真实死路使用显式分级恢复
+- 方案和最新运行证据见 `docs/details/target_exploration.md`
+
 ## 重复问题：初始探索路线和脚下点云盲区
 
 这两个问题相互影响，是 Unity 目标搜索的长期高风险项。其中“初始时先向机器人后方探索，走一段后又回到前方”已多次修改，不得仅根据单次编译或短时仿真宣布彻底解决

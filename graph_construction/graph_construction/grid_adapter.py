@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from collections import deque
 from math import atan2
-from typing import List, Set, Tuple
+from typing import Set, Tuple
 
 from grid_map_msgs.msg import GridMap
 import numpy as np
+from scipy import ndimage
 from std_msgs.msg import Float32MultiArray
 
 from graph_construction.grid_types import ClassifiedGrid, GridIndex
@@ -245,20 +245,59 @@ def _fill_enclosed_regions(
 
     processed = grid.copy()
     target = np.isin(processed, list(target_values))
-    visited = np.zeros(processed.shape, dtype=bool)
-    height, width = processed.shape
+    component_labels, component_count = ndimage.label(
+        target,
+        structure=np.ones((3, 3), dtype=np.uint8),
+    )
+    if component_count == 0:
+        return processed
 
-    for iy in range(height):
-        for ix in range(width):
-            if visited[iy, ix] or not target[iy, ix]:
-                continue
-            component, touches_border = _collect_component(target, visited, ix, iy)
-            if touches_border or len(component) > max_cells:
-                continue
-            if _free_neighbor_ratio(processed, component, free_value) < min_free_neighbor_ratio:
-                continue
-            for cx, cy in component:
-                processed[cy, cx] = free_value
+    component_sizes = np.bincount(component_labels.ravel(), minlength=component_count + 1)
+    border_labels = np.unique(
+        np.concatenate(
+            (
+                component_labels[0, :],
+                component_labels[-1, :],
+                component_labels[:, 0],
+                component_labels[:, -1],
+            )
+        )
+    )
+    boundary_count = np.zeros(component_count + 1, dtype=np.int64)
+    free_boundary_count = np.zeros(component_count + 1, dtype=np.int64)
+    free = processed == free_value
+
+    # Count the same directed component boundary contacts as the previous cell loop
+    for dx, dy in _NEIGHBOR_OFFSETS_8:
+        src_y, dst_y = _shift_slices(processed.shape[0], dy)
+        src_x, dst_x = _shift_slices(processed.shape[1], dx)
+        source_labels = component_labels[src_y, src_x]
+        neighbor_labels = component_labels[dst_y, dst_x]
+        boundary = (source_labels > 0) & (neighbor_labels != source_labels)
+        if not np.any(boundary):
+            continue
+        labels = source_labels[boundary]
+        boundary_count += np.bincount(labels, minlength=component_count + 1)
+        free_contacts = boundary & free[dst_y, dst_x]
+        if np.any(free_contacts):
+            free_boundary_count += np.bincount(
+                source_labels[free_contacts],
+                minlength=component_count + 1,
+            )
+
+    ratios = np.divide(
+        free_boundary_count,
+        boundary_count,
+        out=np.zeros(component_count + 1, dtype=float),
+        where=boundary_count > 0,
+    )
+    fill_labels = (
+        (component_sizes <= max_cells)
+        & (ratios >= min_free_neighbor_ratio)
+    )
+    fill_labels[border_labels] = False
+    fill_labels[0] = False
+    processed[fill_labels[component_labels]] = free_value
 
     return processed
 
@@ -272,74 +311,18 @@ def _remove_small_free_components(
     """移除不足以支撑 graph node 的 free 小岛"""
     processed = grid.copy()
     free = processed == free_value
-    visited = np.zeros(processed.shape, dtype=bool)
-    height, width = processed.shape
-
-    for iy in range(height):
-        for ix in range(width):
-            if visited[iy, ix] or not free[iy, ix]:
-                continue
-            component, _ = _collect_component(free, visited, ix, iy)
-            if len(component) >= min_cells:
-                continue
-            for cx, cy in component:
-                processed[cy, cx] = replacement_value
+    component_labels, component_count = ndimage.label(
+        free,
+        structure=np.ones((3, 3), dtype=np.uint8),
+    )
+    if component_count == 0:
+        return processed
+    component_sizes = np.bincount(component_labels.ravel(), minlength=component_count + 1)
+    small_labels = component_sizes < min_cells
+    small_labels[0] = False
+    processed[small_labels[component_labels]] = replacement_value
 
     return processed
-
-
-def _collect_component(
-    mask: np.ndarray,
-    visited: np.ndarray,
-    start_x: int,
-    start_y: int,
-) -> Tuple[List[GridIndex], bool]:
-    """从 bool mask 中收集一个 8 连通域"""
-    height, width = mask.shape
-    queue: deque[GridIndex] = deque([(start_x, start_y)])
-    visited[start_y, start_x] = True
-    component: List[GridIndex] = []
-    touches_border = False
-
-    while queue:
-        ix, iy = queue.popleft()
-        component.append((ix, iy))
-        if ix == 0 or iy == 0 or ix == width - 1 or iy == height - 1:
-            touches_border = True
-
-        for dx, dy in _NEIGHBOR_OFFSETS_8:
-            nx = ix + dx
-            ny = iy + dy
-            if nx < 0 or ny < 0 or nx >= width or ny >= height:
-                continue
-            if visited[ny, nx] or not mask[ny, nx]:
-                continue
-            visited[ny, nx] = True
-            queue.append((nx, ny))
-
-    return component, touches_border
-
-
-def _free_neighbor_ratio(grid: np.ndarray, component: List[GridIndex], free_value: int) -> float:
-    """估算小型非 free 区域是否被 free 包围"""
-    free_neighbors = 0
-    non_component_neighbors = 0
-    component_set = set(component)
-    height, width = grid.shape
-
-    for ix, iy in component:
-        for dx, dy in _NEIGHBOR_OFFSETS_8:
-            nx = ix + dx
-            ny = iy + dy
-            if nx < 0 or ny < 0 or nx >= width or ny >= height or (nx, ny) in component_set:
-                continue
-            non_component_neighbors += 1
-            if grid[ny, nx] == free_value:
-                free_neighbors += 1
-
-    if non_component_neighbors == 0:
-        return 0.0
-    return float(free_neighbors) / float(non_component_neighbors)
 
 
 def _shift_slices(size: int, offset: int) -> Tuple[slice, slice]:

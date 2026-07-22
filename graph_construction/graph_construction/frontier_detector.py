@@ -3,6 +3,9 @@ from __future__ import annotations
 from math import ceil, hypot, isfinite
 from typing import Dict, Iterable, List, Sequence, Tuple
 
+import numpy as np
+from scipy import ndimage
+
 from graph_construction.graph_memory import GraphState, Point3
 from graph_construction.grid_types import ClassifiedGrid
 
@@ -43,6 +46,8 @@ class FrontierDetector:
             (),
             self.frontier_visited_corridor_radius,
         )
+        self._latest_frontier_mask: np.ndarray | None = None
+        self._latest_frontier_grid_id: int | None = None
 
     @property
     def active_owner_count(self) -> int:
@@ -51,16 +56,27 @@ class FrontierDetector:
 
     def detect_frontier_cells(self, grid: ClassifiedGrid) -> List[GridIndex]:
         """扫描所有 free cell, 找出和 unknown 相邻的边界 cell"""
-        frontier_cells: List[GridIndex] = []
-        for iy in range(grid.height):
-            for ix in range(grid.width):
-                if not grid.is_free_index(ix, iy):
-                    continue
-                if self._near_grid_border(grid, ix, iy):
-                    continue
-                if self._touches_unknown(grid, ix, iy):
-                    frontier_cells.append((ix, iy))
-        return frontier_cells
+        touches_unknown = ndimage.binary_dilation(
+            grid.unknown,
+            structure=np.ones((3, 3), dtype=bool),
+            border_value=0,
+        )
+        frontier = grid.free & touches_unknown
+        margin_cells = max(
+            0,
+            int(ceil(self.frontier_border_margin / grid.resolution)),
+        )
+        if margin_cells > 0:
+            frontier[:margin_cells, :] = False
+            frontier[-margin_cells:, :] = False
+            frontier[:, :margin_cells] = False
+            frontier[:, -margin_cells:] = False
+        self._latest_frontier_mask = frontier
+        self._latest_frontier_grid_id = id(grid)
+        return [
+            (int(ix), int(iy))
+            for iy, ix in np.argwhere(frontier)
+        ]
 
     def assign_frontiers(
         self,
@@ -188,11 +204,7 @@ class FrontierDetector:
                     continue
 
                 ix, iy = grid_index
-                if not grid.is_free_index(ix, iy):
-                    continue
-                if self._near_grid_border(grid, ix, iy):
-                    continue
-                if not self._touches_unknown(grid, ix, iy):
+                if not self._is_frontier_index(grid, ix, iy):
                     continue
                 if explored_areas.contains(point, excluded_node_id=node.node_id):
                     continue
@@ -261,12 +273,30 @@ class FrontierDetector:
             return list(frontier_cells)
 
         bucket_cells = max(1, int(round(spacing / grid.resolution)))
-        selected: Dict[GridIndex, GridIndex] = {}
-        for ix, iy in frontier_cells:
-            key = (ix // bucket_cells, iy // bucket_cells)
-            if key not in selected:
-                selected[key] = (ix, iy)
-        return list(selected.values())
+        cells = np.asarray(frontier_cells, dtype=np.int64)
+        if cells.size == 0:
+            return []
+        buckets = cells // bucket_cells
+        _, first_indices = np.unique(buckets, axis=0, return_index=True)
+        return [
+            (int(cells[index, 0]), int(cells[index, 1]))
+            for index in np.sort(first_indices)
+        ]
+
+    def _is_frontier_index(self, grid: ClassifiedGrid, ix: int, iy: int) -> bool:
+        """优先复用当前帧向量化 Frontier mask"""
+        if (
+            self._latest_frontier_grid_id == id(grid)
+            and self._latest_frontier_mask is not None
+        ):
+            return grid.in_bounds(ix, iy) and bool(
+                self._latest_frontier_mask[iy, ix]
+            )
+        return (
+            grid.is_free_index(ix, iy)
+            and not self._near_grid_border(grid, ix, iy)
+            and self._touches_unknown(grid, ix, iy)
+        )
 
     def _near_grid_border(self, grid: ClassifiedGrid, ix: int, iy: int) -> bool:
         """过滤局部滑窗外边界, 避免把地图边缘当作 frontier"""

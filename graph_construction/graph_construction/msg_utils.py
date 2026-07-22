@@ -16,36 +16,105 @@ from std_msgs.msg import Header
 from graph_construction.graph_memory import GraphState, InternalNode
 
 
-def graph_to_msg(graph: GraphState, header: Header, trav_class: str) -> NavigationGraph:
+class GraphMessageCache:
+    """复用未变化节点和边的 ROS 消息对象"""
+
+    def __init__(self) -> None:
+        self._node_cache: Dict[int, tuple[tuple, Node]] = {}
+        self._edge_cache: Dict[Tuple[int, int], tuple[tuple, Edge]] = {}
+        self._node_ids: tuple[int, ...] = ()
+
+    def build(
+        self,
+        graph: GraphState,
+        header: Header,
+        trav_class: str,
+    ) -> NavigationGraph:
+        """只重新转换内容发生变化的图元素"""
+        msg = NavigationGraph()
+        msg.header = header
+        msg.trav_classes = [trav_class]
+
+        node_ids = tuple(sorted(graph.nodes))
+        if node_ids != self._node_ids:
+            self._edge_cache.clear()
+            self._node_ids = node_ids
+        id_to_index = {
+            node_id: index
+            for index, node_id in enumerate(node_ids)
+        }
+
+        msg.nodes = [
+            self._cached_node(graph.nodes[node_id])
+            for node_id in node_ids
+        ]
+        msg.edges = [
+            self._cached_edge(edge_key, edge.cost, id_to_index)
+            for edge_key, edge in sorted(graph.edges.items())
+            if edge.from_id in id_to_index and edge.to_id in id_to_index
+        ]
+        self._node_cache = {
+            node_id: self._node_cache[node_id]
+            for node_id in node_ids
+            if node_id in self._node_cache
+        }
+        active_edge_keys = set(graph.edges)
+        self._edge_cache = {
+            edge_key: cached
+            for edge_key, cached in self._edge_cache.items()
+            if edge_key in active_edge_keys
+        }
+
+        msg.current_node_idx = id_to_index.get(graph.current_node_id, 0)
+        return msg
+
+    def _cached_node(self, node: InternalNode) -> Node:
+        signature = (
+            node.uuid_bytes,
+            node.position,
+            node.free_radius,
+            node.explored_radius,
+            node.is_frontier,
+            tuple(node.frontier_points),
+        )
+        cached = self._node_cache.get(node.node_id)
+        if cached is None or cached[0] != signature:
+            cached = (signature, _node_to_msg(node))
+            self._node_cache[node.node_id] = cached
+        return cached[1]
+
+    def _cached_edge(
+        self,
+        edge_key: Tuple[int, int],
+        cost: float,
+        id_to_index: Dict[int, int],
+    ) -> Edge:
+        signature = (
+            float(cost),
+            id_to_index[edge_key[0]],
+            id_to_index[edge_key[1]],
+        )
+        cached = self._edge_cache.get(edge_key)
+        if cached is None or cached[0] != signature:
+            cached = (signature, _edge_to_msg(edge_key, cost, id_to_index))
+            self._edge_cache[edge_key] = cached
+        return cached[1]
+
+
+def graph_to_msg(
+    graph: GraphState,
+    header: Header,
+    trav_class: str,
+    cache: GraphMessageCache | None = None,
+) -> NavigationGraph:
     """将内部图记忆转换为公开的 NavigationGraph 消息
 
     graphnav_planner 使用数组下标作为节点索引
     因此这里必须先对内部 node_id 排序, 再建立 node_id 到数组 index 的映射
     Edge.from_idx 和 Edge.to_idx 必须使用转换后的数组 index, 不能直接使用内部 node_id
     """
-    msg = NavigationGraph()
-    msg.header = header
-    msg.trav_classes = [trav_class]
-
-    sorted_nodes = sorted(graph.nodes.values(), key=lambda node: node.node_id)
-    id_to_index: Dict[int, int] = {
-        node.node_id: index
-        for index, node in enumerate(sorted_nodes)
-    }
-
-    msg.nodes = [_node_to_msg(node) for node in sorted_nodes]
-    msg.edges = [
-        _edge_to_msg(edge_key, edge.cost, id_to_index)
-        for edge_key, edge in sorted(graph.edges.items())
-        if edge.from_id in id_to_index and edge.to_id in id_to_index
-    ]
-
-    if graph.current_node_id in id_to_index:
-        msg.current_node_idx = id_to_index[graph.current_node_id]
-    else:
-        msg.current_node_idx = 0
-
-    return msg
+    message_cache = cache if cache is not None else GraphMessageCache()
+    return message_cache.build(graph, header, trav_class)
 
 
 def _node_to_msg(node: InternalNode) -> Node:

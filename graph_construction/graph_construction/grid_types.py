@@ -162,10 +162,15 @@ class ClassifiedGrid:
         line_cells = list(self.world_line_cells(start_xy, end_xy))
         if not line_cells:
             return False
-        for ix, iy in line_cells:
-            if self.is_obstacle_index(ix, iy) or self.is_unknown_index(ix, iy):
-                return False
-        return True
+        cell_array = np.asarray(line_cells, dtype=np.int64)
+        index_x = cell_array[:, 0]
+        index_y = cell_array[:, 1]
+        return not bool(
+            np.any(
+                self.obstacle[index_y, index_x]
+                | self.unknown[index_y, index_x]
+            )
+        )
 
     def world_line_cells(
         self,

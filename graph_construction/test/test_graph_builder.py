@@ -186,6 +186,40 @@ def test_edge_builder_rejects_edges_without_corridor_clearance():
     assert strict_edges == []
 
 
+def test_edge_builder_focus_connects_to_stable_neighbor():
+    """增量重建节点仍可连接未进入 focus 的局部近邻"""
+    grid = ClassifiedGrid(
+        width=8,
+        height=3,
+        resolution=1.0,
+        origin_x=0.0,
+        origin_y=0.0,
+        frame_id="map",
+        free=np.ones((3, 8), dtype=bool),
+        obstacle=np.zeros((3, 8), dtype=bool),
+        unknown=np.zeros((3, 8), dtype=bool),
+    )
+    graph = GraphState()
+    focus = graph.create_node((1.5, 1.5, 0.0), stamp_seconds=1.0)
+    neighbor = graph.create_node((3.5, 1.5, 0.0), stamp_seconds=1.0)
+    graph.create_node((6.5, 1.5, 0.0), stamp_seconds=1.0)
+    edge_builder = EdgeBuilder(edge_radius=3.0, max_neighbors_per_node=4)
+
+    edges = edge_builder.build_edges(
+        graph,
+        grid,
+        distance_to_mask(grid.obstacle, grid.resolution),
+        distance_to_mask(grid.unknown, grid.resolution),
+        node_ids=graph.nodes,
+        focus_node_ids={focus.node_id},
+    )
+
+    assert {
+        tuple(sorted((edge.from_id, edge.to_id)))
+        for edge in edges
+    } == {(focus.node_id, neighbor.node_id)}
+
+
 def test_historical_edge_is_kept_when_current_grid_becomes_unknown():
     """验证当前局部图变 unknown 时不会误删历史边"""
     free = np.zeros((3, 5), dtype=bool)
