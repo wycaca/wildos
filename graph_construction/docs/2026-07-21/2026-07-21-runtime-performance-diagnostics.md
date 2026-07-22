@@ -42,3 +42,29 @@
 - `unhealthy_confirm_frames`, `healthy_confirm_frames`, `health_recovery_ratio`: DLIO 健康去抖和滞回
 
 上线前先观察 P95, 再根据真机算力调整慢处理门槛。不要为了减少告警而直接增大健康误差阈值
+
+## 首轮热点优化
+
+2026-07-21 根据运行日志完成以下优化:
+
+- 距离场由 Python 8 连通队列改为 SciPy 精确欧氏距离变换, 保留地图外视为 unknown 的边界语义
+- GridMap 和 odom 订阅队列深度改为 1, 每帧 GridMap 只构建一次 graph, 慢周期后直接处理最新地图
+- 节点采样使用 KD-Tree 去重, 新边通过 KD-Tree 半径查询且只在当前 GridMap 窗口生成, 窗口外历史边继续保留并接受可见障碍校验
+- WildOS 评分图仍逐帧发布, 调试图像和 Marker 默认每 2 秒最多发布一次, 没有订阅者时不构建可视化消息
+- 默认关闭仅用于可视化路径回溯的 `compute_paths`, 不改变 frontier 最优分数计算
+
+可视化性能入口:
+
+- `visualization_publish_period_sec`: 调试可视化最小发布间隔, 默认 2 秒, 设置为 0 表示不降频
+- `visualization_require_subscribers`: 无订阅者时是否跳过调试消息构建, 默认启用
+- `compute_paths`: 是否为模型调试图回溯像素路径, 默认关闭
+
+本地 152 x 152 栅格基准中, obstacle 和 unknown 距离场平均耗时均约 2.6 ms。包含 240 个节点和 588 条边的合成图连续更新约 241 至 250 ms。该结果用于确认优化方向, 真机验收仍以低频性能日志的 P95 为准
+
+验证结果:
+
+- `graph_construction/test` 和 `visual_navigation/test` 功能测试共 119 项通过
+- uv `test` 依赖组已加入 `pytest>=7,<9`、`flake8` 和 `pydocstyle`, pytest 上限用于兼容 ROS2 Humble `launch_testing`
+- 本次新增和修改的图构建文件通过 flake8, WildOS 修改通过未定义名称检查, 新发布限频模块通过兼容项目注释规则的 pydocstyle 检查
+- `visual_navigation` 包级历史基线仍有 412 个 flake8 和 285 个 pydocstyle 问题, 不属于本次性能优化范围
+- `graph_construction` 和 `visual_navigation` 使用 `colcon build --symlink-install` 构建通过

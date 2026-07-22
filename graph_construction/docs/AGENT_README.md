@@ -14,6 +14,8 @@
 
 DLIO 仿真和真机接入方案见 `docs/2026-07-17/2026-07-17-dlio-integration-plan.md`
 
+运行性能检测和首轮热点优化见 `docs/2026-07-21/2026-07-21-runtime-performance-diagnostics.md`
+
 长期维护的实现细节见 `docs/details/`，当前 topic 契约见 `docs/details/topics.md`
 
 ## 文档维护规则
