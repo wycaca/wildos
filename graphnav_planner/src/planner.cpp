@@ -56,17 +56,27 @@ std::vector<Eigen::Vector3d> remaining_path(
   return suffix;
 }
 
-double path_progress(
+struct PathProgress
+{
+  double distance;
+  size_t segment;
+  double next_waypoint_distance;
+};
+
+PathProgress path_progress_detail(
   const std::vector<Eigen::Vector3d>& path,
   const Eigen::Vector3d& current_position)
 {
   if (path.size() < 2)
   {
-    return 0.0;
+    return {0.0, 0, 0.0};
   }
 
   double best_distance = std::numeric_limits<double>::max();
   double best_progress = 0.0;
+  size_t best_segment = 0;
+  double best_next_waypoint_distance =
+    (path[1] - current_position).norm();
   double accumulated_length = 0.0;
   for (size_t index = 0; index + 1 < path.size(); ++index)
   {
@@ -87,10 +97,13 @@ double path_progress(
     {
       best_distance = distance;
       best_progress = accumulated_length + interpolation * segment_length;
+      best_segment = index;
+      best_next_waypoint_distance =
+        (path[index + 1] - current_position).norm();
     }
     accumulated_length += segment_length;
   }
-  return best_progress;
+  return {best_progress, best_segment, best_next_waypoint_distance};
 }
 
 std::optional<Eigen::Vector3d> terminal_direction(
@@ -161,6 +174,10 @@ const char* selection_reason_name(const std::string& reason)
   if (reason == "confirmed_forward_blocked")
   {
     return "初始前向确认阻塞后改选";
+  }
+  if (reason == "dead_end_recovery")
+  {
+    return "确认死路后分级恢复";
   }
   return "未分类原因";
 }
@@ -332,6 +349,7 @@ void Planner::reset_frontier_branch()
 {
   active_branch_.reset();
   path_invalid_since_.reset();
+  path_invalid_frames_ = 0;
 }
 
 void Planner::clear_deferred_branches()
@@ -366,16 +384,48 @@ void Planner::update_active_branch_progress(
     return;
   }
 
-  // 初始探索使用固定方向投影, 路线重建后仍保持单调进度
-  const double progress = directional_exploration_ ?
-    (current_position - directional_exploration_->origin).dot(
-      directional_exploration_->direction) :
-    path_progress(active_branch_->path_points, current_position);
-  if (progress >= active_branch_->max_path_progress + 0.25)
+  // 使用实际路径弧长和下一路点接近判断进展, 初始方向只参与候选偏好
+  const PathProgress progress = path_progress_detail(
+    active_branch_->path_points,
+    current_position);
+  const bool advanced_segment = progress.segment > active_branch_->progress_segment;
+  const bool advanced_along_path =
+    progress.distance >= active_branch_->max_path_progress + 0.25;
+  const bool approached_next_waypoint =
+    progress.segment == active_branch_->progress_segment &&
+    progress.next_waypoint_distance <=
+      active_branch_->min_next_waypoint_distance - 0.25;
+  const Eigen::Vector3d movement =
+    current_position - active_branch_->progress_position;
+  Eigen::Vector3d next_direction = Eigen::Vector3d::Zero();
+  if (progress.segment + 1 < active_branch_->path_points.size())
   {
-    active_branch_->max_path_progress = progress;
-    active_branch_->progress_time = current_time;
+    next_direction = active_branch_->path_points[progress.segment + 1] -
+      active_branch_->progress_position;
   }
+  const bool moved_toward_route = movement.norm() >= 0.25 &&
+    next_direction.norm() >= 1e-6 &&
+    movement.dot(next_direction.normalized()) >= 0.1;
+  if (advanced_segment || advanced_along_path || approached_next_waypoint ||
+      moved_toward_route)
+  {
+    active_branch_->progress_time = current_time;
+    active_branch_->progress_position = current_position;
+  }
+  if (advanced_segment)
+  {
+    active_branch_->progress_segment = progress.segment;
+    active_branch_->min_next_waypoint_distance = progress.next_waypoint_distance;
+  }
+  else if (progress.segment == active_branch_->progress_segment)
+  {
+    active_branch_->min_next_waypoint_distance = std::min(
+      active_branch_->min_next_waypoint_distance,
+      progress.next_waypoint_distance);
+  }
+  active_branch_->max_path_progress = std::max(
+    active_branch_->max_path_progress,
+    progress.distance);
 }
 
 bool Planner::committed_path_invalid(
@@ -621,7 +671,9 @@ int Planner::branch_relation_rank(BranchRelation relation)
 
 bool Planner::extend_active_branch(
   const FrontierCandidate& candidate,
-  BranchRelation relation)
+  BranchRelation relation,
+  const Eigen::Vector3d& current_position,
+  rclcpp::Time current_time)
 {
   if (!active_branch_ || relation == BranchRelation::none ||
       relation == BranchRelation::same_frontier)
@@ -644,6 +696,19 @@ bool Planner::extend_active_branch(
   active_branch_->frontier_uuid = candidate.uuid;
   active_branch_->terminal_direction = terminal_direction(active_branch_->path_points);
   active_branch_->recovering_deferred = candidate.is_deferred;
+  const PathProgress progress = path_progress_detail(
+    active_branch_->path_points,
+    current_position);
+  active_branch_->max_path_progress = progress.distance;
+  active_branch_->progress_segment = progress.segment;
+  active_branch_->min_next_waypoint_distance = progress.next_waypoint_distance;
+  if (path_changed &&
+      (relation == BranchRelation::ordered_extension ||
+       relation == BranchRelation::deferred_handoff))
+  {
+    active_branch_->progress_time = current_time;
+    active_branch_->progress_position = current_position;
+  }
   return path_changed;
 }
 
@@ -656,6 +721,9 @@ void Planner::reset_exploration_state()
   directional_alternatives_allowed_ = false;
   failed_branches_.clear();
   path_invalid_since_.reset();
+  path_invalid_frames_ = 0;
+  recovery_observe_since_.reset();
+  recovery_log_stage_ = 0;
   direct_path_node_uuids_.clear();
   direct_path_points_.clear();
 }
@@ -715,7 +783,8 @@ Planner::PlanningResult Planner::plan_to_goal(
   Eigen::Vector3d& goal,
   double goal_radius,
   rclcpp::Time current_time,
-  const std::optional<Eigen::Vector3d>& robot_position)
+  const std::optional<Eigen::Vector3d>& robot_position,
+  bool timing_inputs_healthy)
 {
   if (!unexplored_space_map_)
   {
@@ -985,27 +1054,55 @@ Planner::PlanningResult Planner::plan_to_goal(
 
   const bool had_active_branch = active_branch_.has_value();
   bool branch_released = false;
-  update_active_branch_progress(current_position, current_time);
+  if (timing_inputs_healthy)
+  {
+    update_active_branch_progress(current_position, current_time);
+  }
+  else if (active_branch_)
+  {
+    // 输入异常期间冻结失败计时, 恢复后重新开始连续确认
+    active_branch_->start_time = current_time;
+    active_branch_->progress_time = current_time;
+    path_invalid_since_.reset();
+    path_invalid_frames_ = 0;
+  }
+  if (!timing_inputs_healthy)
+  {
+    if (directional_blocked_since_)
+    {
+      directional_blocked_since_ = current_time;
+    }
+    if (recovery_observe_since_)
+    {
+      recovery_observe_since_ = current_time;
+    }
+  }
   const bool path_invalid = committed_path_invalid(
     node_ids_by_uuid,
     uuid_to_string(current_node.uuid),
     current_position);
-  if (path_invalid && !path_invalid_since_)
+  if (timing_inputs_healthy && path_invalid)
   {
-    path_invalid_since_ = current_time;
+    path_invalid_frames_++;
+    if (!path_invalid_since_)
+    {
+      path_invalid_since_ = current_time;
+    }
   }
-  else if (!path_invalid)
+  else
   {
     path_invalid_since_.reset();
+    path_invalid_frames_ = 0;
   }
   if (path_invalid_since_ &&
+      path_invalid_frames_ >= path_invalid_confirm_frames_ &&
       (current_time - *path_invalid_since_).seconds() >= path_invalid_confirm_duration_)
   {
     release_active_branch("path_invalid", current_time);
     branch_released = true;
   }
 
-  if (frontier_progress_timeout_ > 0.0 && active_branch_ &&
+  if (timing_inputs_healthy && frontier_progress_timeout_ > 0.0 && active_branch_ &&
       (current_time - active_branch_->start_time).seconds() >= frontier_progress_start_grace_ &&
       (current_time - active_branch_->progress_time).seconds() >= frontier_progress_timeout_)
   {
@@ -1016,6 +1113,8 @@ Planner::PlanningResult Planner::plan_to_goal(
   {
     directional_alternatives_allowed_ = true;
     directional_blocked_since_.reset();
+    recovery_observe_since_ = current_time;
+    recovery_log_stage_ = 0;
   }
   const auto candidate_direction = [](const FrontierCandidate& candidate) {
     const auto route_direction = terminal_direction(candidate.path_points);
@@ -1041,12 +1140,24 @@ Planner::PlanningResult Planner::plan_to_goal(
 
   std::optional<FrontierCandidate> selected_frontier;
   std::string selection_reason = branch_released ? "branch_recovery" : "initial";
-  if (goal_radius_edges.empty() && branch_released && !deferred_branches_.empty())
+  double selection_backtrack_limit = directional_max_initial_backtrack_;
+  if (goal_radius_edges.empty() && !deferred_branches_.empty())
   {
-    const DeferredBranch* best_branch = nullptr;
-    std::optional<FrontierCandidate> best_candidate;
+    std::unordered_set<std::string> live_frontier_uuids;
+    for (auto& candidate : frontier_candidates)
+    {
+      if (deferred_branches_.find(candidate.uuid) != deferred_branches_.end())
+      {
+        candidate.is_deferred = true;
+      }
+      live_frontier_uuids.insert(candidate.uuid);
+    }
     for (const auto& [branch_uuid, branch] : deferred_branches_)
     {
+      if (live_frontier_uuids.find(branch_uuid) != live_frontier_uuids.end())
+      {
+        continue;
+      }
       const auto node_id_it = node_ids_by_uuid.find(branch_uuid);
       if (node_id_it == node_ids_by_uuid.end())
       {
@@ -1098,8 +1209,8 @@ Planner::PlanningResult Planner::plan_to_goal(
         metrics.forward_progress,
         metrics.backtrack,
         metrics.alignment,
-        0.0,
-        path_it->second.total_weight,
+        deferred_branch_cost_penalty_,
+        path_it->second.total_weight + deferred_branch_cost_penalty_,
         true,
       };
       if (branch_is_suppressed(
@@ -1110,32 +1221,7 @@ Planner::PlanningResult Planner::plan_to_goal(
       {
         continue;
       }
-      const bool candidate_forward = directional_exploration_ && is_live_forward(candidate);
-      const bool best_forward = directional_exploration_ && best_candidate &&
-        is_live_forward(*best_candidate);
-      const double candidate_recovery_cost =
-        candidate.total_cost + candidate.directional_backtrack;
-      const double best_recovery_cost = best_candidate ?
-        best_candidate->total_cost + best_candidate->directional_backtrack :
-        std::numeric_limits<double>::max();
-      const bool better_direction = directional_exploration_ &&
-        (!best_candidate ||
-         (candidate_forward && !best_forward) ||
-         (candidate_forward == best_forward &&
-          candidate_recovery_cost < best_recovery_cost));
-      const bool older_branch = !directional_exploration_ &&
-        (best_branch == nullptr || branch.discovery_order < best_branch->discovery_order);
-      if (!better_direction && !older_branch)
-      {
-        continue;
-      }
-      best_branch = &branch;
-      best_candidate = std::move(candidate);
-    }
-    if (best_candidate)
-    {
-      selected_frontier = std::move(best_candidate);
-      selection_reason = "deferred_recovery";
+      frontier_candidates.push_back(std::move(candidate));
     }
   }
 
@@ -1155,6 +1241,9 @@ Planner::PlanningResult Planner::plan_to_goal(
       }
     }
     const FrontierCandidate* global_best = nullptr;
+    const auto recovery_cost = [](const FrontierCandidate* candidate) {
+      return candidate->total_cost + candidate->directional_backtrack;
+    };
     if (!eligible_candidates.empty())
     {
       global_best = *std::min_element(
@@ -1170,6 +1259,11 @@ Planner::PlanningResult Planner::plan_to_goal(
     {
       for (const FrontierCandidate* candidate : eligible_candidates)
       {
+        if (directional_exploration_ &&
+            candidate->directional_backtrack > active_branch_->backtrack_limit)
+        {
+          continue;
+        }
         const BranchRelation relation = classify_branch_candidate(*candidate, node_ids_by_uuid);
         if (relation == BranchRelation::none)
         {
@@ -1259,20 +1353,82 @@ Planner::PlanningResult Planner::plan_to_goal(
       }
       if (directional_exploration_ && directional_alternatives_allowed_)
       {
+        // 普通探索只允许小幅回退, 实时和历史候选使用同一代价比较
         for (const FrontierCandidate* candidate : eligible_candidates)
         {
+          if (candidate->directional_backtrack > directional_max_initial_backtrack_)
+          {
+            continue;
+          }
           const bool candidate_forward = is_live_forward(*candidate);
           const bool chosen_forward = chosen != nullptr && is_live_forward(*chosen);
           if (chosen == nullptr ||
               (candidate_forward && !chosen_forward) ||
               (candidate_forward == chosen_forward &&
-               candidate->total_cost < chosen->total_cost))
+               recovery_cost(candidate) < recovery_cost(chosen)))
           {
             chosen = candidate;
           }
         }
-        selection_reason = branch_released ? "directional_branch_recovery" :
-          "confirmed_forward_blocked";
+        if (chosen != nullptr)
+        {
+          selection_reason = chosen->is_deferred ? "deferred_recovery" :
+            (branch_released ? "directional_branch_recovery" :
+            "confirmed_forward_blocked");
+          recovery_observe_since_.reset();
+          recovery_log_stage_ = 0;
+        }
+        else
+        {
+          if (!recovery_observe_since_)
+          {
+            recovery_observe_since_ = current_time;
+            recovery_log_stage_ = 0;
+            RCLCPP_WARN(
+              logger_,
+              "普通候选均需大幅回退, 进入原地观察, 普通回退上限=%.1fm",
+              directional_max_initial_backtrack_);
+          }
+          const double observe_elapsed =
+            (current_time - *recovery_observe_since_).seconds();
+          if (observe_elapsed >= recovery_observe_duration_)
+          {
+            const double recovery_elapsed = observe_elapsed - recovery_observe_duration_;
+            const size_t stage = 1 + static_cast<size_t>(
+              std::floor(recovery_elapsed /
+                std::max(dead_end_backtrack_step_duration_, 1e-3)));
+            const double allowed_backtrack = std::min(
+              directional_max_initial_backtrack_ +
+                static_cast<double>(stage) * dead_end_backtrack_step_,
+              dead_end_max_backtrack_);
+            if (stage != recovery_log_stage_)
+            {
+              recovery_log_stage_ = stage;
+              RCLCPP_WARN(
+                logger_,
+                "进入死路恢复, 阶段=%zu, 观察=%.1fs, 回退上限=%.1fm",
+                stage,
+                observe_elapsed,
+                allowed_backtrack);
+            }
+            for (const FrontierCandidate* candidate : eligible_candidates)
+            {
+              if (candidate->directional_backtrack > allowed_backtrack)
+              {
+                continue;
+              }
+              if (chosen == nullptr || recovery_cost(candidate) < recovery_cost(chosen))
+              {
+                chosen = candidate;
+              }
+            }
+            if (chosen != nullptr)
+            {
+              selection_reason = "dead_end_recovery";
+              selection_backtrack_limit = allowed_backtrack;
+            }
+          }
+        }
       }
       else if (!directional_exploration_)
       {
@@ -1289,6 +1445,10 @@ Planner::PlanningResult Planner::plan_to_goal(
   {
     for (const auto& candidate : frontier_candidates)
     {
+      if (candidate.is_deferred)
+      {
+        continue;
+      }
       if (selected_frontier && candidate.uuid == selected_frontier->uuid)
       {
         continue;
@@ -1387,9 +1547,25 @@ Planner::PlanningResult Planner::plan_to_goal(
       active_branch_->path_node_uuids);
     if (!route_has_repeated_nodes(selected_frontier->path_node_uuids))
     {
+      const bool route_rebased =
+        active_branch_->path_node_uuids != selected_frontier->path_node_uuids;
       active_branch_->path_node_uuids = selected_frontier->path_node_uuids;
       active_branch_->path_points = selected_frontier->path_points;
       active_branch_->terminal_direction = terminal_direction(active_branch_->path_points);
+      if (route_rebased)
+      {
+        const PathProgress progress = path_progress_detail(
+          active_branch_->path_points,
+          current_position);
+        active_branch_->max_path_progress = progress.distance;
+        active_branch_->progress_segment = progress.segment;
+        active_branch_->min_next_waypoint_distance = progress.next_waypoint_distance;
+        if (route_unchanged)
+        {
+          active_branch_->progress_time = current_time;
+          active_branch_->progress_position = current_position;
+        }
+      }
     }
     return {
       remaining_path(active_branch_->path_points, current_position),
@@ -1400,29 +1576,39 @@ Planner::PlanningResult Planner::plan_to_goal(
   bool path_changed = false;
   if (active_branch_ && selected_relation != BranchRelation::none)
   {
-    path_changed = extend_active_branch(*selected_frontier, selected_relation);
+    path_changed = extend_active_branch(
+      *selected_frontier,
+      selected_relation,
+      current_position,
+      current_time);
   }
   else
   {
     std::optional<Eigen::Vector3d> branch_direction =
       terminal_direction(selected_frontier->path_points);
-    const double initial_progress = directional_exploration_ ?
-      (current_position - directional_exploration_->origin).dot(
-        directional_exploration_->direction) :
-      path_progress(selected_frontier->path_points, current_position);
+    const PathProgress initial_progress = path_progress_detail(
+      selected_frontier->path_points,
+      current_position);
     active_branch_ = ActiveBranch{
       selected_frontier->position,
       selected_frontier->uuid,
       current_time,
       current_time,
-      initial_progress,
+      initial_progress.distance,
+      initial_progress.segment,
+      initial_progress.next_waypoint_distance,
+      current_position,
       selected_frontier->path_node_uuids,
       selected_frontier->path_points,
       branch_direction,
       selected_frontier->is_deferred,
+      directional_exploration_ ? selection_backtrack_limit :
+        std::numeric_limits<double>::infinity(),
     };
     path_changed = true;
   }
+  recovery_observe_since_.reset();
+  recovery_log_stage_ = 0;
 
   if (path_changed)
   {

@@ -40,6 +40,13 @@ def resolve_localization_wiring(
             backend=normalized_backend,
             odom_input_topic=_required(profile, "odom_input_topic"),
             mapping_pointcloud_topic=_required(profile, "aligned_lidar_topic"),
+            dlio_pointcloud_input_topic=_required(
+                profile,
+                "pointcloud_input_topic",
+            ),
+            dlio_imu_input_topic=str(
+                profile.get("dlio_imu_input_topic", "")
+            ).strip(),
         )
 
     return LocalizationWiring(

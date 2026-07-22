@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cmath>
 #include <deque>
+#include <limits>
 #include <numeric>
 #include <optional>
 #include <stdexcept>
@@ -43,7 +44,17 @@ public:
     this->declare_parameter("frontier_failure_cooldown", 60.0);
     this->declare_parameter("frontier_failure_merge_radius", 2.5);
     this->declare_parameter("path_invalid_confirm_duration", 1.5);
+    this->declare_parameter("path_invalid_confirm_frames", 3);
+    this->declare_parameter("recovery_observe_duration", 3.0);
+    this->declare_parameter("dead_end_backtrack_step", 2.0);
+    this->declare_parameter("dead_end_backtrack_step_duration", 5.0);
+    this->declare_parameter("dead_end_max_backtrack", 10.0);
+    this->declare_parameter("deferred_branch_cost_penalty", 3.0);
     this->declare_parameter("revisit_cost_factor", 1.0);
+    this->declare_parameter("max_graph_age_sec", 2.0);
+    this->declare_parameter("max_odom_age_sec", 1.0);
+    this->declare_parameter("odom_reset_distance", 3.0);
+    this->declare_parameter("odom_reset_speed", 12.0);
     this->declare_parameter("diagnostics_log_period_sec", 30.0);
     this->declare_parameter("slow_planning_warning_ms", 200.0);
 
@@ -73,7 +84,29 @@ public:
       nonnegative_parameter("frontier_failure_merge_radius");
     planner_.path_invalid_confirm_duration_ =
       nonnegative_parameter("path_invalid_confirm_duration");
+    const auto invalid_confirm_frames =
+      this->get_parameter("path_invalid_confirm_frames").as_int();
+    if (invalid_confirm_frames <= 0)
+    {
+      throw std::invalid_argument("path_invalid_confirm_frames must be positive");
+    }
+    planner_.path_invalid_confirm_frames_ =
+      static_cast<size_t>(invalid_confirm_frames);
+    planner_.recovery_observe_duration_ =
+      nonnegative_parameter("recovery_observe_duration");
+    planner_.dead_end_backtrack_step_ =
+      nonnegative_parameter("dead_end_backtrack_step");
+    planner_.dead_end_backtrack_step_duration_ =
+      nonnegative_parameter("dead_end_backtrack_step_duration");
+    planner_.dead_end_max_backtrack_ =
+      nonnegative_parameter("dead_end_max_backtrack");
+    planner_.deferred_branch_cost_penalty_ =
+      nonnegative_parameter("deferred_branch_cost_penalty");
     planner_.revisit_cost_factor_ = nonnegative_parameter("revisit_cost_factor");
+    max_graph_age_sec_ = nonnegative_parameter("max_graph_age_sec");
+    max_odom_age_sec_ = nonnegative_parameter("max_odom_age_sec");
+    odom_reset_distance_ = nonnegative_parameter("odom_reset_distance");
+    odom_reset_speed_ = nonnegative_parameter("odom_reset_speed");
 
     planner_.set_trav_class("default");
 
@@ -116,7 +149,9 @@ public:
           this->on_object_search_status(*msg);
         });
     odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
-        "~/odom", 10, [this](const nav_msgs::msg::Odometry::ConstSharedPtr msg) { this->odom_ = msg; });
+        "~/odom", 10, [this](const nav_msgs::msg::Odometry::ConstSharedPtr msg) {
+          this->on_odom(msg);
+        });
 
     path_pub_ = this->create_publisher<nav_msgs::msg::Path>("~/path", 10);
     grid_map_debug_pub_ = this->create_publisher<grid_map_msgs::msg::GridMap>("~/unexplored_space_map", 10);
@@ -211,6 +246,63 @@ private:
       std::abs(std::abs(quaternion_dot) - 1.0) <= 1e-6;
   }
 
+  void on_odom(const nav_msgs::msg::Odometry::ConstSharedPtr& msg)
+  {
+    if (odom_)
+    {
+      const rclcpp::Time current_stamp(msg->header.stamp, this->get_clock()->get_clock_type());
+      const rclcpp::Time previous_stamp(
+        odom_->header.stamp,
+        this->get_clock()->get_clock_type());
+      const double dt = (current_stamp - previous_stamp).seconds();
+      const double dx = msg->pose.pose.position.x - odom_->pose.pose.position.x;
+      const double dy = msg->pose.pose.position.y - odom_->pose.pose.position.y;
+      const double dz = msg->pose.pose.position.z - odom_->pose.pose.position.z;
+      const double distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+      const double speed = dt > 1e-3 ? distance / dt :
+        std::numeric_limits<double>::infinity();
+      const bool clock_reset = dt < -0.1;
+      const bool pose_reset = distance >= odom_reset_distance_ &&
+        (dt <= 0.0 || speed >= odom_reset_speed_);
+      if (clock_reset || pose_reset)
+      {
+        // Unity 手动重置会改变时间或位姿, 旧探索状态不能跨重置继续使用
+        planner_.reset_exploration_state();
+        goal_pose_.reset();
+        last_hold_goal_.reset();
+        latest_graph_header_.reset();
+        manual_reset_events_++;
+        RCLCPP_WARN(
+          this->get_logger(),
+          "检测到 Unity 重置或 odom 跳变, 已清理探索状态, distance=%.2fm, dt=%.3fs, speed=%.2fm/s",
+          distance,
+          dt,
+          speed);
+      }
+    }
+    odom_ = msg;
+  }
+
+  bool planning_inputs_healthy(double& graph_age, double& odom_age)
+  {
+    graph_age = std::numeric_limits<double>::infinity();
+    odom_age = std::numeric_limits<double>::infinity();
+    if (!latest_graph_header_ || !odom_)
+    {
+      return false;
+    }
+    const rclcpp::Time now = this->get_clock()->now();
+    graph_age = (now - rclcpp::Time(
+      latest_graph_header_->stamp,
+      now.get_clock_type())).seconds();
+    odom_age = (now - rclcpp::Time(
+      odom_->header.stamp,
+      now.get_clock_type())).seconds();
+    constexpr double future_tolerance = 0.1;
+    return graph_age >= -future_tolerance && graph_age <= max_graph_age_sec_ &&
+      odom_age >= -future_tolerance && odom_age <= max_odom_age_sec_;
+  }
+
   void plan_to_goal()
   {
     if (goal_pose_ && latest_graph_header_)
@@ -273,11 +365,25 @@ private:
         }
       }
       const auto planning_started = std::chrono::steady_clock::now();
+      double graph_age = 0.0;
+      double odom_age = 0.0;
+      const bool timing_inputs_healthy = planning_inputs_healthy(graph_age, odom_age);
+      if (!timing_inputs_healthy)
+      {
+        RCLCPP_WARN_THROTTLE(
+          this->get_logger(),
+          *this->get_clock(),
+          10000,
+          "规划输入不新鲜, 已冻结分支失败计时, graph_age=%.3fs, odom_age=%.3fs",
+          graph_age,
+          odom_age);
+      }
       const auto planning_result = planner_.plan_to_goal(
         goal_vec,
         goal_radius_,
         this->get_clock()->now(),
-        robot_position);
+        robot_position,
+        timing_inputs_healthy);
       const double planning_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - planning_started).count();
       record_planning_timing(planning_ms);
@@ -429,17 +535,19 @@ private:
     RCLCPP_INFO(
       this->get_logger(),
       "路径规划性能, 频率=%.2fHz, 规划耗时=平均%.1f/95%%上限%.1f/最大%.1fms, "
-      "路线变化=%zu次, 空路线=%zu次",
+      "路线变化=%zu次, 空路线=%zu次, Unity重置=%zu次",
       rate,
       average,
       samples[p95_index],
       samples.back(),
       path_changes_,
-      empty_paths_);
+      empty_paths_,
+      manual_reset_events_);
     planning_timings_ms_.clear();
     planning_calls_ = 0;
     path_changes_ = 0;
     empty_paths_ = 0;
+    manual_reset_events_ = 0;
   }
 
   rclcpp::Subscription<graphnav_msgs::msg::NavigationGraph>::SharedPtr graph_sub_;
@@ -463,10 +571,15 @@ private:
   double goal_radius_;
   double diagnostics_log_period_sec_;
   double slow_planning_warning_ms_;
+  double max_graph_age_sec_;
+  double max_odom_age_sec_;
+  double odom_reset_distance_;
+  double odom_reset_speed_;
   std::deque<double> planning_timings_ms_;
   size_t planning_calls_ = 0;
   size_t path_changes_ = 0;
   size_t empty_paths_ = 0;
+  size_t manual_reset_events_ = 0;
   std::chrono::steady_clock::time_point last_slow_warning_{};
 
   Planner planner_;

@@ -12,7 +12,17 @@
     frontier_failure_cooldown: 60.0
     frontier_failure_merge_radius: 2.5
     path_invalid_confirm_duration: 1.5
+    path_invalid_confirm_frames: 3
+    recovery_observe_duration: 3.0
+    dead_end_backtrack_step: 2.0
+    dead_end_backtrack_step_duration: 5.0
+    dead_end_max_backtrack: 10.0
+    deferred_branch_cost_penalty: 3.0
     revisit_cost_factor: 1.0
+    max_graph_age_sec: 2.0
+    max_odom_age_sec: 1.0
+    odom_reset_distance: 3.0
+    odom_reset_speed: 12.0
     goal_radius: 3.0
     diagnostics_log_period_sec: 30.0
     slow_planning_warning_ms: 200.0

@@ -108,7 +108,8 @@ graphnav_msgs::msg::NavigationGraph::SharedPtr make_frontier_owner_behind_graph(
   return graph;
 }
 
-graphnav_msgs::msg::NavigationGraph::SharedPtr make_extended_branch_graph()
+graphnav_msgs::msg::NavigationGraph::SharedPtr make_extended_branch_graph(
+  std::uint32_t current_node_idx = 1)
 {
   auto graph = std::make_shared<graphnav_msgs::msg::NavigationGraph>();
   graph->trav_classes = {"default"};
@@ -123,7 +124,7 @@ graphnav_msgs::msg::NavigationGraph::SharedPtr make_extended_branch_graph()
     make_edge(0, 2),
     make_edge(1, 3),
   };
-  graph->current_node_idx = 0;
+  graph->current_node_idx = current_node_idx;
   return graph;
 }
 
@@ -296,10 +297,18 @@ TEST(DirectionalSelection, ConfirmsForwardBlockBeforeSelectingRearBranch)
   EXPECT_FALSE(pending.path_changed);
   EXPECT_TRUE(pending.path.empty());
 
-  const auto recovered = planner.plan_to_goal(
+  const auto observing = planner.plan_to_goal(
     goal,
     3.0,
     rclcpp::Time(6, 0, RCL_ROS_TIME),
+    Eigen::Vector3d::Zero());
+  EXPECT_FALSE(observing.path_changed);
+  EXPECT_TRUE(observing.path.empty());
+
+  const auto recovered = planner.plan_to_goal(
+    goal,
+    3.0,
+    rclcpp::Time(14, 0, RCL_ROS_TIME),
     Eigen::Vector3d::Zero());
   EXPECT_TRUE(recovered.path_changed);
   ASSERT_FALSE(recovered.path.empty());
@@ -368,6 +377,28 @@ TEST(CommittedBranch, PublishesOnlyOrderedTailExtension)
   EXPECT_DOUBLE_EQ(extended.path.back().x(), 10.0);
 }
 
+TEST(CommittedBranch, RejectsContinuationThatExceedsNormalBacktrackLimit)
+{
+  Planner planner = make_planner();
+  Eigen::Vector3d goal(30.0, 0.0, 0.0);
+  planner.update_graph(make_opposite_branch_graph(true));
+  ASSERT_TRUE(planner.plan_to_goal(
+    goal,
+    3.0,
+    rclcpp::Time(0, 0, RCL_ROS_TIME),
+    Eigen::Vector3d::Zero()).path_changed);
+
+  planner.update_graph(make_extended_branch_graph(0));
+  const auto retained = planner.plan_to_goal(
+    goal,
+    3.0,
+    rclcpp::Time(5, 0, RCL_ROS_TIME),
+    Eigen::Vector3d(4.0, 0.0, 0.0));
+  EXPECT_FALSE(retained.path_changed);
+  ASSERT_FALSE(retained.path.empty());
+  EXPECT_DOUBLE_EQ(retained.path.back().x(), 5.0);
+}
+
 TEST(CommittedBranch, RejectsCandidateThatOnlySharesPathPrefix)
 {
   Planner planner = make_planner();
@@ -420,14 +451,72 @@ TEST(CommittedBranch, StartGracePreventsPrematureNoProgressRecovery)
   ASSERT_FALSE(retained.path.empty());
   EXPECT_GT(retained.path.back().x(), 0.0);
 
-  const auto recovered = planner.plan_to_goal(
+  const auto observing = planner.plan_to_goal(
     goal,
     3.0,
     rclcpp::Time(21, 0, RCL_ROS_TIME),
     Eigen::Vector3d(-1.0, 0.0, 0.0));
+  EXPECT_TRUE(observing.path_changed);
+  EXPECT_TRUE(observing.path.empty());
+
+  const auto recovered = planner.plan_to_goal(
+    goal,
+    3.0,
+    rclcpp::Time(24, 0, RCL_ROS_TIME),
+    Eigen::Vector3d(-1.0, 0.0, 0.0));
   EXPECT_TRUE(recovered.path_changed);
   ASSERT_FALSE(recovered.path.empty());
   EXPECT_LT(recovered.path.back().x(), 0.0);
+}
+
+TEST(CommittedBranch, UsesDetourPathProgressInsteadOfInitialAxis)
+{
+  Planner planner = make_planner();
+  Eigen::Vector3d goal(30.0, 0.0, 0.0);
+  planner.update_graph(make_forward_detour_graph());
+  ASSERT_TRUE(planner.plan_to_goal(
+    goal,
+    3.0,
+    rclcpp::Time(0, 0, RCL_ROS_TIME),
+    Eigen::Vector3d::Zero()).path_changed);
+
+  const auto progressed = planner.plan_to_goal(
+    goal,
+    3.0,
+    rclcpp::Time(21, 0, RCL_ROS_TIME),
+    Eigen::Vector3d(-1.0, 0.0, 0.0));
+  EXPECT_FALSE(progressed.path_changed);
+  ASSERT_FALSE(progressed.path.empty());
+  EXPECT_GT(progressed.path.back().x(), 0.0);
+}
+
+TEST(CommittedBranch, FreezesFailureTimerWhenInputsAreStale)
+{
+  Planner planner = make_planner();
+  Eigen::Vector3d goal(30.0, 0.0, 0.0);
+  planner.update_graph(make_opposite_branch_graph(true));
+  ASSERT_TRUE(planner.plan_to_goal(
+    goal,
+    3.0,
+    rclcpp::Time(0, 0, RCL_ROS_TIME),
+    Eigen::Vector3d::Zero()).path_changed);
+
+  const auto stale = planner.plan_to_goal(
+    goal,
+    3.0,
+    rclcpp::Time(30, 0, RCL_ROS_TIME),
+    Eigen::Vector3d::Zero(),
+    false);
+  EXPECT_FALSE(stale.path_changed);
+  ASSERT_FALSE(stale.path.empty());
+
+  const auto recovered_input = planner.plan_to_goal(
+    goal,
+    3.0,
+    rclcpp::Time(31, 0, RCL_ROS_TIME),
+    Eigen::Vector3d::Zero());
+  EXPECT_FALSE(recovered_input.path_changed);
+  ASSERT_FALSE(recovered_input.path.empty());
 }
 
 TEST(CommittedBranch, ReleasesBranchWhenCommittedEdgeDisappears)
@@ -451,10 +540,26 @@ TEST(CommittedBranch, ReleasesBranchWhenCommittedEdgeDisappears)
   ASSERT_FALSE(pending.path.empty());
   EXPECT_GT(pending.path.back().x(), 0.0);
 
-  const auto recovered = planner.plan_to_goal(
+  const auto second_pending = planner.plan_to_goal(
+    goal,
+    3.0,
+    rclcpp::Time(2, 0, RCL_ROS_TIME),
+    Eigen::Vector3d::Zero());
+  EXPECT_FALSE(second_pending.path_changed);
+  ASSERT_FALSE(second_pending.path.empty());
+
+  const auto observing = planner.plan_to_goal(
     goal,
     3.0,
     rclcpp::Time(3, 0, RCL_ROS_TIME),
+    Eigen::Vector3d::Zero());
+  EXPECT_TRUE(observing.path_changed);
+  EXPECT_TRUE(observing.path.empty());
+
+  const auto recovered = planner.plan_to_goal(
+    goal,
+    3.0,
+    rclcpp::Time(11, 0, RCL_ROS_TIME),
     Eigen::Vector3d::Zero());
   EXPECT_TRUE(recovered.path_changed);
   ASSERT_FALSE(recovered.path.empty());
@@ -472,10 +577,18 @@ TEST(CommittedBranch, FailedCorridorsSuppressNearbyUuidAliases)
     rclcpp::Time(0, 0, RCL_ROS_TIME),
     Eigen::Vector3d::Zero()).path_changed);
 
-  const auto first_recovery = planner.plan_to_goal(
+  const auto observing = planner.plan_to_goal(
     goal,
     3.0,
     rclcpp::Time(21, 0, RCL_ROS_TIME),
+    Eigen::Vector3d::Zero());
+  EXPECT_TRUE(observing.path_changed);
+  EXPECT_TRUE(observing.path.empty());
+
+  const auto first_recovery = planner.plan_to_goal(
+    goal,
+    3.0,
+    rclcpp::Time(29, 0, RCL_ROS_TIME),
     Eigen::Vector3d::Zero());
   ASSERT_TRUE(first_recovery.path_changed);
   ASSERT_FALSE(first_recovery.path.empty());
@@ -485,7 +598,7 @@ TEST(CommittedBranch, FailedCorridorsSuppressNearbyUuidAliases)
   const auto exhausted = planner.plan_to_goal(
     goal,
     3.0,
-    rclcpp::Time(42, 0, RCL_ROS_TIME),
+    rclcpp::Time(50, 0, RCL_ROS_TIME),
     Eigen::Vector3d::Zero());
   EXPECT_TRUE(exhausted.path_changed);
   EXPECT_TRUE(exhausted.path.empty());
@@ -506,12 +619,17 @@ TEST(CommittedBranch, DeferredHandoffRebuildsPathWithoutReturningToOldTail)
     3.0,
     rclcpp::Time(21, 0, RCL_ROS_TIME),
     Eigen::Vector3d::Zero()).path_changed);
+  ASSERT_TRUE(planner.plan_to_goal(
+    goal,
+    3.0,
+    rclcpp::Time(29, 0, RCL_ROS_TIME),
+    Eigen::Vector3d::Zero()).path_changed);
 
   planner.update_graph(make_deferred_handoff_graph());
   const auto handoff = planner.plan_to_goal(
     goal,
     3.0,
-    rclcpp::Time(22, 0, RCL_ROS_TIME),
+    rclcpp::Time(30, 0, RCL_ROS_TIME),
     Eigen::Vector3d::Zero());
   ASSERT_TRUE(handoff.path_changed);
   ASSERT_EQ(handoff.path.size(), 2U);

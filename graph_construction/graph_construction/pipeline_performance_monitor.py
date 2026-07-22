@@ -42,7 +42,7 @@ class PipelinePerformanceMonitor(Node):
     TOPIC_LABELS = {
         "lidar": "雷达",
         "imu": "IMU",
-        "cloud": "DLIO点云",
+        "cloud": "对齐点云",
         "odom": "里程计",
         "map": "高程图",
         "graph": "导航图",
@@ -63,6 +63,8 @@ class PipelinePerformanceMonitor(Node):
         for name, parameter, default_topic, message_type, sensor_qos in self.TOPICS:
             self.declare_parameter(parameter, default_topic)
             topic = str(self.get_parameter(parameter).value)
+            if not topic:
+                continue
             qos = qos_profile_sensor_data if sensor_qos else 10
             self.create_subscription(
                 message_type,

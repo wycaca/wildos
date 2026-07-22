@@ -26,6 +26,8 @@ def test_unity_platform_localization_keeps_existing_topics():
 
     assert wiring.odom_input_topic == "/unity/odom"
     assert wiring.mapping_pointcloud_topic == "/livox/lidar_aligned"
+    assert wiring.dlio_pointcloud_input_topic == "/livox/lidar"
+    assert wiring.dlio_imu_input_topic == "/livox/imu"
     assert wiring.use_pointcloud_axis_adapter is True
     assert wiring.isolate_platform_tf is False
 

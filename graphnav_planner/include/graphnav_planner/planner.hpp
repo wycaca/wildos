@@ -245,7 +245,8 @@ public:
     Eigen::Vector3d& goal,
     double goal_radius,
     rclcpp::Time current_time,
-    const std::optional<Eigen::Vector3d>& robot_position = std::nullopt);
+    const std::optional<Eigen::Vector3d>& robot_position = std::nullopt,
+    bool timing_inputs_healthy = true);
 
   grid_map_msgs::msg::GridMap get_unexplored_debug_map()
   {
@@ -272,10 +273,14 @@ private:
     rclcpp::Time start_time;
     rclcpp::Time progress_time;
     double max_path_progress;
+    size_t progress_segment;
+    double min_next_waypoint_distance;
+    Eigen::Vector3d progress_position;
     std::vector<std::string> path_node_uuids;
     std::vector<Eigen::Vector3d> path_points;
     std::optional<Eigen::Vector3d> terminal_direction;
     bool recovering_deferred;
+    double backtrack_limit;
   };
 
   struct DeferredBranch
@@ -340,6 +345,9 @@ private:
   std::uint64_t next_deferred_branch_order_ = 0;
   std::vector<FailedBranch> failed_branches_;
   std::optional<rclcpp::Time> path_invalid_since_;
+  size_t path_invalid_frames_ = 0;
+  std::optional<rclcpp::Time> recovery_observe_since_;
+  size_t recovery_log_stage_ = 0;
   std::optional<std::string> last_current_node_uuid_;
   std::unordered_set<std::string> traversed_edges_;
   std::vector<std::string> direct_path_node_uuids_;
@@ -374,7 +382,9 @@ private:
   static int branch_relation_rank(BranchRelation relation);
   bool extend_active_branch(
     const FrontierCandidate& candidate,
-    BranchRelation relation);
+    BranchRelation relation,
+    const Eigen::Vector3d& current_position,
+    rclcpp::Time current_time);
   static std::string stable_edge_key(
     const graphnav_msgs::msg::UUID& from_uuid,
     const graphnav_msgs::msg::UUID& to_uuid);
@@ -392,6 +402,12 @@ public:
   double frontier_failure_cooldown_ = 60.0;
   double frontier_failure_merge_radius_ = 2.5;
   double path_invalid_confirm_duration_ = 1.5;
+  size_t path_invalid_confirm_frames_ = 3;
+  double recovery_observe_duration_ = 3.0;
+  double dead_end_backtrack_step_ = 2.0;
+  double dead_end_backtrack_step_duration_ = 5.0;
+  double dead_end_max_backtrack_ = 10.0;
+  double deferred_branch_cost_penalty_ = 3.0;
   double revisit_cost_factor_ = 1.0;
 
   visualization_msgs::msg::MarkerArray get_score_visualization(const rclcpp::Time& stamp, std::string frame_id, bool with_id_text = false) const;
