@@ -5,7 +5,6 @@ from math import hypot
 from typing import Dict, Iterable, List, Tuple
 
 import numpy as np
-from scipy.spatial import cKDTree
 
 from graph_construction.graph_memory import GraphState, InternalEdge
 from graph_construction.grid_types import ClassifiedGrid
@@ -18,7 +17,6 @@ class EdgeBuildStats:
     candidate_pair_count: int = 0
     clearance_check_count: int = 0
     historical_check_count: int = 0
-    anchor_check_count: int = 0
     selected_edge_count: int = 0
 
 
@@ -41,6 +39,10 @@ class EdgeBuilder:
         self.max_neighbors_per_node = max_neighbors_per_node
         self.current_node_max_neighbors = current_node_max_neighbors
         self.max_candidates_per_node = max(1, int(max_candidates_per_node))
+        self.last_stats = EdgeBuildStats()
+
+    def reset_stats(self) -> None:
+        """重置当前帧边更新统计"""
         self.last_stats = EdgeBuildStats()
 
     def build_edges(
@@ -76,7 +78,7 @@ class EdgeBuilder:
             if focus_node_ids is None
             else set(focus_node_ids)
         )
-        self.last_stats = EdgeBuildStats()
+        self.reset_stats()
         selected_edges: Dict[Tuple[int, int], InternalEdge] = {}
         candidate_edges: Dict[int, List[Tuple[float, int, InternalEdge]]] = {
             node.node_id: []
@@ -88,46 +90,32 @@ class EdgeBuilder:
             if focus_ids is None
             else [node for node in nodes if node.node_id in focus_ids]
         )
+        local_node_ids = {node.node_id for node in nodes}
         nearby_pairs: set[Tuple[int, int]] = set()
         if len(nodes) >= 2 and output_nodes:
-            positions = np.asarray(
-                [(node.position[0], node.position[1]) for node in nodes],
-                dtype=np.float64,
-            )
-            node_index = {
-                node.node_id: index
-                for index, node in enumerate(nodes)
-            }
-            spatial_index = cKDTree(positions)
-            query_count = min(
-                len(nodes),
-                self.max_candidates_per_node + 1,
-            )
             for node in output_nodes:
-                index_a = node_index[node.node_id]
-                distances, indices = spatial_index.query(
-                    positions[index_a],
-                    k=query_count,
-                    distance_upper_bound=self.edge_radius,
+                nearby_node_ids = graph.node_ids_within(
+                    node.position,
+                    self.edge_radius,
                 )
-                for distance, index_b in zip(
-                    np.atleast_1d(distances),
-                    np.atleast_1d(indices),
-                ):
-                    if (
-                        not np.isfinite(distance)
-                        or int(index_b) >= len(nodes)
-                        or int(index_b) == index_a
-                    ):
-                        continue
-                    nearby_pairs.add(
-                        tuple(sorted((index_a, int(index_b))))
-                    )
+                ranked_neighbors = sorted(
+                    (
+                        (
+                            graph.nodes[node_id].distance_xy(node.position),
+                            node_id,
+                        )
+                        for node_id in nearby_node_ids
+                        if node_id in local_node_ids and node_id != node.node_id
+                    ),
+                    key=lambda item: (item[0], item[1]),
+                )
+                for _, neighbor_id in ranked_neighbors[:self.max_candidates_per_node]:
+                    nearby_pairs.add(_edge_key(node.node_id, neighbor_id))
         self.last_stats.candidate_pair_count = len(nearby_pairs)
 
-        for index_a, index_b in sorted(nearby_pairs):
-            node_a = nodes[index_a]
-            node_b = nodes[index_b]
+        for node_id_a, node_id_b in sorted(nearby_pairs):
+            node_a = graph.nodes[node_id_a]
+            node_b = graph.nodes[node_id_b]
             dx = node_a.position[0] - node_b.position[0]
             dy = node_a.position[1] - node_b.position[1]
             distance = hypot(dx, dy)
@@ -225,65 +213,6 @@ class EdgeBuilder:
             )
 
         return list(selected_edges.values())
-
-    def build_robot_anchor_edges(
-        self,
-        graph: GraphState,
-        anchor_id: int,
-        grid: ClassifiedGrid,
-        sdf_obstacle: np.ndarray | None = None,
-        min_clearance: float = 0.0,
-        edge_radius: float | None = None,
-        max_edges: int | None = None,
-    ) -> List[InternalEdge]:
-        """为机器人锚点连接当前可见段未碰障碍的近邻节点"""
-        anchor = graph.nodes.get(anchor_id)
-        if anchor is None:
-            return []
-
-        radius = (
-            self.edge_radius
-            if edge_radius is None or edge_radius <= 0.0
-            else float(edge_radius)
-        )
-        limit = max(
-            1,
-            int(
-                max_edges
-                if max_edges is not None
-                else self.current_node_max_neighbors
-            ),
-        )
-        candidates: List[Tuple[float, InternalEdge]] = []
-        nearby_node_ids = graph.node_ids_within(anchor.position, radius)
-        for node_id in nearby_node_ids:
-            node = graph.nodes.get(node_id)
-            if node is None:
-                continue
-            if node.node_id == anchor_id or node.is_robot_anchor:
-                continue
-            dx = anchor.position[0] - node.position[0]
-            dy = anchor.position[1] - node.position[1]
-            distance = hypot(dx, dy)
-            if distance > radius:
-                continue
-            self.last_stats.anchor_check_count += 1
-            if not _historical_edge_has_no_local_contradiction(
-                grid,
-                (anchor.position[0], anchor.position[1]),
-                (node.position[0], node.position[1]),
-                sdf_obstacle,
-                min_clearance,
-            ):
-                continue
-            candidates.append(
-                (
-                    distance,
-                    InternalEdge(from_id=anchor_id, to_id=node.node_id, cost=distance),
-                )
-            )
-
-        return [edge for _, edge in sorted(candidates, key=lambda item: item[0])[:limit]]
 
     def _neighbor_limit(self, graph: GraphState, node_id: int) -> int:
         """当前节点允许更多近邻边, 其他节点保持稀疏"""

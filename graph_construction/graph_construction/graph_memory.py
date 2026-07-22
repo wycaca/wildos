@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from math import floor, hypot
+from math import ceil, floor, hypot
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 import uuid
 
@@ -93,6 +93,76 @@ class NodeSpatialIndex:
         )
 
 
+class EdgeSpatialIndex:
+    """按世界空间桶记录边经过的区域, 支持局部地图变化精确查边"""
+
+    def __init__(self, bucket_size: float = 0.5) -> None:
+        self.bucket_size = max(0.1, float(bucket_size))
+        self._buckets: Dict[SpatialKey, Set[EdgeKey]] = {}
+        self._edge_keys: Dict[EdgeKey, Set[SpatialKey]] = {}
+
+    def insert(self, edge_key: EdgeKey, start: Point3, end: Point3) -> None:
+        """插入边经过的空间桶, 替换已有索引"""
+        self.remove(edge_key)
+        spatial_keys = set(self._line_keys(start, end))
+        self._edge_keys[edge_key] = spatial_keys
+        for spatial_key in spatial_keys:
+            self._buckets.setdefault(spatial_key, set()).add(edge_key)
+
+    def remove(self, edge_key: EdgeKey) -> None:
+        """删除边及其全部空间桶引用"""
+        for spatial_key in self._edge_keys.pop(edge_key, ()):
+            bucket = self._buckets.get(spatial_key)
+            if bucket is None:
+                continue
+            bucket.discard(edge_key)
+            if not bucket:
+                self._buckets.pop(spatial_key, None)
+
+    def clear(self) -> None:
+        """清空全部边空间索引"""
+        self._buckets.clear()
+        self._edge_keys.clear()
+
+    def query_points(self, points: Iterable[Point2], radius: float = 0.0) -> Set[EdgeKey]:
+        """返回经过查询点附近空间桶的边"""
+        bucket_radius = max(0, int(ceil(max(0.0, float(radius)) / self.bucket_size)))
+        result: Set[EdgeKey] = set()
+        for point in points:
+            center_x = int(floor(point[0] / self.bucket_size))
+            center_y = int(floor(point[1] / self.bucket_size))
+            for offset_y in range(-bucket_radius, bucket_radius + 1):
+                for offset_x in range(-bucket_radius, bucket_radius + 1):
+                    result.update(
+                        self._buckets.get((center_x + offset_x, center_y + offset_y), ())
+                    )
+        return result
+
+    def _line_keys(self, start: Point3, end: Point3) -> Iterable[SpatialKey]:
+        """使用整数栅格线生成边中心线经过的世界空间桶"""
+        x0 = int(floor(start[0] / self.bucket_size))
+        y0 = int(floor(start[1] / self.bucket_size))
+        x1 = int(floor(end[0] / self.bucket_size))
+        y1 = int(floor(end[1] / self.bucket_size))
+        dx = abs(x1 - x0)
+        dy = abs(y1 - y0)
+        step_x = 1 if x0 < x1 else -1
+        step_y = 1 if y0 < y1 else -1
+        error = dx - dy
+        x, y = x0, y0
+        while True:
+            yield x, y
+            if x == x1 and y == y1:
+                break
+            doubled_error = 2 * error
+            if doubled_error > -dy:
+                error -= dy
+                x += step_x
+            if doubled_error < dx:
+                error += dx
+                y += step_y
+
+
 @dataclass
 class InternalNode:
     """内部图节点, 保存稳定身份和导航元数据
@@ -111,7 +181,6 @@ class InternalNode:
     frontier_points: List[Point3] = field(default_factory=list)
     is_frontier: bool = False
     last_seen_time: float = 0.0
-    is_robot_anchor: bool = False
 
     def distance_xy(self, position: Point3) -> float:
         """计算 XY 平面距离, 忽略高度差以匹配当前地面机器人规划假设"""
@@ -158,6 +227,11 @@ class GraphState:
         init=False,
         repr=False,
     )
+    edge_spatial_index: EdgeSpatialIndex = field(
+        default_factory=EdgeSpatialIndex,
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         """为显式传入的节点和边恢复派生索引"""
@@ -171,7 +245,6 @@ class GraphState:
         self,
         position: Point3,
         stamp_seconds: float,
-        is_robot_anchor: bool = False,
     ) -> InternalNode:
         """创建节点, 使用 node id 生成稳定 UUID
 
@@ -186,7 +259,6 @@ class GraphState:
             uuid_bytes=node_uuid.bytes,
             position=position,
             last_seen_time=stamp_seconds,
-            is_robot_anchor=is_robot_anchor,
         )
         self.nodes[node_id] = node
         self.spatial_index.insert(node_id, position)
@@ -200,6 +272,15 @@ class GraphState:
             return
         node.position = position
         self.spatial_index.insert(node_id, position)
+        for edge_key in self.adjacency.get(node_id, ()):
+            edge = self.edges.get(edge_key)
+            if edge is None:
+                continue
+            self.edge_spatial_index.insert(
+                edge_key,
+                self.nodes[edge.from_id].position,
+                self.nodes[edge.to_id].position,
+            )
 
     def remove_node(self, node_id: int) -> None:
         """删除节点, 同时删除所有关联边
@@ -220,12 +301,14 @@ class GraphState:
         调用方先生成当前新边, 再合并未被可见障碍证伪的历史边
         normalize_edge_key 保证 (a,b) 和 (b,a) 不会重复存储
         """
+        replacement_edges = list(edges)
         self.edges.clear()
+        self.edge_spatial_index.clear()
         self.adjacency = {
             node_id: set()
             for node_id in self.nodes
         }
-        for edge in edges:
+        for edge in replacement_edges:
             self._set_edge(edge)
 
     def replace_edges(
@@ -245,6 +328,14 @@ class GraphState:
         for node_id in node_ids:
             edge_keys.update(self.adjacency.get(node_id, ()))
         return edge_keys
+
+    def edge_keys_near_points(
+        self,
+        points: Iterable[Point2],
+        radius: float = 0.0,
+    ) -> Set[EdgeKey]:
+        """通过持久边空间索引查询地图变化附近的边"""
+        return self.edge_spatial_index.query_points(points, radius)
 
     def node_ids_in_bounds(
         self,
@@ -300,6 +391,8 @@ class GraphState:
         key = normalize_edge_key(edge.from_id, edge.to_id)
         if key[0] == key[1] or key[0] not in self.nodes or key[1] not in self.nodes:
             return
+        if key in self.edges:
+            self._remove_edge(key)
         self.edges[key] = InternalEdge(
             from_id=key[0],
             to_id=key[1],
@@ -307,12 +400,18 @@ class GraphState:
         )
         self.adjacency.setdefault(key[0], set()).add(key)
         self.adjacency.setdefault(key[1], set()).add(key)
+        self.edge_spatial_index.insert(
+            key,
+            self.nodes[key[0]].position,
+            self.nodes[key[1]].position,
+        )
 
     def _remove_edge(self, edge_key: EdgeKey) -> None:
         """删除单条边并同步邻接索引"""
         edge = self.edges.pop(edge_key, None)
         if edge is None:
             return
+        self.edge_spatial_index.remove(edge_key)
         self.adjacency.get(edge.from_id, set()).discard(edge_key)
         self.adjacency.get(edge.to_id, set()).discard(edge_key)
 

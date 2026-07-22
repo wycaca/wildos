@@ -135,15 +135,6 @@ class FrontierDetector:
             )
             if owner is None:
                 continue
-            if owner.is_robot_anchor:
-                owner_candidates.discard(owner.node_id)
-                owner = graph.nearest_node(
-                    frontier_point,
-                    max_distance=self.frontier_assign_radius,
-                    candidates=owner_candidates,
-                )
-            if owner is None or owner.is_robot_anchor:
-                continue
             if explored_areas.contains(frontier_point):
                 continue
             if self._visited_corridor.contains(frontier_point):
@@ -198,10 +189,6 @@ class FrontierDetector:
         for node_id in tuple(self._active_owner_ids):
             node = graph.nodes.get(node_id)
             if node is None:
-                continue
-            if node.is_robot_anchor:
-                node.frontier_points.clear()
-                node.is_frontier = False
                 continue
 
             preserved_points: List[Point3] = []
@@ -359,7 +346,7 @@ class _ExploredAreaIndex:
             if node_id == excluded_node_id:
                 continue
             node = self.graph.nodes.get(node_id)
-            if node is None or node.is_robot_anchor or not isfinite(node.explored_radius):
+            if node is None or not isfinite(node.explored_radius):
                 continue
             radius = max(0.0, node.explored_radius - self.resolution)
             if radius <= 0.0:

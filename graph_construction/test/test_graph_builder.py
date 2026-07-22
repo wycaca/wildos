@@ -96,7 +96,6 @@ def test_node_sampling_uses_world_aligned_adaptive_lattice():
     positions = {
         (node.position[0], node.position[1])
         for node in result.graph.nodes.values()
-        if not node.is_robot_anchor
     }
 
     assert positions
@@ -436,8 +435,8 @@ def test_historical_edge_is_removed_when_visible_segment_hits_obstacle():
     assert merged_edges == []
 
 
-def test_graph_builder_adds_robot_anchor_when_robot_cell_is_unknown():
-    """验证脚下点云缺失时用机器人锚点接回近邻 graph"""
+def test_graph_builder_does_not_create_node_in_unknown_robot_cell():
+    """脚下仍为 unknown 时不能虚构机器人节点和边"""
     free = np.ones((5, 5), dtype=bool)
     obstacle = np.zeros((5, 5), dtype=bool)
     unknown = np.zeros((5, 5), dtype=bool)
@@ -465,13 +464,9 @@ def test_graph_builder_adds_robot_anchor_when_robot_cell_is_unknown():
     )
 
     result = builder.update(grid, robot_position=(2.5, 2.5, 0.0), stamp_seconds=1.0)
-    current_id = result.graph.current_node_id
-    assert current_id is not None
-    assert result.graph.nodes[current_id].is_robot_anchor
-    assert any(
-        edge.from_id == current_id or edge.to_id == current_id
-        for edge in result.graph.edges.values()
-    )
+
+    assert result.graph.current_node_id is None
+    assert result.graph.nodes
 
 
 def test_graph_builder_repairs_robot_blind_zone_from_nearby_ground():
@@ -515,8 +510,10 @@ def test_graph_builder_repairs_robot_blind_zone_from_nearby_ground():
     assert result.classified_grid.is_obstacle_index(5, 4)
     assert result.classified_grid.stats["robot_blind_zone_filled"] > 0
     current = result.graph.nodes[result.graph.current_node_id]
-    assert current.is_robot_anchor
-    assert current.position == (2.25, 2.25, 0.25)
+    assert result.classified_grid.is_world_collision_free(
+        (2.25, 2.25),
+        current.position[:2],
+    )
 
 
 def test_default_blind_zone_repairs_ground_out_to_1_2_metres():
@@ -607,8 +604,8 @@ def test_blind_zone_preserves_slope_step_pit_and_obstacle_surfaces():
     assert result.classified_grid.is_obstacle_index(center, center - 5)
 
 
-def test_graph_builder_uses_robot_anchor_as_current_node_on_known_ground():
-    """验证已知地面也用精确机器人位置作为规划起点"""
+def test_graph_builder_uses_safe_ordinary_current_node_on_known_ground():
+    """已知地面使用安全普通节点作为规划起点"""
     grid = ClassifiedGrid(
         width=7,
         height=7,
@@ -628,8 +625,8 @@ def test_graph_builder_uses_robot_anchor_as_current_node_on_known_ground():
     result = builder.update(grid, robot_position=(3.2, 3.4, 0.8), stamp_seconds=1.0)
 
     current = result.graph.nodes[result.graph.current_node_id]
-    assert current.is_robot_anchor
-    assert current.position == (3.2, 3.4, 0.0)
+    assert current.distance_xy((3.2, 3.4, 0.0)) <= builder.config.edge_radius
+    assert grid.is_world_collision_free((3.2, 3.4), current.position[:2])
 
 
 def test_graph_builder_rejects_implausible_high_surface_near_blind_zone():
@@ -710,8 +707,12 @@ def test_graph_builder_samples_outer_free_component_after_blind_zone_repair():
     current_id = result.graph.current_node_id
     assert current_id is not None
     assert len(result.graph.nodes) > 2
-    assert any(
+    assert not any(
         current_id in (edge.from_id, edge.to_id)
+        and not grid.is_world_collision_free(
+            result.graph.nodes[edge.from_id].position[:2],
+            result.graph.nodes[edge.to_id].position[:2],
+        )
         for edge in result.graph.edges.values()
     )
 
@@ -749,8 +750,8 @@ def test_graph_builder_bootstraps_free_component_across_large_unknown_footprint(
     assert len(result.graph.edges) > 0
 
 
-def test_robot_anchor_leaves_persistent_breadcrumbs_in_unknown_ground():
-    """连续脚下缺图时固化旧 anchor, 保留长距离走过的拓扑路线"""
+def test_unknown_ground_does_not_create_anchor_breadcrumbs():
+    """连续脚下缺图时不创建 anchor 或虚假 breadcrumb"""
     grid = ClassifiedGrid(
         width=8,
         height=3,
@@ -773,14 +774,45 @@ def test_robot_anchor_leaves_persistent_breadcrumbs_in_unknown_ground():
     builder.update(grid, robot_position=(1.5, 1.5, 0.0), stamp_seconds=1.0)
     result = builder.update(grid, robot_position=(3.0, 1.5, 0.0), stamp_seconds=2.0)
 
-    anchors = [node for node in result.graph.nodes.values() if node.is_robot_anchor]
-    breadcrumbs = [node for node in result.graph.nodes.values() if not node.is_robot_anchor]
-    assert len(anchors) == 1
-    assert any(node.position[:2] == (1.5, 1.5) for node in breadcrumbs)
-    assert any(
-        anchors[0].node_id in (edge.from_id, edge.to_id)
-        for edge in result.graph.edges.values()
+    assert result.graph.current_node_id is None
+    assert result.graph.nodes == {}
+    assert result.graph.edges == {}
+
+
+def test_robot_motion_does_not_create_moving_anchor_breadcrumbs():
+    """已知 free 地面移动时只切换普通节点, 不持续增加特殊节点"""
+    grid = ClassifiedGrid(
+        width=20,
+        height=5,
+        resolution=1.0,
+        origin_x=0.0,
+        origin_y=0.0,
+        frame_id="map",
+        free=np.ones((5, 20), dtype=bool),
+        obstacle=np.zeros((5, 20), dtype=bool),
+        unknown=np.zeros((5, 20), dtype=bool),
+        elevation=np.zeros((5, 20), dtype=float),
     )
+    builder = SparseGraphBuilder(
+        GraphBuilderConfig(
+            sample_stride=2,
+            min_node_separation=0.5,
+            min_obstacle_clearance=0.0,
+            edge_radius=3.0,
+        )
+    )
+
+    first = builder.update(grid, robot_position=(1.5, 2.5, 0.0), stamp_seconds=1.0)
+    initial_node_count = len(first.graph.nodes)
+    for index, robot_x in enumerate((3.5, 5.5, 7.5, 9.5), start=2):
+        result = builder.update(
+            grid,
+            robot_position=(robot_x, 2.5, 0.0),
+            stamp_seconds=float(index),
+        )
+
+    assert len(result.graph.nodes) == initial_node_count
+    assert result.stats.edge_rebuild_node_count <= 2
 
 
 def test_graph_builder_preserves_nodes_disconnected_from_current_component():
