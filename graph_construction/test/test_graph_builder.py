@@ -1,6 +1,7 @@
 import math
 
 import numpy as np
+import pytest
 
 from graph_construction.graph_builder import GraphBuilderConfig, SparseGraphBuilder
 from graph_construction.edge_builder import EdgeBuilder
@@ -22,6 +23,17 @@ def test_unknown_distance_field_treats_grid_exterior_as_unknown():
     assert np.isfinite(distances).all()
     assert distances[0, 0] == 1.0
     assert distances[2, 2] == 3.0
+
+
+def test_distance_field_uses_exact_euclidean_distance():
+    """距离场应返回精确欧氏距离, 不能使用 8 连通近似"""
+    mask = np.zeros((4, 4), dtype=bool)
+    mask[0, 0] = True
+
+    distances = distance_to_mask(mask, resolution=0.5)
+
+    assert distances.dtype == np.float32
+    assert distances[1, 2] == pytest.approx(math.sqrt(5.0) * 0.5)
 
 
 def test_graph_builder_replaces_nonfinite_explored_radius():
@@ -213,6 +225,52 @@ def test_historical_edge_is_kept_when_current_grid_becomes_unknown():
 
     assert current_edges == []
     assert {(edge.from_id, edge.to_id) for edge in merged_edges} == {(0, 1)}
+
+
+def test_edge_builder_only_rebuilds_edges_inside_current_grid():
+    """当前窗口只生成局部新边, 窗口外历史边仍被保留"""
+    free = np.ones((3, 3), dtype=bool)
+    obstacle = np.zeros((3, 3), dtype=bool)
+    unknown = np.zeros((3, 3), dtype=bool)
+    grid = ClassifiedGrid(
+        width=3,
+        height=3,
+        resolution=1.0,
+        origin_x=0.0,
+        origin_y=0.0,
+        frame_id="map",
+        free=free,
+        obstacle=obstacle,
+        unknown=unknown,
+    )
+    graph = GraphState()
+    outside_a = graph.create_node(position=(-2.5, 1.5, 0.0), stamp_seconds=1.0)
+    outside_b = graph.create_node(position=(-1.5, 1.5, 0.0), stamp_seconds=1.0)
+    inside_a = graph.create_node(position=(0.5, 1.5, 0.0), stamp_seconds=1.0)
+    inside_b = graph.create_node(position=(1.5, 1.5, 0.0), stamp_seconds=1.0)
+    graph.set_edges(
+        [InternalEdge(from_id=outside_a.node_id, to_id=outside_b.node_id, cost=1.0)]
+    )
+    edge_builder = EdgeBuilder(edge_radius=2.0, max_neighbors_per_node=4)
+
+    current_edges = edge_builder.build_edges(
+        graph,
+        grid,
+        distance_to_mask(obstacle, grid.resolution),
+        distance_to_mask(unknown, grid.resolution),
+    )
+    merged_edges = edge_builder.merge_historical_edges(
+        graph,
+        current_edges,
+        grid,
+        distance_to_mask(obstacle, grid.resolution),
+    )
+
+    current_keys = {(edge.from_id, edge.to_id) for edge in current_edges}
+    merged_keys = {(edge.from_id, edge.to_id) for edge in merged_edges}
+    assert (inside_a.node_id, inside_b.node_id) in current_keys
+    assert (outside_a.node_id, outside_b.node_id) not in current_keys
+    assert (outside_a.node_id, outside_b.node_id) in merged_keys
 
 
 def test_graph_builder_preserves_historical_nodes_when_grid_becomes_unknown():

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from heapq import heappop, heappush
 from math import cos, floor, hypot, sin
 from typing import Iterable, Optional, Tuple
 
 import numpy as np
+from scipy.ndimage import distance_transform_edt
 
 
 GridIndex = Tuple[int, int]
@@ -240,7 +240,7 @@ def distance_to_mask(
     resolution: float,
     include_grid_exterior: bool = False,
 ) -> np.ndarray:
-    """计算近似 8 连通距离场, 可将局部地图外部视为目标区域"""
+    """计算精确欧氏距离场, 可将局部地图外部视为目标区域"""
     if include_grid_exterior:
         padded_mask = np.zeros((mask.shape[0] + 2, mask.shape[1] + 2), dtype=bool)
         padded_mask[0, :] = True
@@ -251,46 +251,12 @@ def distance_to_mask(
         return distance_to_mask(padded_mask, resolution)[1:-1, 1:-1]
 
     height, width = mask.shape
-    distances = np.full((height, width), np.inf, dtype=np.float32)
-    queue = []
-
-    source_ys, source_xs = np.where(mask)
-    for iy, ix in zip(source_ys.tolist(), source_xs.tolist()):
-        distances[iy, ix] = 0.0
-        heappush(queue, (0.0, ix, iy))
-
-    if not queue:
+    if not np.any(mask):
         max_distance = hypot(width * resolution, height * resolution)
-        distances.fill(max_distance)
-        return distances
+        return np.full((height, width), max_distance, dtype=np.float32)
 
-    neighbor_steps = (
-        (-1, -1, 2**0.5),
-        (0, -1, 1.0),
-        (1, -1, 2**0.5),
-        (-1, 0, 1.0),
-        (1, 0, 1.0),
-        (-1, 1, 2**0.5),
-        (0, 1, 1.0),
-        (1, 1, 2**0.5),
-    )
-
-    while queue:
-        current_distance, ix, iy = heappop(queue)
-        if current_distance > float(distances[iy, ix]):
-            continue
-        for dx, dy, step in neighbor_steps:
-            nx = ix + dx
-            ny = iy + dy
-            if nx < 0 or ny < 0 or nx >= width or ny >= height:
-                continue
-            next_distance = current_distance + step * resolution
-            if next_distance >= float(distances[ny, nx]):
-                continue
-            distances[ny, nx] = next_distance
-            heappush(queue, (next_distance, nx, ny))
-
-    return distances
+    distances = distance_transform_edt(~mask, sampling=float(resolution))
+    return distances.astype(np.float32, copy=False)
 
 
 def _clip_float_segment_to_bounds(

@@ -259,3 +259,83 @@ def test_long_rolling_map_sequence_preserves_original_nodes_and_edge():
     assert first.node_id in result.graph.nodes
     assert second.node_id in result.graph.nodes
     assert edge_key in result.graph.edges
+
+
+def test_graph_spatial_and_adjacency_indices_follow_mutations():
+    """节点移动删除和局部边替换必须同步派生索引"""
+    graph = GraphState()
+    first = graph.create_node(position=(0.5, 0.5, 0.0), stamp_seconds=1.0)
+    second = graph.create_node(position=(1.5, 0.5, 0.0), stamp_seconds=1.0)
+    third = graph.create_node(position=(20.5, 0.5, 0.0), stamp_seconds=1.0)
+    local_key = (first.node_id, second.node_id)
+    remote_key = (second.node_id, third.node_id)
+    graph.set_edges(
+        [
+            InternalEdge(*local_key, cost=1.0),
+            InternalEdge(*remote_key, cost=19.0),
+        ]
+    )
+
+    assert graph.node_ids_within((0.5, 0.5, 0.0), 1.1) == {
+        first.node_id,
+        second.node_id,
+    }
+    assert graph.edge_keys_for_nodes({first.node_id}) == {local_key}
+
+    graph.move_node(first.node_id, (10.5, 0.5, 0.0))
+    assert first.node_id not in graph.node_ids_within((0.5, 0.5, 0.0), 1.1)
+    assert first.node_id in graph.node_ids_within((10.5, 0.5, 0.0), 0.1)
+
+    graph.remove_node(second.node_id)
+    assert local_key not in graph.edges
+    assert remote_key not in graph.edges
+    assert graph.edge_keys_for_nodes({first.node_id, third.node_id}) == set()
+
+
+def test_graph_update_only_touches_local_history():
+    """远处历史节点和边不应进入当前局部更新集合"""
+    builder = SparseGraphBuilder(
+        GraphBuilderConfig(
+            sample_stride=10,
+            min_node_separation=0.1,
+            min_obstacle_clearance=0.0,
+            edge_radius=3.0,
+        )
+    )
+    local_a = builder.graph.create_node(
+        position=(0.5, 1.5, 0.0),
+        stamp_seconds=1.0,
+    )
+    local_b = builder.graph.create_node(
+        position=(1.5, 1.5, 0.0),
+        stamp_seconds=1.0,
+    )
+    remote_a = builder.graph.create_node(
+        position=(100.5, 1.5, 0.0),
+        stamp_seconds=1.0,
+    )
+    remote_b = builder.graph.create_node(
+        position=(101.5, 1.5, 0.0),
+        stamp_seconds=1.0,
+    )
+    local_key = (local_a.node_id, local_b.node_id)
+    remote_key = (remote_a.node_id, remote_b.node_id)
+    builder.graph.set_edges(
+        [
+            InternalEdge(*local_key, cost=1.0),
+            InternalEdge(*remote_key, cost=1.0),
+        ]
+    )
+    remote_edge = builder.graph.edges[remote_key]
+
+    result = builder.update(
+        _grid(width=6, height=3),
+        robot_position=(0.5, 1.5, 0.0),
+        stamp_seconds=2.0,
+    )
+
+    assert result.graph.edges[remote_key] is remote_edge
+    assert result.stats.local_node_count < result.stats.total_node_count
+    assert remote_key not in result.graph.edge_keys_for_nodes(
+        result.graph.node_ids_in_bounds(-3.0, 9.0, -3.0, 6.0)
+    )

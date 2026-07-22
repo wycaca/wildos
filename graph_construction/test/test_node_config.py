@@ -3,7 +3,13 @@ from pathlib import Path
 import pytest
 
 from graph_construction.graph_builder import GraphBuilderConfig
-from graph_construction.node import _builder_config, _load_config, _resolve_config
+from graph_construction.node import (
+    GraphConstructionNode,
+    InputFreshnessGate,
+    _builder_config,
+    _load_config,
+    _resolve_config,
+)
 
 
 def test_resolve_config_uses_graph_builder_defaults_once():
@@ -23,6 +29,7 @@ def test_resolve_config_rejects_removed_or_misspelled_keys():
     [
         {"grid_input_type": "image"},
         {"publish_rate_hz": 0.0},
+        {"max_grid_odom_time_delta_sec": 0.0},
         {"diagnostics_log_period_sec": 0.0},
         {"slow_cycle_warning_ms": 0.0},
         {"grid_map_free_threshold": 0.1, "grid_map_obstacle_threshold": 0.2},
@@ -45,3 +52,58 @@ def test_load_config_rejects_non_mapping_yaml(tmp_path: Path):
 
     with pytest.raises(ValueError, match="must be a mapping"):
         _load_config(str(config_path))
+
+
+def test_take_latest_inputs_processes_each_grid_once():
+    node = GraphConstructionNode.__new__(GraphConstructionNode)
+    node.config = {"max_grid_odom_time_delta_sec": 0.5}
+    node._input_freshness = InputFreshnessGate()
+    node._input_freshness.accept_grid(1_000_000_000)
+    node._input_freshness.accept_odom(1_100_000_000)
+    node.latest_grid = object()
+    node.latest_odom = object()
+    node._latest_grid_sequence = 1
+    node._processed_grid_sequence = 0
+
+    assert node._take_latest_inputs() == (node.latest_grid, node.latest_odom)
+    assert node._take_latest_inputs() is None
+
+    node.latest_grid = object()
+    node._latest_grid_sequence += 1
+    node._input_freshness.accept_grid(1_200_000_000)
+
+    assert node._take_latest_inputs() == (node.latest_grid, node.latest_odom)
+
+
+def test_input_freshness_gate_rejects_duplicate_and_older_stamps():
+    gate = InputFreshnessGate()
+
+    assert gate.accept_grid(2_000_000_000)
+    assert not gate.accept_grid(2_000_000_000)
+    assert not gate.accept_grid(1_900_000_000)
+    assert gate.accept_grid(2_100_000_000)
+
+    assert gate.accept_odom(2_000_000_000)
+    assert not gate.accept_odom(1_000_000_000)
+    assert gate.accept_odom(2_200_000_000)
+    assert gate.time_delta_seconds() == pytest.approx(0.1)
+
+
+def test_take_latest_inputs_waits_for_matching_odom_stamp():
+    node = GraphConstructionNode.__new__(GraphConstructionNode)
+    node.config = {"max_grid_odom_time_delta_sec": 0.5}
+    node._input_freshness = InputFreshnessGate()
+    node._input_freshness.accept_grid(10_000_000_000)
+    node._input_freshness.accept_odom(8_000_000_000)
+    node.latest_grid = object()
+    node.latest_odom = object()
+    node._latest_grid_sequence = 1
+    node._processed_grid_sequence = 0
+    node._warn_input_freshness = lambda *args: None
+
+    assert node._take_latest_inputs() is None
+    assert node._processed_grid_sequence == 0
+
+    node._input_freshness.accept_odom(9_800_000_000)
+
+    assert node._take_latest_inputs() == (node.latest_grid, node.latest_odom)

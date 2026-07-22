@@ -3,7 +3,7 @@ from __future__ import annotations
 from math import ceil, hypot, isfinite
 from typing import Dict, Iterable, List, Sequence, Tuple
 
-from graph_construction.graph_memory import GraphState, InternalNode, Point3
+from graph_construction.graph_memory import GraphState, Point3
 from graph_construction.grid_types import ClassifiedGrid
 
 
@@ -36,6 +36,18 @@ class FrontierDetector:
             0.0,
             float(frontier_visited_corridor_radius),
         )
+        self._active_owner_ids: set[int] = set()
+        self._index_initialized = False
+        self._max_explored_radius = 0.0
+        self._visited_corridor = _VisitedTrajectoryIndex(
+            (),
+            self.frontier_visited_corridor_radius,
+        )
+
+    @property
+    def active_owner_count(self) -> int:
+        """返回当前活动 Frontier owner 数量"""
+        return len(self._active_owner_ids)
 
     def detect_frontier_cells(self, grid: ClassifiedGrid) -> List[GridIndex]:
         """扫描所有 free cell, 找出和 unknown 相邻的边界 cell"""
@@ -55,6 +67,7 @@ class FrontierDetector:
         graph: GraphState,
         grid: ClassifiedGrid,
         frontier_cells: Sequence[GridIndex],
+        local_node_ids: Iterable[int] | None = None,
     ) -> None:
         """验证当前可见 Frontier, 再把新边界分配给稳定 owner
 
@@ -62,31 +75,32 @@ class FrontierDetector:
         当前可见的历史点需要重新满足边界语义、探索覆盖和 owner 可达条件
         新边界使用世界坐标键去重, 已保留的 owner 不会被每帧最近邻结果替换
         """
-        explored_areas = _ExploredAreaIndex(graph.nodes.values(), grid.resolution)
-        visited_corridor = _VisitedTrajectoryIndex(
-            graph.trajectory_points,
-            self.frontier_visited_corridor_radius,
+        self._refresh_active_index(graph, local_node_ids)
+        explored_areas = _ExploredAreaIndex(
+            graph,
+            grid.resolution,
+            self._max_explored_radius,
         )
+        self._visited_corridor.update(graph.trajectory_points)
         preserved_owner_ids, assigned_frontier_keys = self._validate_historical_frontiers(
             graph,
             grid,
             explored_areas,
-            visited_corridor,
+            self._visited_corridor,
         )
 
         candidate_cells = self._select_frontier_candidates(grid, frontier_cells)
-        assignable_nodes = [
-            node for node in graph.nodes.values()
-            if not node.is_robot_anchor
-        ]
-        node_index = _NodeSpatialIndex(assignable_nodes, self.frontier_assign_radius)
+        updated_owner_ids: set[int] = set()
 
         for ix, iy in candidate_cells:
             frontier_point = grid.grid_to_world(ix, iy)
             frontier_key = self._frontier_key(frontier_point, grid.resolution)
             if frontier_key in assigned_frontier_keys:
                 continue
-            owner_candidates = node_index.candidate_ids(frontier_point)
+            owner_candidates = graph.node_ids_within(
+                frontier_point,
+                self.frontier_assign_radius,
+            )
             owner = graph.nearest_node(
                 frontier_point,
                 max_distance=self.frontier_assign_radius,
@@ -94,9 +108,18 @@ class FrontierDetector:
             )
             if owner is None:
                 continue
+            if owner.is_robot_anchor:
+                owner_candidates.discard(owner.node_id)
+                owner = graph.nearest_node(
+                    frontier_point,
+                    max_distance=self.frontier_assign_radius,
+                    candidates=owner_candidates,
+                )
+            if owner is None or owner.is_robot_anchor:
+                continue
             if explored_areas.contains(frontier_point):
                 continue
-            if visited_corridor.contains(frontier_point):
+            if self._visited_corridor.contains(frontier_point):
                 continue
             if not grid.is_world_collision_free(
                 (owner.position[0], owner.position[1]),
@@ -104,14 +127,16 @@ class FrontierDetector:
             ):
                 continue
             owner.frontier_points.append(frontier_point)
+            updated_owner_ids.add(owner.node_id)
             assigned_frontier_keys.add(frontier_key)
 
         # 历史 owner 已经通过往帧观测确认, 不因当前窗口只剩少量可见点而失忆
         # 新 owner 仍使用数量和跨度过滤当前帧产生的孤立噪声
-        for node in graph.nodes.values():
-            if node.is_robot_anchor:
-                node.is_frontier = False
-                node.frontier_points.clear()
+        candidate_owner_ids = preserved_owner_ids | updated_owner_ids
+        next_active_owner_ids: set[int] = set()
+        for node_id in candidate_owner_ids:
+            node = graph.nodes.get(node_id)
+            if node is None:
                 continue
             is_supported = (
                 len(node.frontier_points) >= self.frontier_min_points
@@ -122,6 +147,9 @@ class FrontierDetector:
             )
             if not node.is_frontier:
                 node.frontier_points.clear()
+            else:
+                next_active_owner_ids.add(node.node_id)
+        self._active_owner_ids = next_active_owner_ids
 
     def _validate_historical_frontiers(
         self,
@@ -140,7 +168,10 @@ class FrontierDetector:
         preserved_owner_ids: set[int] = set()
         assigned_frontier_keys: set[Tuple[int, int]] = set()
 
-        for node in graph.nodes.values():
+        for node_id in tuple(self._active_owner_ids):
+            node = graph.nodes.get(node_id)
+            if node is None:
+                continue
             if node.is_robot_anchor:
                 node.frontier_points.clear()
                 node.is_frontier = False
@@ -182,6 +213,33 @@ class FrontierDetector:
                 preserved_owner_ids.add(node.node_id)
 
         return preserved_owner_ids, assigned_frontier_keys
+
+    def _refresh_active_index(
+        self,
+        graph: GraphState,
+        local_node_ids: Iterable[int] | None,
+    ) -> None:
+        """首次扫描全图, 后续只吸收局部节点的 Frontier 和探索半径变化"""
+        if not self._index_initialized:
+            candidate_nodes = graph.nodes.values()
+            self._index_initialized = True
+        else:
+            candidate_ids = graph.nodes.keys() if local_node_ids is None else local_node_ids
+            candidate_nodes = (
+                graph.nodes[node_id]
+                for node_id in candidate_ids
+                if node_id in graph.nodes
+            )
+
+        self._active_owner_ids.intersection_update(graph.nodes)
+        for node in candidate_nodes:
+            if node.is_frontier or node.frontier_points:
+                self._active_owner_ids.add(node.node_id)
+            if isfinite(node.explored_radius):
+                self._max_explored_radius = max(
+                    self._max_explored_radius,
+                    node.explored_radius,
+                )
 
     @staticmethod
     def _frontier_key(point: Point3, resolution: float) -> Tuple[int, int]:
@@ -241,58 +299,27 @@ class FrontierDetector:
         return hypot(max(xs) - min(xs), max(ys) - min(ys))
 
 
-class _NodeSpatialIndex:
-    """按 assign radius 建立临时节点桶, 避免每个 frontier 扫描全图节点"""
-
-    def __init__(self, nodes: Iterable[InternalNode], bucket_size: float) -> None:
-        self.bucket_size = max(0.01, float(bucket_size))
-        self.buckets: Dict[Tuple[int, int], List[int]] = {}
-        for node in nodes:
-            key = self._key(node.position)
-            self.buckets.setdefault(key, []).append(node.node_id)
-
-    def candidate_ids(self, position: Point3) -> List[int]:
-        """返回可能落在 assign radius 内的节点 id"""
-        center_x, center_y = self._key(position)
-        candidates: List[int] = []
-        for by in range(center_y - 1, center_y + 2):
-            for bx in range(center_x - 1, center_x + 2):
-                candidates.extend(self.buckets.get((bx, by), ()))
-        return candidates
-
-    def _key(self, position: Point3) -> Tuple[int, int]:
-        return (
-            int(position[0] // self.bucket_size),
-            int(position[1] // self.bucket_size),
-        )
-
-
 class _ExploredAreaIndex:
     """查询 Frontier 是否已被持久图节点的探索半径覆盖"""
 
-    def __init__(self, nodes: Iterable[InternalNode], resolution: float) -> None:
+    def __init__(
+        self,
+        graph: GraphState,
+        resolution: float,
+        max_radius: float,
+    ) -> None:
+        self.graph = graph
         self.resolution = max(0.0, float(resolution))
-        self.nodes = {
-            node.node_id: node
-            for node in nodes
-            if (
-                not node.is_robot_anchor
-                and isfinite(node.explored_radius)
-                and node.explored_radius > self.resolution
-            )
-        }
-        max_radius = max(
-            (node.explored_radius for node in self.nodes.values()),
-            default=self.resolution,
-        )
-        self.node_index = _NodeSpatialIndex(self.nodes.values(), max_radius)
+        self.max_radius = max(self.resolution, float(max_radius))
 
     def contains(self, point: Point3, excluded_node_id: int | None = None) -> bool:
         """只扫描附近节点, owner 可排除以保留自身仍有效的边界"""
-        for node_id in self.node_index.candidate_ids(point):
+        for node_id in self.graph.node_ids_within(point, self.max_radius):
             if node_id == excluded_node_id:
                 continue
-            node = self.nodes[node_id]
+            node = self.graph.nodes.get(node_id)
+            if node is None or node.is_robot_anchor or not isfinite(node.explored_radius):
+                continue
             radius = max(0.0, node.explored_radius - self.resolution)
             if radius <= 0.0:
                 continue
@@ -308,10 +335,20 @@ class _VisitedTrajectoryIndex:
         self.radius = max(0.0, float(radius))
         self.bucket_size = max(self.radius, 0.01)
         self.buckets: Dict[Tuple[int, int], List[Point3]] = {}
+        self._point_count = 0
+        self.update(list(points))
+
+    def update(self, points: Sequence[Point3]) -> None:
+        """只把新轨迹点追加到持久桶索引"""
         if self.radius <= 0.0:
+            self._point_count = len(points)
             return
-        for point in points:
+        if len(points) < self._point_count:
+            self.buckets.clear()
+            self._point_count = 0
+        for point in points[self._point_count:]:
             self.buckets.setdefault(self._key(point), []).append(point)
+        self._point_count = len(points)
 
     def contains(self, point: Point3) -> bool:
         """只检查相邻轨迹桶, 避免随轨迹增长线性扫描"""

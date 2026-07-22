@@ -4,6 +4,7 @@ from math import hypot
 from typing import Dict, Iterable, List, Tuple
 
 import numpy as np
+from scipy.spatial import cKDTree
 
 from graph_construction.graph_memory import GraphState, InternalEdge
 from graph_construction.grid_types import ClassifiedGrid
@@ -34,45 +35,75 @@ class EdgeBuilder:
         sdf_obstacle: np.ndarray | None = None,
         sdf_unknown: np.ndarray | None = None,
         min_clearance: float = 0.0,
+        node_ids: Iterable[int] | None = None,
     ) -> List[InternalEdge]:
         """重建当前图的无向边集合
 
         论文和常见 sparse roadmap 都只连接局部近邻, 避免半径内近似全连接
         当前节点保留更多边, 便于机器人附近路径选择更灵活
         """
-        nodes = list(graph.nodes.values())
+        # 新边只在当前地图窗口生成, 窗口外边由历史边合并逻辑维护
+        candidate_ids = (
+            graph.nodes.keys()
+            if node_ids is None
+            else sorted(node_ids)
+        )
+        nodes = []
+        for node_id in candidate_ids:
+            node = graph.nodes.get(node_id)
+            if node is None:
+                continue
+            if grid.world_to_grid(node.position[0], node.position[1]) is not None:
+                nodes.append(node)
         selected_edges: Dict[Tuple[int, int], InternalEdge] = {}
         candidate_edges: Dict[int, List[Tuple[float, int, InternalEdge]]] = {
             node.node_id: []
             for node in nodes
         }
 
-        for index, node_a in enumerate(nodes):
-            for node_b in nodes[index + 1 :]:
-                dx = node_a.position[0] - node_b.position[0]
-                dy = node_a.position[1] - node_b.position[1]
-                distance = hypot(dx, dy)
-                if distance > self.edge_radius:
-                    continue
+        if len(nodes) >= 2:
+            positions = np.asarray(
+                [(node.position[0], node.position[1]) for node in nodes],
+                dtype=np.float64,
+            )
+            spatial_index = cKDTree(positions)
+            nearby_pairs = sorted(spatial_index.query_pairs(self.edge_radius))
+        else:
+            nearby_pairs = []
 
-                # 只有整条走廊都远离 obstacle 和 unknown, 才允许 planner 使用这条边
-                if not _edge_has_clearance(
-                    grid,
-                    (node_a.position[0], node_a.position[1]),
-                    (node_b.position[0], node_b.position[1]),
-                    sdf_obstacle,
-                    sdf_unknown,
-                    min_clearance,
-                ):
-                    continue
+        for index_a, index_b in nearby_pairs:
+            node_a = nodes[index_a]
+            node_b = nodes[index_b]
+            dx = node_a.position[0] - node_b.position[0]
+            dy = node_a.position[1] - node_b.position[1]
+            distance = hypot(dx, dy)
 
-                edge = InternalEdge(from_id=node_a.node_id, to_id=node_b.node_id, cost=distance)
-                candidate_edges[node_a.node_id].append((distance, node_b.node_id, edge))
-                candidate_edges[node_b.node_id].append((distance, node_a.node_id, edge))
+            # 只有整条走廊都远离 obstacle 和 unknown, 才允许 planner 使用这条边
+            if not _edge_has_clearance(
+                grid,
+                (node_a.position[0], node_a.position[1]),
+                (node_b.position[0], node_b.position[1]),
+                sdf_obstacle,
+                sdf_unknown,
+                min_clearance,
+            ):
+                continue
+
+            edge = InternalEdge(
+                from_id=node_a.node_id,
+                to_id=node_b.node_id,
+                cost=distance,
+            )
+            candidate_edges[node_a.node_id].append((distance, node_b.node_id, edge))
+            candidate_edges[node_b.node_id].append((distance, node_a.node_id, edge))
 
         for node in nodes:
             max_neighbors = self._neighbor_limit(graph, node.node_id)
-            for _, _, edge in sorted(candidate_edges[node.node_id], key=lambda item: item[0])[:max_neighbors]:
+            sorted_candidates = sorted(
+                candidate_edges[node.node_id],
+                key=lambda item: item[0],
+            )
+            for _, _, edge in sorted_candidates[:max_neighbors]:
                 key = _edge_key(edge.from_id, edge.to_id)
                 selected_edges[key] = edge
 
@@ -85,6 +116,7 @@ class EdgeBuilder:
         grid: ClassifiedGrid,
         sdf_obstacle: np.ndarray | None = None,
         min_clearance: float = 0.0,
+        historical_edge_keys: Iterable[Tuple[int, int]] | None = None,
     ) -> List[InternalEdge]:
         """保留未被当前可见障碍证伪的历史边
 
@@ -95,7 +127,15 @@ class EdgeBuilder:
         for edge in current_edges:
             selected_edges[_edge_key(edge.from_id, edge.to_id)] = edge
 
-        for edge in graph.edges.values():
+        if historical_edge_keys is None:
+            historical_edges = graph.edges.values()
+        else:
+            historical_edges = (
+                graph.edges[edge_key]
+                for edge_key in historical_edge_keys
+                if edge_key in graph.edges
+            )
+        for edge in historical_edges:
             key = _edge_key(edge.from_id, edge.to_id)
             if key in selected_edges:
                 continue
@@ -138,10 +178,25 @@ class EdgeBuilder:
         if anchor is None:
             return []
 
-        radius = self.edge_radius if edge_radius is None or edge_radius <= 0.0 else float(edge_radius)
-        limit = max(1, int(max_edges if max_edges is not None else self.current_node_max_neighbors))
+        radius = (
+            self.edge_radius
+            if edge_radius is None or edge_radius <= 0.0
+            else float(edge_radius)
+        )
+        limit = max(
+            1,
+            int(
+                max_edges
+                if max_edges is not None
+                else self.current_node_max_neighbors
+            ),
+        )
         candidates: List[Tuple[float, InternalEdge]] = []
-        for node in graph.nodes.values():
+        nearby_node_ids = graph.node_ids_within(anchor.position, radius)
+        for node_id in nearby_node_ids:
+            node = graph.nodes.get(node_id)
+            if node is None:
+                continue
             if node.node_id == anchor_id or node.is_robot_anchor:
                 continue
             dx = anchor.position[0] - node.position[0]

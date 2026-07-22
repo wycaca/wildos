@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from math import hypot
 import math
+from time import perf_counter
 from typing import Tuple
 
 import numpy as np
@@ -51,6 +52,19 @@ class GraphUpdateResult:
 
     graph: GraphState
     classified_grid: ClassifiedGrid
+    stats: GraphUpdateStats
+
+
+@dataclass
+class GraphUpdateStats:
+    """记录单次局部更新工作量和阶段耗时"""
+
+    local_node_count: int = 0
+    total_node_count: int = 0
+    affected_edge_count: int = 0
+    total_edge_count: int = 0
+    active_frontier_owner_count: int = 0
+    stage_seconds: dict[str, float] = field(default_factory=dict)
 
 
 class SparseGraphBuilder:
@@ -134,6 +148,8 @@ class SparseGraphBuilder:
         robot_position: Tuple[float, float, float],
         stamp_seconds: float,
     ) -> GraphUpdateResult:
+        stage_seconds: dict[str, float] = {}
+        stage_started = perf_counter()
         self._sanitize_grid_surface(grid)
         self._repair_robot_blind_zone(grid, robot_position)
 
@@ -143,6 +159,9 @@ class SparseGraphBuilder:
         if robot_ground_projected:
             self.graph.append_trajectory_point(robot_ground_position, 0.25)
         reachable_free = self._reachable_free_mask(grid, robot_ground_position)
+        stage_seconds["preprocess"] = perf_counter() - stage_started
+
+        stage_started = perf_counter()
         # 距离场用于节点 clearance 和 frontier 生命周期判断
         sdf_obstacle = distance_to_mask(grid.obstacle, grid.resolution)
         # rolling GridMap 外部必须视为 unknown, 否则全 known 局部图会产生无限探索半径
@@ -151,10 +170,22 @@ class SparseGraphBuilder:
             grid.resolution,
             include_grid_exterior=True,
         )
-        # 先刷新旧节点, 再采样和建边
-        self._update_existing_nodes(grid, sdf_obstacle, sdf_unknown, stamp_seconds)
+        stage_seconds["distance"] = perf_counter() - stage_started
+
+        # 后续阶段共享同一局部查询结果, 避免重复扫描历史节点
+        stage_started = perf_counter()
+        local_node_ids = self._node_ids_in_grid(grid)
+        self._update_existing_nodes(
+            grid,
+            sdf_obstacle,
+            sdf_unknown,
+            stamp_seconds,
+            local_node_ids,
+        )
+        stage_seconds["nodes"] = perf_counter() - stage_started
 
         # 在当前观测到的 free 区域补充稀疏节点
+        stage_started = perf_counter()
         self._sample_new_nodes(
             grid,
             sdf_obstacle,
@@ -162,14 +193,21 @@ class SparseGraphBuilder:
             stamp_seconds,
             reachable_free,
         )
+        stage_seconds["sampling"] = perf_counter() - stage_started
+
         # frontier cell 需要绑定到附近可用图节点
+        stage_started = perf_counter()
         frontier_cells = self.frontier_detector.detect_frontier_cells(grid)
+        local_node_ids = self._node_ids_in_grid(grid)
         self.frontier_detector.assign_frontiers(
             self.graph,
             grid,
             frontier_cells,
+            local_node_ids=local_node_ids,
         )
+        stage_seconds["frontier"] = perf_counter() - stage_started
 
+        stage_started = perf_counter()
         self._update_current_node(
             grid,
             robot_position,
@@ -177,21 +215,28 @@ class SparseGraphBuilder:
             robot_ground_projected,
             stamp_seconds,
         )
-        # current node 确定后重建边, 便于优先保留机器人附近连接
+        stage_seconds["current"] = perf_counter() - stage_started
+
+        # 边只更新当前窗口及其 edge radius 邻域, 远处历史边保持不动
+        stage_started = perf_counter()
+        local_node_ids = self._node_ids_in_grid(grid)
+        edge_node_ids = self._node_ids_near_grid(grid, self.config.edge_radius)
+        affected_edge_keys = self.graph.edge_keys_for_nodes(edge_node_ids)
         next_edges = self.edge_builder.build_edges(
             self.graph,
             grid,
             sdf_obstacle,
             sdf_unknown,
             self.config.min_obstacle_clearance,
+            node_ids=local_node_ids,
         )
-        # 持久边是主线语义, 当前窗口只能用可见障碍证伪历史边
         next_edges = self.edge_builder.merge_historical_edges(
             self.graph,
             next_edges,
             grid,
             sdf_obstacle,
             self.config.min_obstacle_clearance,
+            historical_edge_keys=affected_edge_keys,
         )
         if (
             self.robot_anchor_node_id is not None
@@ -208,11 +253,22 @@ class SparseGraphBuilder:
                     self.config.current_node_max_edge_neighbors,
                 )
             )
-        self.graph.set_edges(next_edges)
+        self.graph.replace_edges(affected_edge_keys, next_edges)
+        stage_seconds["edges"] = perf_counter() - stage_started
 
         return GraphUpdateResult(
             graph=self.graph,
             classified_grid=grid,
+            stats=GraphUpdateStats(
+                local_node_count=len(local_node_ids),
+                total_node_count=len(self.graph.nodes),
+                affected_edge_count=len(affected_edge_keys),
+                total_edge_count=len(self.graph.edges),
+                active_frontier_owner_count=(
+                    self.frontier_detector.active_owner_count
+                ),
+                stage_seconds=stage_seconds,
+            ),
         )
 
     def _repair_robot_blind_zone(
@@ -325,9 +381,13 @@ class SparseGraphBuilder:
         sdf_obstacle,
         sdf_unknown,
         stamp_seconds: float,
+        local_node_ids: set[int],
     ) -> None:
         """用可靠局部观测刷新历史节点, unknown 和窗口外区域不否定记忆"""
-        for node_id, node in list(self.graph.nodes.items()):
+        for node_id in tuple(local_node_ids):
+            node = self.graph.nodes.get(node_id)
+            if node is None:
+                continue
             # 旧进程可能已保存非有限半径, 该值不能表达全局探索覆盖
             if not math.isfinite(node.explored_radius) or node.explored_radius < 0.0:
                 node.explored_radius = 0.0
@@ -360,7 +420,10 @@ class SparseGraphBuilder:
             node.explored_radius = max(node.explored_radius, float(sdf_unknown[iy, ix]))
             surface_z = grid.elevation_at_world(node.position[0], node.position[1])
             if surface_z is not None:
-                node.position = (node.position[0], node.position[1], surface_z)
+                self.graph.move_node(
+                    node_id,
+                    (node.position[0], node.position[1], surface_z),
+                )
             node.last_seen_time = stamp_seconds
 
     def _sample_new_nodes(
@@ -439,7 +502,10 @@ class SparseGraphBuilder:
         if best_node is None:
             best_node = self._nearest_collision_free_node(grid, robot_ground_position)
         if best_node is None:
-            best_node = self.graph.nearest_node(robot_ground_position)
+            best_node = self.graph.nearest_node(
+                robot_ground_position,
+                candidates=self._node_ids_near_grid(grid, self.config.edge_radius),
+            )
         self.graph.current_node_id = best_node.node_id if best_node is not None else None
         self.graph.update_robot_position(
             robot_position,
@@ -571,7 +637,7 @@ class SparseGraphBuilder:
             )
             self.robot_anchor_node_id = anchor.node_id
         else:
-            anchor.position = position
+            self.graph.move_node(anchor.node_id, position)
             anchor.last_seen_time = stamp_seconds
             anchor.is_robot_anchor = True
 
@@ -587,8 +653,13 @@ class SparseGraphBuilder:
         position: Tuple[float, float, float],
     ):
         """优先选择和机器人之间直线无碰撞的最近节点"""
+        candidate_ids = self._node_ids_in_grid(grid)
         candidates = sorted(
-            self.graph.nodes.values(),
+            (
+                self.graph.nodes[node_id]
+                for node_id in candidate_ids
+                if node_id in self.graph.nodes
+            ),
             key=lambda node: hypot(node.position[0] - position[0], node.position[1] - position[1]),
         )
         for node in candidates:
@@ -598,6 +669,39 @@ class SparseGraphBuilder:
             ):
                 return node
         return None
+
+    def _node_ids_in_grid(self, grid: ClassifiedGrid) -> set[int]:
+        """粗筛 GridMap 包围盒后精确返回窗口内节点"""
+        candidate_ids = self._node_ids_near_grid(grid, margin=0.0)
+        return {
+            node_id
+            for node_id in candidate_ids
+            if node_id in self.graph.nodes
+            and grid.world_to_grid(
+                self.graph.nodes[node_id].position[0],
+                self.graph.nodes[node_id].position[1],
+            )
+            is not None
+        }
+
+    def _node_ids_near_grid(
+        self,
+        grid: ClassifiedGrid,
+        margin: float,
+    ) -> set[int]:
+        """查询 GridMap 世界包围盒及安全边距内节点"""
+        corners = [
+            grid.grid_to_world(ix, iy)
+            for ix in (0, grid.width - 1)
+            for iy in (0, grid.height - 1)
+        ]
+        safe_margin = max(0.0, float(margin)) + grid.resolution
+        return self.graph.node_ids_in_bounds(
+            min(point[0] for point in corners) - safe_margin,
+            max(point[0] for point in corners) + safe_margin,
+            min(point[1] for point in corners) - safe_margin,
+            max(point[1] for point in corners) + safe_margin,
+        )
 
 
 def _adaptive_lattice_multiple(free_radius: float, base_spacing: float) -> int:

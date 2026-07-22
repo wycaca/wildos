@@ -31,6 +31,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "viz_topic": "/spot1/graph_construction_viz",
     "viz_show_radius_markers": False,
     "publish_rate_hz": 2.0,
+    "max_grid_odom_time_delta_sec": 0.5,
     "diagnostics_log_period_sec": 30.0,
     "slow_cycle_warning_ms": 250.0,
     "grid_map_traversability_layer": "traversability",
@@ -50,6 +51,34 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 }
 
 TRAVERSABILITY_CLASS = "default"
+
+
+class InputFreshnessGate:
+    """跟踪地图和里程计时间戳, 拒绝旧数据和不匹配快照"""
+
+    def __init__(self) -> None:
+        self.grid_stamp_ns: int | None = None
+        self.odom_stamp_ns: int | None = None
+
+    def accept_grid(self, stamp_ns: int) -> bool:
+        """仅接收时间严格前进的地图"""
+        if self.grid_stamp_ns is not None and stamp_ns <= self.grid_stamp_ns:
+            return False
+        self.grid_stamp_ns = stamp_ns
+        return True
+
+    def accept_odom(self, stamp_ns: int) -> bool:
+        """仅接收时间严格前进的里程计"""
+        if self.odom_stamp_ns is not None and stamp_ns <= self.odom_stamp_ns:
+            return False
+        self.odom_stamp_ns = stamp_ns
+        return True
+
+    def time_delta_seconds(self) -> float | None:
+        """返回当前地图和里程计快照的时间差"""
+        if self.grid_stamp_ns is None or self.odom_stamp_ns is None:
+            return None
+        return abs(self.grid_stamp_ns - self.odom_stamp_ns) / 1.0e9
 
 
 class GraphConstructionNode(Node):
@@ -72,6 +101,12 @@ class GraphConstructionNode(Node):
 
         self.latest_grid = None
         self.latest_odom = None
+        self._input_freshness = InputFreshnessGate()
+        self._latest_grid_sequence = 0
+        self._processed_grid_sequence = 0
+        self._stale_grid_messages = 0
+        self._stale_odom_messages = 0
+        self._last_input_warning = 0.0
         self._logged_first_grid = False
         self._logged_first_odom = False
         self._logged_first_publish = False
@@ -81,6 +116,19 @@ class GraphConstructionNode(Node):
             name: TimingWindow()
             for name in ("classify", "update", "message", "visualize", "total")
         }
+        self._graph_update_timings = {
+            name: TimingWindow()
+            for name in (
+                "preprocess",
+                "distance",
+                "nodes",
+                "sampling",
+                "frontier",
+                "current",
+                "edges",
+            )
+        }
+        self._latest_graph_update_stats = None
 
         self.nav_graph_pub = self.create_publisher(
             NavigationGraph,
@@ -93,14 +141,14 @@ class GraphConstructionNode(Node):
             GridMap,
             self.config["grid_map_topic"],
             self._on_grid_map,
-            10,
+            1,
         )
 
         self.create_subscription(
             Odometry,
             self.config["odom_topic"],
             self._on_odom,
-            10,
+            1,
         )
 
         publish_rate = float(self.config["publish_rate_hz"])
@@ -118,7 +166,18 @@ class GraphConstructionNode(Node):
 
     def _on_grid_map(self, msg: GridMap) -> None:
         """缓存最新 GridMap, 用 elevation 和 traversability layer 构建图"""
+        stamp_ns = _header_stamp_nanoseconds(msg.header)
+        previous_stamp_ns = self._input_freshness.grid_stamp_ns
+        if not self._input_freshness.accept_grid(stamp_ns):
+            self._stale_grid_messages += 1
+            self._warn_input_freshness(
+                "忽略时间戳未前进的 GridMap",
+                f"当前={_nanoseconds_to_seconds(stamp_ns):.6f}s, "
+                f"已接收={_nanoseconds_to_seconds(previous_stamp_ns):.6f}s",
+            )
+            return
         self.latest_grid = msg
+        self._latest_grid_sequence += 1
         if not self._logged_first_grid:
             self.get_logger().info(
                 f"收到第一帧 GridMap, frame={msg.header.frame_id}, layers={list(msg.layers)}"
@@ -127,6 +186,16 @@ class GraphConstructionNode(Node):
 
     def _on_odom(self, msg: Odometry) -> None:
         """缓存最新 odom, current_node_idx 计算依赖它"""
+        stamp_ns = _header_stamp_nanoseconds(msg.header)
+        previous_stamp_ns = self._input_freshness.odom_stamp_ns
+        if not self._input_freshness.accept_odom(stamp_ns):
+            self._stale_odom_messages += 1
+            self._warn_input_freshness(
+                "忽略时间戳未前进的 odom",
+                f"当前={_nanoseconds_to_seconds(stamp_ns):.6f}s, "
+                f"已接收={_nanoseconds_to_seconds(previous_stamp_ns):.6f}s",
+            )
+            return
         self.latest_odom = msg
         if not self._logged_first_odom:
             position = msg.pose.pose.position
@@ -139,44 +208,52 @@ class GraphConstructionNode(Node):
     def _on_timer(self) -> None:
         """周期性构建并发布导航图
 
-        节点使用最新 grid 和 odom 快照, 不要求时间戳严格同步
+        节点使用时间差在容限内的最新 grid 和 odom 快照
         地图解码或图更新失败时保留历史图, 当前周期不发布部分结果
         graph message 和 marker 使用同一份更新结果, 避免可视化与规划图不一致
         """
-        if self.latest_grid is None or self.latest_odom is None:
+        inputs = self._take_latest_inputs()
+        if inputs is None:
             return
+        grid_msg, odom_msg = inputs
 
         cycle_started = time.perf_counter()
         try:
             stage_started = time.perf_counter()
-            classified_grid = self._classify_latest_grid()
+            classified_grid = self._classify_grid(grid_msg)
             self._timings["classify"].add_seconds(time.perf_counter() - stage_started)
             stage_started = time.perf_counter()
             update_result = self.builder.update(
                 classified_grid,
-                _robot_position(self.latest_odom),
-                _stamp_to_seconds(self.latest_grid.header),
+                _robot_position(odom_msg),
+                _stamp_to_seconds(grid_msg.header),
             )
             self._timings["update"].add_seconds(time.perf_counter() - stage_started)
+            self._latest_graph_update_stats = update_result.stats
+            for name, elapsed_seconds in update_result.stats.stage_seconds.items():
+                self._graph_update_timings[name].add_seconds(elapsed_seconds)
         except Exception as exc:
             self.get_logger().error(f"更新导航图失败: {exc}")
             return
 
         stage_started = time.perf_counter()
-        header = self._graph_header(self.latest_grid.header, classified_grid.frame_id)
+        header = self._graph_header(grid_msg.header, classified_grid.frame_id)
         nav_graph = graph_to_msg(update_result.graph, header, TRAVERSABILITY_CLASS)
         self._timings["message"].add_seconds(time.perf_counter() - stage_started)
 
         self.nav_graph_pub.publish(nav_graph)
 
-        stage_started = time.perf_counter()
-        self.viz_pub.publish(
-            self.visualizer.build_markers(
-                update_result.graph,
-                header,
+        if self.viz_pub.get_subscription_count() > 0:
+            stage_started = time.perf_counter()
+            self.viz_pub.publish(
+                self.visualizer.build_markers(
+                    update_result.graph,
+                    header,
+                )
             )
-        )
-        self._timings["visualize"].add_seconds(time.perf_counter() - stage_started)
+            self._timings["visualize"].add_seconds(
+                time.perf_counter() - stage_started
+            )
         total_seconds = time.perf_counter() - cycle_started
         self._timings["total"].add_seconds(total_seconds)
         self._publish_rate.tick()
@@ -221,6 +298,11 @@ class GraphConstructionNode(Node):
         if not summaries["total"].count:
             return
         total = summaries["total"]
+        update_summaries = {
+            name: timing.summary(reset=True)
+            for name, timing in self._graph_update_timings.items()
+        }
+        workload = self._format_graph_update_workload()
         self.get_logger().info(
             "导航图性能, "
             f"频率={self._publish_rate.sample(reset=True):.2f}Hz, "
@@ -230,17 +312,75 @@ class GraphConstructionNode(Node):
             f"地图分类{summaries['classify'].average_ms:.0f}ms/"
             f"图更新{summaries['update'].average_ms:.0f}ms/"
             f"消息转换{summaries['message'].average_ms:.0f}ms/"
-            f"可视化{summaries['visualize'].average_ms:.0f}ms"
+            f"可视化{summaries['visualize'].average_ms:.0f}ms, "
+            "图内平均耗时="
+            f"预处理{update_summaries['preprocess'].average_ms:.0f}ms/"
+            f"距离场{update_summaries['distance'].average_ms:.0f}ms/"
+            f"节点{update_summaries['nodes'].average_ms:.0f}ms/"
+            f"采样{update_summaries['sampling'].average_ms:.0f}ms/"
+            f"Frontier{update_summaries['frontier'].average_ms:.0f}ms/"
+            f"边{update_summaries['edges'].average_ms:.0f}ms"
+            f"{workload}"
         )
 
-    def _classify_latest_grid(self):
+    def _format_graph_update_workload(self) -> str:
+        """格式化最近一帧局部更新工作量"""
+        stats = self._latest_graph_update_stats
+        if stats is None:
+            return ""
+        return (
+            ", 最近工作量="
+            f"局部节点{stats.local_node_count}/{stats.total_node_count}, "
+            f"受影响边{stats.affected_edge_count}/{stats.total_edge_count}, "
+            f"活动Frontier owner{stats.active_frontier_owner_count}"
+        )
+
+    def _take_latest_inputs(self):
+        """每个新 GridMap 只处理一次, 并等待时间匹配的 odom 快照"""
+        if self.latest_grid is None or self.latest_odom is None:
+            return None
+        if self._latest_grid_sequence == self._processed_grid_sequence:
+            return None
+
+        time_delta = self._input_freshness.time_delta_seconds()
+        max_time_delta = float(self.config["max_grid_odom_time_delta_sec"])
+        if time_delta is None or time_delta > max_time_delta:
+            self._warn_input_freshness(
+                "等待时间匹配的 GridMap 和 odom",
+                f"地图={_nanoseconds_to_seconds(self._input_freshness.grid_stamp_ns):.6f}s, "
+                f"里程计={_nanoseconds_to_seconds(self._input_freshness.odom_stamp_ns):.6f}s, "
+                f"差值={time_delta * 1000.0:.1f}ms, "
+                f"上限={max_time_delta * 1000.0:.1f}ms",
+            )
+            return None
+
+        self._processed_grid_sequence = self._latest_grid_sequence
+        return self.latest_grid, self.latest_odom
+
+    def _warn_input_freshness(
+        self,
+        reason: str,
+        detail: str,
+    ) -> None:
+        """低频报告旧数据或输入时间不匹配"""
+        now = time.monotonic()
+        if now - self._last_input_warning < 30.0:
+            return
+        self._last_input_warning = now
+        self.get_logger().warn(
+            f"{reason}, {detail}, "
+            f"旧地图丢弃={self._stale_grid_messages}, "
+            f"旧里程计丢弃={self._stale_odom_messages}"
+        )
+
+    def _classify_grid(self, grid_msg):
         """按配置的输入后端把 ROS 地图解码为统一 ClassifiedGrid
 
         GridMap 的 rolling buffer 已由 grid_adapter 解包, 这里固定启用经过验证的
         拓扑后处理和标准轴约定, 避免重新开放会破坏坐标一致性的历史调试开关
         """
         return classify_grid_map(
-            self.latest_grid,
+            grid_msg,
             traversability_layer=self.config["grid_map_traversability_layer"],
             elevation_layer=self.config["grid_map_elevation_layer"],
             free_threshold=self.config["grid_map_free_threshold"],
@@ -251,7 +391,9 @@ class GraphConstructionNode(Node):
             z_offset=self.config["grid_map_z_offset"],
             min_free_component_cells=self.config["grid_map_min_free_component_cells"],
             fill_hole_max_cells=self.config["grid_map_fill_hole_max_cells"],
-            fill_hole_min_free_neighbor_ratio=self.config["grid_map_fill_hole_min_free_neighbor_ratio"],
+            fill_hole_min_free_neighbor_ratio=self.config[
+                "grid_map_fill_hole_min_free_neighbor_ratio"
+            ],
             majority_fill_iterations=self.config["grid_map_majority_fill_iterations"],
             majority_fill_min_neighbors=self.config["grid_map_majority_fill_min_neighbors"],
             fill_elevation_radius_cells=self.config["grid_map_fill_elevation_radius_cells"],
@@ -280,6 +422,8 @@ def _resolve_config(config: Mapping[str, Any]) -> Dict[str, Any]:
     resolved = {**DEFAULT_CONFIG, **config}
     if float(resolved["publish_rate_hz"]) <= 0.0:
         raise ValueError("publish_rate_hz must be greater than 0")
+    if float(resolved["max_grid_odom_time_delta_sec"]) <= 0.0:
+        raise ValueError("max_grid_odom_time_delta_sec must be greater than 0")
     if float(resolved["diagnostics_log_period_sec"]) <= 0.0:
         raise ValueError("diagnostics_log_period_sec must be greater than 0")
     if float(resolved["slow_cycle_warning_ms"]) <= 0.0:
@@ -340,6 +484,16 @@ def _format_robot_stats(odom_position: Any, ground_position: Any, ground_project
 def _stamp_to_seconds(header: Any) -> float:
     """将 ROS header stamp 转成纯算法层使用的秒"""
     return float(header.stamp.sec) + float(header.stamp.nanosec) * 1e-9
+
+
+def _header_stamp_nanoseconds(header: Any) -> int:
+    """将 ROS header stamp 转成整数纳秒"""
+    return int(header.stamp.sec) * 1_000_000_000 + int(header.stamp.nanosec)
+
+
+def _nanoseconds_to_seconds(stamp_ns: int | None) -> float:
+    """将可选整数纳秒转成日志使用的秒"""
+    return float(stamp_ns or 0) / 1.0e9
 
 
 def _robot_position(odom_msg: Odometry):
