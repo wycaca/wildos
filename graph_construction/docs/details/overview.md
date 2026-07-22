@@ -153,6 +153,12 @@ graphnav_planner/
   launch/path_follower.launch.py
 ```
 
+核心业务模块详细说明:
+
+- `graph_update.md`: 局部高程图如何增量更新持久导航图
+- `target_exploration.md`: 尚未发现目标时如何选路, 发现目标后如何切换状态
+- `target_localization.md`: 多视角 Mask 和 LiDAR 如何形成三维目标位置
+
 ## 6. 参数边界
 
 | 内容 | 位置 |
@@ -192,6 +198,5 @@ LRN、ImgFrontier、GeoFrontier、训练脚本和 GPS 工具保留用于研究�
 - 视觉射线粗目标 pose 和 marker
 - standalone ExploRFM triangulation
 - legacy triangulation demos、teleop 和 batch helper
-- graph stage timing diagnostics 返回对象
 
 历史日期文档仍可保留这些实现的实验记录，但不能作为当前运行说明

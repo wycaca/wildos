@@ -48,7 +48,9 @@ ClassifiedGrid
   -> GraphUpdateResult
 ```
 
-`GraphUpdateResult` 只返回当前 graph 和 classified grid，不携带 stage timing 或统计诊断对象
+`GraphUpdateResult` 返回当前 graph、classified grid 和轻量 `GraphUpdateStats`
+
+`GraphUpdateStats` 只记录本帧局部节点、dirty cell、边候选和各阶段耗时, ROS 节点负责按周期汇总日志, 不把 ROS 诊断逻辑放入纯算法层
 
 ### 2.1 节点
 
