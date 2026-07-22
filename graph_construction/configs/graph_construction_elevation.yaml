@@ -19,7 +19,7 @@ grid_map_fill_hole_min_free_neighbor_ratio: 0.65
 grid_map_fill_elevation_radius_cells: 5
 
 # 用周边地面修补机器人可占用的脚下雷达盲区
-robot_blind_zone_radius: 0.8
+robot_blind_zone_radius: 1.2
 robot_blind_zone_elevation_search_radius: 6.0
 robot_ground_height_offset: 0.22
 robot_ground_elevation_tolerance: 0.5

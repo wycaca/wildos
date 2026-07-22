@@ -519,6 +519,94 @@ def test_graph_builder_repairs_robot_blind_zone_from_nearby_ground():
     assert current.position == (2.25, 2.25, 0.25)
 
 
+def test_default_blind_zone_repairs_ground_out_to_1_2_metres():
+    """验证默认盲区半径覆盖 1.2 m 且不向外扩张"""
+    resolution = 0.2
+    size = 21
+    center = 10
+    offset_y, offset_x = np.ogrid[-center:size - center, -center:size - center]
+    distance = np.hypot(offset_x * resolution, offset_y * resolution)
+    unknown = distance <= 1.2
+    free = ~unknown
+    elevation = np.zeros((size, size), dtype=float)
+    elevation[unknown] = np.nan
+    grid = ClassifiedGrid(
+        width=size,
+        height=size,
+        resolution=resolution,
+        origin_x=0.0,
+        origin_y=0.0,
+        frame_id="map",
+        free=free,
+        obstacle=np.zeros((size, size), dtype=bool),
+        unknown=unknown,
+        elevation=elevation,
+        stats={},
+    )
+    robot_xy = ((center + 0.5) * resolution, (center + 0.5) * resolution)
+    builder = SparseGraphBuilder(GraphBuilderConfig(min_obstacle_clearance=0.0))
+
+    result = builder.update(
+        grid,
+        robot_position=(robot_xy[0], robot_xy[1], 0.22),
+        stamp_seconds=1.0,
+    )
+
+    assert result.classified_grid.is_free_index(center + 5, center)
+    assert result.classified_grid.is_free_index(center, center + 5)
+    assert result.classified_grid.stats["robot_blind_zone_status"] == "repaired"
+
+
+def test_blind_zone_preserves_slope_step_pit_and_obstacle_surfaces():
+    """验证扩大盲区只修补 unknown 且不抹平已有地形"""
+    resolution = 0.2
+    size = 21
+    center = 10
+    x_coordinates = (np.arange(size, dtype=float) + 0.5) * resolution
+    elevation = np.broadcast_to(0.05 * x_coordinates, (size, size)).copy()
+    free = np.ones((size, size), dtype=bool)
+    obstacle = np.zeros((size, size), dtype=bool)
+    unknown = np.zeros((size, size), dtype=bool)
+    unknown[center - 2:center + 3, center - 2:center + 3] = True
+    free[unknown] = False
+    elevation[unknown] = np.nan
+
+    # 已观测的台阶、坑和障碍必须保留原始分类与高程
+    elevation[center, center + 5] = 0.45
+    elevation[center + 5, center] = -0.35
+    obstacle[center - 5, center] = True
+    free[center - 5, center] = False
+    grid = ClassifiedGrid(
+        width=size,
+        height=size,
+        resolution=resolution,
+        origin_x=0.0,
+        origin_y=0.0,
+        frame_id="map",
+        free=free,
+        obstacle=obstacle,
+        unknown=unknown,
+        elevation=elevation,
+        stats={},
+    )
+    robot_xy = ((center + 0.5) * resolution, (center + 0.5) * resolution)
+    expected_ground = 0.05 * robot_xy[0]
+    builder = SparseGraphBuilder(GraphBuilderConfig(min_obstacle_clearance=0.0))
+
+    result = builder.update(
+        grid,
+        robot_position=(robot_xy[0], robot_xy[1], expected_ground + 0.22),
+        stamp_seconds=1.0,
+    )
+
+    assert result.classified_grid.is_free_index(center, center)
+    assert abs(result.classified_grid.elevation_at_index(center, center) - expected_ground) < 0.03
+    assert result.classified_grid.elevation_at_index(center + 5, center) == 0.45
+    assert result.classified_grid.is_unknown_index(center, center + 5)
+    assert np.isnan(result.classified_grid.elevation[center + 5, center])
+    assert result.classified_grid.is_obstacle_index(center, center - 5)
+
+
 def test_graph_builder_uses_robot_anchor_as_current_node_on_known_ground():
     """验证已知地面也用精确机器人位置作为规划起点"""
     grid = ClassifiedGrid(

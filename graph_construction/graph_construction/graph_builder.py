@@ -27,7 +27,7 @@ class GraphBuilderConfig:
     grid_map_max_surface_step: float = 0.35
 
     # 用周边可靠地面修补机器人脚下的雷达盲区
-    robot_blind_zone_radius: float = 0.8
+    robot_blind_zone_radius: float = 1.2
     robot_blind_zone_elevation_search_radius: float = 6.0
     robot_ground_height_offset: float = 0.22
     robot_ground_elevation_tolerance: float = 0.5
@@ -131,14 +131,15 @@ class SparseGraphBuilder:
         """根据已解码 grid 和机器人位置更新稀疏图"""
         return self._update_classified_grid(grid, robot_position, stamp_seconds)
 
-    def _sanitize_grid_surface(self, grid: ClassifiedGrid) -> None:
+    def _sanitize_grid_surface(self, grid: ClassifiedGrid) -> np.ndarray:
         """清洗孤立高程尖峰, 避免 graph 采到帘状面噪声"""
+        protected_unknown = np.zeros((grid.height, grid.width), dtype=bool)
         if grid.elevation is None:
-            return
+            return protected_unknown
 
         max_step = self.config.grid_map_max_surface_step
         if max_step <= 0.0:
-            return
+            return protected_unknown
 
         elevation = np.asarray(grid.elevation)
         height, width = elevation.shape
@@ -172,6 +173,7 @@ class SparseGraphBuilder:
         grid.unknown[curtain] = True
         grid.free[curtain] = False
         grid.obstacle[curtain] = False
+        return curtain
 
     def _update_classified_grid(
         self,
@@ -187,8 +189,8 @@ class SparseGraphBuilder:
         first_new_node_id = self.graph.next_node_id
 
         stage_started = perf_counter()
-        self._sanitize_grid_surface(grid)
-        self._repair_robot_blind_zone(grid, robot_position)
+        protected_unknown = self._sanitize_grid_surface(grid)
+        self._repair_robot_blind_zone(grid, robot_position, protected_unknown)
 
         robot_ground_position, robot_ground_projected = (
             grid.project_to_elevation_with_status(robot_position)
@@ -467,10 +469,11 @@ class SparseGraphBuilder:
         self,
         grid: ClassifiedGrid,
         robot_position: Tuple[float, float, float],
+        protected_unknown: np.ndarray | None = None,
     ) -> int:
         """只修补机器人可物理占用的脚下 unknown 区域
 
-        高程取自盲区边缘最近的可靠地面中位数, 明确障碍物不会被清除
+        高程取自盲区边缘最近的可靠地面中位数, 障碍物和本帧突变地形不会被清除
         """
         if grid.stats is None:
             grid.stats = {}
@@ -560,6 +563,11 @@ class SparseGraphBuilder:
             repair_min_x:repair_max_x,
         ]
         repair_mask = repair_region & region_unknown & ~region_obstacle
+        if protected_unknown is not None:
+            repair_mask &= ~protected_unknown[
+                repair_min_y:repair_max_y,
+                repair_min_x:repair_max_x,
+            ]
         repaired = int(np.count_nonzero(repair_mask))
         region_unknown[repair_mask] = False
         grid.free[
