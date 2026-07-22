@@ -5,6 +5,7 @@ from nav_msgs.msg import Odometry
 import pytest
 import rclpy
 from std_msgs.msg import Bool
+from graphnav_msgs.msg import NavigationGraph, Node, NodeTraversabilityProperties
 from object_search_msgs.msg import TargetEstimate
 
 from visual_navigation.object_search_goal_mux import ObjectSearchGoalMux
@@ -21,6 +22,8 @@ def mux_node():
             "initial_goal_distance:=20.0",
             "-p",
             "frame_id:=odom",
+            "-p",
+            "startup_observation_enabled:=false",
         ]
     )
     node = ObjectSearchGoalMux()
@@ -41,6 +44,10 @@ def _odom(x: float, y: float, yaw: float, z: float = 0.0) -> Odometry:
     msg.pose.pose.orientation.z = math.sin(yaw * 0.5)
     msg.pose.pose.orientation.w = math.cos(yaw * 0.5)
     return msg
+
+
+def _yaw(pose) -> float:
+    return 2.0 * math.atan2(pose.pose.orientation.z, pose.pose.orientation.w)
 
 
 def _target_estimate(
@@ -71,6 +78,38 @@ def _target_estimate(
     return msg
 
 
+def _graph(*, forward: bool, stamp: int = 1) -> NavigationGraph:
+    """构造有前向候选或仅含机器人节点的评分图"""
+    graph = NavigationGraph()
+    graph.header.frame_id = "odom"
+    graph.header.stamp.sec = stamp
+    graph.trav_classes = ["default"]
+    positions = [(0.0, 0.0)]
+    if forward:
+        positions.extend([(1.0, 0.0), (2.0, 0.3), (3.0, -0.3)])
+    for index, (x, y) in enumerate(positions):
+        node = Node()
+        node.pose.position.x = x
+        node.pose.position.y = y
+        properties = NodeTraversabilityProperties()
+        properties.is_frontier = forward and index == len(positions) - 1
+        node.trav_properties = [properties]
+        graph.nodes.append(node)
+    graph.current_node_idx = 0
+    return graph
+
+
+def _enable_test_startup(node: ObjectSearchGoalMux) -> None:
+    """启用零等待启动观察参数便于单元测试"""
+    node.startup_observation_enabled = True
+    node.startup_completed = False
+    node.startup_warmup_sec = 0.0
+    node.startup_min_nav_graph_frames = 2
+    node.startup_min_scored_graph_frames = 2
+    node.startup_scan_trigger_frames = 3
+    node.startup_scan_hold_sec = 0.0
+
+
 def test_initial_coarse_goal_is_computed_once(mux_node):
     """机器人后续移动和转向不能让粗目标围绕当前位置重算"""
     mux_node._on_odom(_odom(1.0, 2.0, 0.0))
@@ -85,6 +124,67 @@ def test_initial_coarse_goal_is_computed_once(mux_node):
     assert first_goal.pose.position.y == pytest.approx(2.0)
     assert second_goal.pose.position.x == pytest.approx(first_goal.pose.position.x)
     assert second_goal.pose.position.y == pytest.approx(first_goal.pose.position.y)
+
+
+def test_startup_observation_holds_until_graph_and_scoring_are_ready(mux_node):
+    """原始图和评分图未连续就绪时禁止提交探索目标"""
+    _enable_test_startup(mux_node)
+    mux_node._on_odom(_odom(0.0, 0.0, 0.0))
+
+    state, goal = mux_node._select_goal()
+
+    assert state == ObjectSearchState.STARTUP_OBSERVATION
+    assert goal.pose.position.x == pytest.approx(0.0)
+    assert goal.pose.position.y == pytest.approx(0.0)
+
+
+def test_startup_observation_starts_directly_when_forward_graph_is_ready(mux_node):
+    """前向区域稳定可规划时预热后直接开始探索"""
+    _enable_test_startup(mux_node)
+    mux_node._on_odom(_odom(0.0, 0.0, 0.0))
+    for stamp in (1, 2):
+        mux_node._on_nav_graph(_graph(forward=True, stamp=stamp))
+        mux_node._on_scored_nav_graph(_graph(forward=True, stamp=stamp))
+
+    state, goal = mux_node._select_goal()
+
+    assert state == ObjectSearchState.SEARCHING_WITH_INITIAL_GOAL
+    assert goal.pose.position.x == pytest.approx(20.0)
+    assert mux_node.startup_scan_phase == "COMPLETE"
+
+
+def test_startup_scan_requires_repeated_insufficient_forward_graph(mux_node):
+    """单帧前向不足不能触发旋转, 连续不足才进入左侧观察"""
+    _enable_test_startup(mux_node)
+    mux_node._on_odom(_odom(0.0, 0.0, 0.0))
+    for stamp in (1, 2):
+        mux_node._on_nav_graph(_graph(forward=False, stamp=stamp))
+        mux_node._on_scored_nav_graph(_graph(forward=False, stamp=stamp))
+
+    first_state, first_goal = mux_node._select_goal()
+    mux_node._on_scored_nav_graph(_graph(forward=False, stamp=3))
+    scan_state, scan_goal = mux_node._select_goal()
+
+    assert first_state == ObjectSearchState.STARTUP_OBSERVATION
+    assert _yaw(first_goal) == pytest.approx(0.0)
+    assert scan_state == ObjectSearchState.STARTUP_OBSERVATION
+    assert _yaw(scan_goal) == pytest.approx(math.radians(35.0))
+    assert mux_node.startup_scan_phase == "SCAN_LEFT"
+
+    mux_node._on_odom(_odom(0.0, 0.0, math.radians(35.0)))
+    mux_node._on_scored_nav_graph(_graph(forward=False, stamp=4))
+    _, right_goal = mux_node._select_goal()
+    assert _yaw(right_goal) == pytest.approx(math.radians(-35.0))
+
+    mux_node._on_odom(_odom(0.0, 0.0, math.radians(-35.0)))
+    mux_node._on_scored_nav_graph(_graph(forward=False, stamp=5))
+    _, return_goal = mux_node._select_goal()
+    assert _yaw(return_goal) == pytest.approx(0.0)
+
+    mux_node._on_odom(_odom(0.0, 0.0, 0.0))
+    mux_node._on_scored_nav_graph(_graph(forward=False, stamp=6))
+    complete_state, _ = mux_node._select_goal()
+    assert complete_state == ObjectSearchState.SEARCHING_WITH_INITIAL_GOAL
 
 
 def test_initial_goal_orientation_matches_configured_heading(mux_node):

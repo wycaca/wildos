@@ -7,11 +7,29 @@
     object_reached_topic: /spot1/object_search_reached
     completion_topic: /spot1/object_search_completed
     odom_topic: /spot1/odom_for_scoring
+    nav_graph_topic: /spot1/nav_graph
+    scored_nav_graph_topic: /spot1/scored_nav_graph
     frame_id: map
 
     # 启动时根据首帧 odom 计算一次固定粗目标, 后续转向和移动不会重算
     initial_goal_distance: 30.0
     initial_goal_heading_deg: 0.0
+
+    # 先静止等待地图和视觉评分就绪, 前向不足时仅左右小角度观察
+    startup_observation_enabled: true
+    startup_warmup_sec: 3.0
+    startup_min_nav_graph_frames: 6
+    startup_min_scored_graph_frames: 3
+    startup_min_forward_nodes: 3
+    startup_min_forward_frontiers: 1
+    startup_forward_range: 8.0
+    startup_forward_half_angle_deg: 70.0
+    startup_graph_timeout_sec: 2.0
+    startup_scan_enabled: true
+    startup_scan_trigger_frames: 3
+    startup_scan_yaw_deg: 35.0
+    startup_scan_yaw_tolerance_deg: 5.0
+    startup_scan_hold_sec: 0.5
 
     # 论文式两视角视觉粗定位先替换初始探索 goal, 稳定估计随后提升精度
     publish_rate: 5.0

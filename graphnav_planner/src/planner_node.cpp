@@ -188,6 +188,10 @@ private:
     {
       return "按初始方向探索";
     }
+    if (state == "STARTUP_OBSERVATION")
+    {
+      return "启动观察";
+    }
     if (state == "TARGET_APPROACH_COARSE")
     {
       return "接近视觉粗目标";
@@ -213,6 +217,8 @@ private:
 
     object_search_state_ = state;
     directional_exploration_mode_ = state == "SEARCHING_WITH_INITIAL_GOAL";
+    observation_mode_ =
+      state == "STARTUP_OBSERVATION" || state == "TARGET_OBSERVATION";
     // 状态切换先丢弃旧 goal, 等同一周期的新 goal 到达后再规划
     // 这样目标出现时不会用旧探索 goal 短暂发布错误路径
     goal_pose_.reset();
@@ -223,7 +229,8 @@ private:
       "目标搜索规划模式切换, 状态=%s(%s), 路线类型=%s",
       object_search_state_name(state),
       state.c_str(),
-      directional_exploration_mode_ ? "初始方向探索" : "目标接近");
+      directional_exploration_mode_ ? "初始方向探索" :
+      (observation_mode_ ? "原地观察" : "目标接近"));
   }
 
   static bool same_goal_pose(
@@ -354,7 +361,16 @@ private:
           if (!directional_exploration_mode_ && (goal_vec - robot_vec).norm() < goal_radius_)
           {
             last_hold_goal_ = goal;
-            publish_hold_path(robot_in_graph_frame, "goal_within_radius");
+            if (observation_mode_)
+            {
+              publish_observation_path(
+                robot_in_graph_frame,
+                goal_in_graph_frame,
+                "observation_goal_within_radius");
+            } else
+            {
+              publish_hold_path(robot_in_graph_frame, "goal_within_radius");
+            }
             goal_pose_.reset();
             return;
           }
@@ -497,6 +513,27 @@ private:
       path_msg.header.frame_id.c_str());
   }
 
+  void publish_observation_path(
+    const geometry_msgs::msg::PoseStamped& robot_pose,
+    const geometry_msgs::msg::PoseStamped& observation_goal,
+    const char* reason)
+  {
+    // 单点路径保持位置并传递目标 yaw, 避免多个模块同时生成旋转轨迹
+    nav_msgs::msg::Path path_msg;
+    path_msg.header = *latest_graph_header_;
+    geometry_msgs::msg::PoseStamped observation_pose = robot_pose;
+    observation_pose.header = path_msg.header;
+    observation_pose.pose.orientation = observation_goal.pose.orientation;
+    path_msg.poses.push_back(observation_pose);
+    path_pub_->publish(path_msg);
+    RCLCPP_INFO(
+      this->get_logger(),
+      "已发布观察路径, type=observe, reason=%s, poses=%zu, frame=%s",
+      reason,
+      path_msg.poses.size(),
+      path_msg.header.frame_id.c_str());
+  }
+
   void record_planning_timing(double elapsed_ms)
   {
     planning_timings_ms_.push_back(elapsed_ms);
@@ -568,6 +605,7 @@ private:
   std::optional<std_msgs::msg::Header> latest_graph_header_;
   std::string object_search_state_;
   bool directional_exploration_mode_ = false;
+  bool observation_mode_ = false;
   double goal_radius_;
   double diagnostics_log_period_sec_;
   double slow_planning_warning_ms_;

@@ -558,6 +558,8 @@ def _launch_setup(context):
             {"object_reached_topic": _value(context, profile, "object_reached_topic", "object_reached_topic")},
             {"completion_topic": _value(context, profile, "object_search_completed_topic", "object_search_completed_topic")},
             {"odom_topic": odom_output_topic},
+            {"nav_graph_topic": nav_graph_topic},
+            {"scored_nav_graph_topic": scored_nav_graph_topic},
             {"frame_id": global_frame},
             {
                 "publish_rate": _float_value(

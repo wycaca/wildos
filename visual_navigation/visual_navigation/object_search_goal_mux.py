@@ -3,6 +3,7 @@ import math
 
 import rclpy
 from geometry_msgs.msg import PoseStamped
+from graphnav_msgs.msg import NavigationGraph
 from nav_msgs.msg import Odometry
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
@@ -37,6 +38,22 @@ class ObjectSearchGoalMux(Node):
         self.declare_parameter("coarse_target_max_horizontal_std", 8.0)
         self.declare_parameter("target_update_min_distance", 0.75)
         self.declare_parameter("stable_target_update_min_distance", 0.3)
+        self.declare_parameter("nav_graph_topic", "/spot1/nav_graph")
+        self.declare_parameter("scored_nav_graph_topic", "/spot1/scored_nav_graph")
+        self.declare_parameter("startup_observation_enabled", True)
+        self.declare_parameter("startup_warmup_sec", 3.0)
+        self.declare_parameter("startup_min_nav_graph_frames", 6)
+        self.declare_parameter("startup_min_scored_graph_frames", 3)
+        self.declare_parameter("startup_min_forward_nodes", 3)
+        self.declare_parameter("startup_min_forward_frontiers", 1)
+        self.declare_parameter("startup_forward_range", 8.0)
+        self.declare_parameter("startup_forward_half_angle_deg", 70.0)
+        self.declare_parameter("startup_graph_timeout_sec", 2.0)
+        self.declare_parameter("startup_scan_enabled", True)
+        self.declare_parameter("startup_scan_trigger_frames", 3)
+        self.declare_parameter("startup_scan_yaw_deg", 35.0)
+        self.declare_parameter("startup_scan_yaw_tolerance_deg", 5.0)
+        self.declare_parameter("startup_scan_hold_sec", 0.5)
 
         self.output_goal_topic = self._param_str("output_goal_topic")
         self.status_topic = self._param_str("status_topic")
@@ -81,6 +98,56 @@ class ObjectSearchGoalMux(Node):
             self._param_float("stable_target_update_min_distance"),
             0.0,
         )
+        self.nav_graph_topic = self._param_str("nav_graph_topic")
+        self.scored_nav_graph_topic = self._param_str("scored_nav_graph_topic")
+        self.startup_observation_enabled = bool(
+            self.get_parameter("startup_observation_enabled").value
+        )
+        self.startup_warmup_sec = max(self._param_float("startup_warmup_sec"), 0.0)
+        self.startup_min_nav_graph_frames = max(
+            int(self.get_parameter("startup_min_nav_graph_frames").value),
+            1,
+        )
+        self.startup_min_scored_graph_frames = max(
+            int(self.get_parameter("startup_min_scored_graph_frames").value),
+            1,
+        )
+        self.startup_min_forward_nodes = max(
+            int(self.get_parameter("startup_min_forward_nodes").value),
+            1,
+        )
+        self.startup_min_forward_frontiers = max(
+            int(self.get_parameter("startup_min_forward_frontiers").value),
+            0,
+        )
+        self.startup_forward_range = max(
+            self._param_float("startup_forward_range"),
+            0.1,
+        )
+        self.startup_forward_half_angle = math.radians(
+            min(max(self._param_float("startup_forward_half_angle_deg"), 1.0), 89.0)
+        )
+        self.startup_graph_timeout_sec = max(
+            self._param_float("startup_graph_timeout_sec"),
+            0.1,
+        )
+        self.startup_scan_enabled = bool(
+            self.get_parameter("startup_scan_enabled").value
+        )
+        self.startup_scan_trigger_frames = max(
+            int(self.get_parameter("startup_scan_trigger_frames").value),
+            2,
+        )
+        self.startup_scan_yaw = math.radians(
+            min(max(self._param_float("startup_scan_yaw_deg"), 5.0), 60.0)
+        )
+        self.startup_scan_yaw_tolerance = math.radians(
+            min(max(self._param_float("startup_scan_yaw_tolerance_deg"), 1.0), 15.0)
+        )
+        self.startup_scan_hold_sec = max(
+            self._param_float("startup_scan_hold_sec"),
+            0.0,
+        )
 
         self.latest_odom: Odometry | None = None
         self.metric_target: PoseStamped | None = None
@@ -96,6 +163,18 @@ class ObjectSearchGoalMux(Node):
         self._last_state = ""
         self._last_reached_gate_reason = ""
         self._warned_frame_mismatch = False
+        self.startup_started_time = None
+        self.startup_completed = not self.startup_observation_enabled
+        self.startup_nav_graph_frames = 0
+        self.startup_scored_graph_frames = 0
+        self.startup_forward_nodes = 0
+        self.startup_forward_frontiers = 0
+        self.startup_insufficient_frames = 0
+        self.startup_nav_graph_time = None
+        self.startup_scored_graph_time = None
+        self.startup_scan_phase = "WARMUP"
+        self.startup_scan_phase_time = None
+        self.startup_scan_phase_scored_frames = 0
 
         self.goal_pub = self.create_publisher(PoseStamped, self.output_goal_topic, 10)
         self.status_pub = self.create_publisher(String, self.status_topic, 10)
@@ -118,6 +197,18 @@ class ObjectSearchGoalMux(Node):
             self._on_odom,
             10,
         )
+        self.nav_graph_sub = self.create_subscription(
+            NavigationGraph,
+            self.nav_graph_topic,
+            self._on_nav_graph,
+            10,
+        )
+        self.scored_nav_graph_sub = self.create_subscription(
+            NavigationGraph,
+            self.scored_nav_graph_topic,
+            self._on_scored_nav_graph,
+            10,
+        )
         self.timer = self.create_timer(1.0 / self.publish_rate, self._on_timer)
 
         self.get_logger().info(
@@ -125,6 +216,7 @@ class ObjectSearchGoalMux(Node):
             f"输出目标={self.output_goal_topic}, 融合估计={self.object_target_estimate_topic}, "
             f"视觉到达={self.object_reached_topic}, 里程计={self.odom_topic}, "
             f"初始探索距离={self.initial_goal_distance:.1f}m, "
+            f"启动观察={'启用' if self.startup_observation_enabled else '禁用'}, "
             f"发布频率={self.publish_rate:.1f}Hz"
         )
 
@@ -140,11 +232,73 @@ class ObjectSearchGoalMux(Node):
 
     def _on_odom(self, msg: Odometry) -> None:
         self.latest_odom = msg
+        if self.startup_started_time is None:
+            self.startup_started_time = self.get_clock().now()
         if self.exploration_heading_yaw is None:
             self.exploration_heading_yaw = (
                 _yaw_from_quaternion(msg.pose.pose.orientation)
                 + math.radians(self.initial_goal_heading_deg)
             )
+
+    def _on_nav_graph(self, msg: NavigationGraph) -> None:
+        """累计连续有效原始图帧, 作为启动地图就绪条件"""
+        if not self._graph_is_valid(msg):
+            self.startup_nav_graph_frames = 0
+            return
+        self.startup_nav_graph_frames += 1
+        self.startup_nav_graph_time = self.get_clock().now()
+
+    def _on_scored_nav_graph(self, msg: NavigationGraph) -> None:
+        """累计连续有效评分图并检查初始朝向前方是否可探索"""
+        if not self._graph_is_valid(msg) or not msg.trav_classes:
+            self.startup_scored_graph_frames = 0
+            return
+        self.startup_scored_graph_frames += 1
+        self.startup_scored_graph_time = self.get_clock().now()
+        self.startup_forward_nodes, self.startup_forward_frontiers = (
+            self._forward_graph_counts(msg)
+        )
+        if self._startup_forward_region_ready():
+            self.startup_insufficient_frames = 0
+        else:
+            self.startup_insufficient_frames += 1
+
+    @staticmethod
+    def _graph_is_valid(msg: NavigationGraph) -> bool:
+        return bool(msg.nodes) and int(msg.current_node_idx) < len(msg.nodes)
+
+    def _forward_graph_counts(self, msg: NavigationGraph) -> tuple[int, int]:
+        """统计固定初始朝向扇区内的节点和 Frontier"""
+        if self.latest_odom is None or self.exploration_heading_yaw is None:
+            return 0, 0
+        if msg.header.frame_id and msg.header.frame_id != self.latest_odom.header.frame_id:
+            return 0, 0
+        origin_x = self.latest_odom.pose.pose.position.x
+        origin_y = self.latest_odom.pose.pose.position.y
+        heading_x = math.cos(self.exploration_heading_yaw)
+        heading_y = math.sin(self.exploration_heading_yaw)
+        minimum_cosine = math.cos(self.startup_forward_half_angle)
+        frontier_class_index = 0
+        if "default" in msg.trav_classes:
+            frontier_class_index = list(msg.trav_classes).index("default")
+
+        forward_nodes = 0
+        forward_frontiers = 0
+        for node in msg.nodes:
+            dx = node.pose.position.x - origin_x
+            dy = node.pose.position.y - origin_y
+            distance = math.hypot(dx, dy)
+            if distance < 0.25 or distance > self.startup_forward_range:
+                continue
+            if (dx * heading_x + dy * heading_y) / distance < minimum_cosine:
+                continue
+            forward_nodes += 1
+            if (
+                frontier_class_index < len(node.trav_properties)
+                and node.trav_properties[frontier_class_index].is_frontier
+            ):
+                forward_frontiers += 1
+        return forward_nodes, forward_frontiers
 
     def _on_target_estimate(self, msg: TargetEstimate) -> None:
         """两视角粗定位先引导导航, 稳定估计随后提升精度"""
@@ -264,7 +418,115 @@ class ObjectSearchGoalMux(Node):
         if self.latest_odom is None:
             return ObjectSearchState.WAIT_FOR_ODOM, None
 
+        if not self._startup_observation_is_complete(now):
+            return (
+                ObjectSearchState.STARTUP_OBSERVATION,
+                self._build_startup_observation_goal(now),
+            )
+
         return ObjectSearchState.SEARCHING_WITH_INITIAL_GOAL, self._build_initial_goal(now)
+
+    def _startup_observation_is_complete(self, now) -> bool:
+        """完成静止预热, 必要时依次执行左右小角度观察"""
+        if self.startup_completed:
+            return True
+        if not self._startup_inputs_ready(now):
+            return False
+        if self.startup_scan_phase == "WARMUP":
+            if self._startup_forward_region_ready():
+                self._complete_startup_observation("前向区域可规划")
+                return True
+            if not self.startup_scan_enabled:
+                self._complete_startup_observation("条件扫描已禁用")
+                return True
+            if self.startup_insufficient_frames < self.startup_scan_trigger_frames:
+                return False
+            self._set_startup_scan_phase("SCAN_LEFT", now)
+            self.get_logger().info(
+                "启动前向区域不足, 开始左右小角度观察, "
+                f"前向节点={self.startup_forward_nodes}, "
+                f"前向Frontier={self.startup_forward_frontiers}"
+            )
+            return False
+
+        if not self._startup_scan_target_reached():
+            return False
+        phase_age = self._age_seconds(now, self.startup_scan_phase_time)
+        new_scored_frames = (
+            self.startup_scored_graph_frames - self.startup_scan_phase_scored_frames
+        )
+        if phase_age < self.startup_scan_hold_sec or new_scored_frames < 1:
+            return False
+
+        next_phase = {
+            "SCAN_LEFT": "SCAN_RIGHT",
+            "SCAN_RIGHT": "SCAN_RETURN",
+            "SCAN_RETURN": "COMPLETE",
+        }.get(self.startup_scan_phase)
+        if next_phase == "COMPLETE":
+            self._complete_startup_observation("条件扫描完成")
+            return True
+        if next_phase is not None:
+            self._set_startup_scan_phase(next_phase, now)
+        return False
+
+    def _startup_inputs_ready(self, now) -> bool:
+        if self.startup_started_time is None:
+            return False
+        if self._age_seconds(now, self.startup_started_time) < self.startup_warmup_sec:
+            return False
+        if self.startup_nav_graph_frames < self.startup_min_nav_graph_frames:
+            return False
+        if self.startup_scored_graph_frames < self.startup_min_scored_graph_frames:
+            return False
+        return (
+            self._age_seconds(now, self.startup_nav_graph_time)
+            <= self.startup_graph_timeout_sec
+            and self._age_seconds(now, self.startup_scored_graph_time)
+            <= self.startup_graph_timeout_sec
+        )
+
+    def _startup_forward_region_ready(self) -> bool:
+        return (
+            self.startup_forward_nodes >= self.startup_min_forward_nodes
+            and self.startup_forward_frontiers >= self.startup_min_forward_frontiers
+        )
+
+    def _set_startup_scan_phase(self, phase: str, now) -> None:
+        self.startup_scan_phase = phase
+        self.startup_scan_phase_time = now
+        self.startup_scan_phase_scored_frames = self.startup_scored_graph_frames
+        target_yaw = self._startup_observation_yaw()
+        self.get_logger().info(
+            f"启动观察阶段切换, phase={phase}, target_yaw={math.degrees(target_yaw):.1f}deg"
+        )
+
+    def _startup_scan_target_reached(self) -> bool:
+        if self.latest_odom is None:
+            return False
+        current_yaw = _yaw_from_quaternion(self.latest_odom.pose.pose.orientation)
+        return abs(_normalize_angle(current_yaw - self._startup_observation_yaw())) <= (
+            self.startup_scan_yaw_tolerance
+        )
+
+    def _startup_observation_yaw(self) -> float:
+        initial_yaw = self.exploration_heading_yaw or 0.0
+        offset = {
+            "SCAN_LEFT": self.startup_scan_yaw,
+            "SCAN_RIGHT": -self.startup_scan_yaw,
+        }.get(self.startup_scan_phase, 0.0)
+        return _normalize_angle(initial_yaw + offset)
+
+    def _complete_startup_observation(self, reason: str) -> None:
+        self.startup_completed = True
+        self.startup_scan_phase = "COMPLETE"
+        self.get_logger().info(
+            "启动观察完成, "
+            f"原因={reason}, 原始图帧={self.startup_nav_graph_frames}, "
+            f"评分图帧={self.startup_scored_graph_frames}, "
+            f"前向节点={self.startup_forward_nodes}, "
+            f"前向Frontier={self.startup_forward_frontiers}"
+        )
 
     @staticmethod
     def _age_seconds(now, then) -> float:
@@ -309,6 +571,19 @@ class ObjectSearchGoalMux(Node):
         goal.pose.orientation.z = math.sin(yaw * 0.5)
         goal.pose.orientation.w = math.cos(yaw * 0.5)
         self.initial_search_goal = copy.deepcopy(goal)
+        return goal
+
+    def _build_startup_observation_goal(self, now) -> PoseStamped:
+        """发布当前位置和观察朝向, 由 Planner 生成单点纯 yaw 路径"""
+        odom = self.latest_odom
+        assert odom is not None
+        yaw = self._startup_observation_yaw()
+        goal = PoseStamped()
+        goal.header.frame_id = self.frame_id or odom.header.frame_id
+        goal.header.stamp = now.to_msg()
+        goal.pose.position = copy.deepcopy(odom.pose.pose.position)
+        goal.pose.orientation.z = math.sin(yaw * 0.5)
+        goal.pose.orientation.w = math.cos(yaw * 0.5)
         return goal
 
     def _clear_target_search_state(self) -> None:
@@ -521,6 +796,9 @@ def _estimate_state_name(state: str) -> str:
 def _object_search_state_name(state: str) -> str:
     return {
         ObjectSearchState.WAIT_FOR_ODOM: "等待里程计(WAIT_FOR_ODOM)",
+        ObjectSearchState.STARTUP_OBSERVATION: (
+            "启动静止预热或条件扫描(STARTUP_OBSERVATION)"
+        ),
         ObjectSearchState.SEARCHING_WITH_INITIAL_GOAL: (
             "按初始方向探索(SEARCHING_WITH_INITIAL_GOAL)"
         ),
@@ -534,6 +812,10 @@ def _object_search_state_name(state: str) -> str:
             "目标到达观察点(TARGET_REACHED_VIEWPOINT)"
         ),
     }.get(state, f"未知状态({state})")
+
+
+def _normalize_angle(angle: float) -> float:
+    return math.atan2(math.sin(angle), math.cos(angle))
 
 
 def main(args=None):
