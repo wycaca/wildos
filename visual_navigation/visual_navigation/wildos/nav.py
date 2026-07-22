@@ -33,6 +33,7 @@ from visual_navigation.object_detection_confirmation import DetectionConfirmatio
 from visual_navigation.object_reached_evidence import VisualReachedEvidence
 from visual_navigation.utils.paths import repository_root
 from visual_navigation.utils.performance_stats import EventRate, TimingWindow
+from visual_navigation.utils.publish_gate import PeriodicPublishGate
 
 HOME_DIR = repository_root()
 CAMERA_MAPPING = {
@@ -84,7 +85,7 @@ class WildOS_Nav(TFLookupSubscriber):
         "reachability_w": 2.0,
         "scoring_method": "ADDITIVE",
         "reach_scale": 0.25,
-        "compute_paths": True,
+        "compute_paths": False,
 
         # ROS2 frame 和 topic
         "parent_frame": "spot1/odom",
@@ -102,6 +103,8 @@ class WildOS_Nav(TFLookupSubscriber):
         "object_mask_topic": "/spot1/object_mask",
         "object_reached_topic": "/spot1/object_search_reached",
         "object_completed_topic": "/spot1/object_search_completed",
+        "visualization_publish_period_sec": 2.0,
+        "visualization_require_subscribers": True,
 
         # ROS2 订阅参数
         "qos_history_depth": 1,
@@ -282,6 +285,12 @@ class WildOS_Nav(TFLookupSubscriber):
             reach_scale=reach_scale
         )
         self.compute_paths = config.compute_paths
+        self.visualization_require_subscribers = self._config_bool(
+            config.get("visualization_require_subscribers", True)
+        )
+        self._visualization_gate = PeriodicPublishGate(
+            config.get("visualization_publish_period_sec", 2.0)
+        )
         self.callback_log_interval = max(int(config.get("callback_log_interval", 100)), 1)
         self.diagnostics_log_period_sec = max(
             float(config.get("diagnostics_log_period_sec", 30.0)),
@@ -683,28 +692,55 @@ class WildOS_Nav(TFLookupSubscriber):
             navgraph_msg, geofrontiers, nav_data
         )
         self.scored_navgraph_pub.publish(updated_navgraph)
-        self.viz.delete_markers(self.withinrange_geofront_pub)
-        self.withinrange_geofront_pub.publish(
-            self.viz.viz_valid_geofrontiers(geofrontiers, all_cam_data, odom_msg.header, self.geofrontier_viz_colors))
-
-        # 附加源图像时间, 方便 RViz 跟踪 debug 图像流
-        model_viz_msg = self.br.cv2_to_imgmsg(
-            self.viz.visualize_model_det(nav_data, all_cam_data),
-            encoding="rgb8"
-        )
-        model_viz_msg.header = msgs[0].header
-        self.model_viz_pub.publish(model_viz_msg)
-        self.score_rings_pub.publish(
-            self.viz.visualize_all_heading_scores(
-                self.frontier_uuid_to_scores,
-                removed_uuids,
-                updated_uuids,
-                self.global_frame,
-                self.get_clock().now().to_msg()
-            )
-        )
+        if self._should_publish_visualization():
+            if self._visualization_publisher_enabled(self.withinrange_geofront_pub):
+                self.viz.delete_markers(self.withinrange_geofront_pub)
+                self.withinrange_geofront_pub.publish(
+                    self.viz.viz_valid_geofrontiers(
+                        geofrontiers,
+                        all_cam_data,
+                        odom_msg.header,
+                        self.geofrontier_viz_colors,
+                    )
+                )
+            if self._visualization_publisher_enabled(self.model_viz_pub):
+                # 附加源图像时间, 方便 RViz 跟踪 debug 图像流
+                model_viz_msg = self.br.cv2_to_imgmsg(
+                    self.viz.visualize_model_det(nav_data, all_cam_data),
+                    encoding="rgb8",
+                )
+                model_viz_msg.header = msgs[0].header
+                self.model_viz_pub.publish(model_viz_msg)
+            if self._visualization_publisher_enabled(self.score_rings_pub):
+                self.score_rings_pub.publish(
+                    self.viz.visualize_all_heading_scores(
+                        self.frontier_uuid_to_scores,
+                        removed_uuids,
+                        updated_uuids,
+                        self.global_frame,
+                        self.get_clock().now().to_msg(),
+                    )
+                )
         self._processing_timings["publish"].add_seconds(time.perf_counter() - stage_started)
         self._finish_processing(processing_started)
+
+    def _should_publish_visualization(self) -> bool:
+        """仅在有调试订阅者且达到周期时构建可视化消息"""
+        publishers = (
+            self.withinrange_geofront_pub,
+            self.model_viz_pub,
+            self.score_rings_pub,
+        )
+        if not any(self._visualization_publisher_enabled(pub) for pub in publishers):
+            return False
+        return self._visualization_gate.ready()
+
+    def _visualization_publisher_enabled(self, publisher) -> bool:
+        """按配置跳过没有订阅者的调试 topic"""
+        return (
+            not self.visualization_require_subscribers
+            or publisher.get_subscription_count() > 0
+        )
 
     def _finish_processing(self, processing_started: float) -> None:
         """Record total processing time and throttle slow-frame warnings"""

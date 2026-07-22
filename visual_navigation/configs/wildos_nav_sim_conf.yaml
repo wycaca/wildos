@@ -32,7 +32,7 @@ goal_w: 3.0
 reachability_w: 2.0
 scoring_method: "MULTIPLICATIVE"
 reach_scale: 0.25
-compute_paths: true
+compute_paths: false
 
 # ROS2 frames and topics
 parent_frame: odom
@@ -49,6 +49,8 @@ valid_geofrontiers_topic: /spot1/within_range_geofrontiers
 score_ring_topic: /spot1/score_rings
 object_mask_topic: /spot1/object_mask
 object_completed_topic: /spot1/object_search_completed
+visualization_publish_period_sec: 2.0
+visualization_require_subscribers: true
 
 # ROS2 subscriber params
 qos_history_depth: 1
