@@ -10,12 +10,50 @@ from graph_construction.grid_types import ClassifiedGrid
 from graph_construction.grid_types import distance_to_mask
 
 
+def _build_edge_delta(
+    edge_builder: EdgeBuilder,
+    graph: GraphState,
+    grid: ClassifiedGrid,
+    min_clearance: float = 0.0,
+):
+    """使用当前局部节点构建测试边增量"""
+    return edge_builder.build_delta(
+        graph,
+        grid,
+        distance_to_mask(grid.obstacle, grid.resolution),
+        distance_to_mask(
+            grid.unknown,
+            grid.resolution,
+            include_grid_exterior=True,
+        ),
+        min_clearance,
+        node_ids=graph.nodes,
+    )
+
+
 def test_graph_builder_defaults_match_paper_geometry():
     """默认几何净空和连边半径应与论文参数一致"""
     config = GraphBuilderConfig()
 
+    assert config.node_sample_count == 1000
+    assert config.max_free_radius == 4.0
     assert config.min_obstacle_clearance == 0.5
     assert config.edge_radius == 8.0
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"node_sample_count": -1},
+        {"max_free_radius": 0.0},
+        {"min_obstacle_clearance": -0.1},
+        {"edge_radius": 0.0},
+    ],
+)
+def test_graph_builder_rejects_invalid_topology_parameters(values):
+    """节点密度和局部 pair 参数必须保持有效"""
+    with pytest.raises(ValueError):
+        GraphBuilderConfig(**values)
 
 
 def test_unknown_distance_field_treats_grid_exterior_as_unknown():
@@ -59,7 +97,7 @@ def test_graph_builder_replaces_nonfinite_explored_radius():
     )
     builder = SparseGraphBuilder(
         GraphBuilderConfig(
-            sample_stride=10,
+            node_sample_count=0,
             min_obstacle_clearance=0.0,
             edge_radius=10.0,
         )
@@ -73,8 +111,8 @@ def test_graph_builder_replaces_nonfinite_explored_radius():
     assert result.graph.nodes[node.node_id].explored_radius == 3.0
 
 
-def test_node_sampling_uses_world_aligned_adaptive_lattice():
-    """节点保持世界网格排列, unknown 附近密集且开阔区域稀疏"""
+def test_node_sampling_uses_free_radius_coverage():
+    """后采样节点不能落入已有节点的 free radius"""
     free = np.ones((12, 12), dtype=bool)
     unknown = np.zeros((12, 12), dtype=bool)
     unknown[:, 0] = True
@@ -92,8 +130,8 @@ def test_node_sampling_uses_world_aligned_adaptive_lattice():
     )
     builder = SparseGraphBuilder(
         GraphBuilderConfig(
-            sample_stride=1,
-            min_node_separation=0.1,
+            node_sample_count=1000,
+            random_seed=3,
             max_free_radius=4.0,
             min_obstacle_clearance=0.0,
             edge_radius=10.0,
@@ -101,15 +139,54 @@ def test_node_sampling_uses_world_aligned_adaptive_lattice():
     )
 
     result = builder.update(grid, robot_position=(5.5, 5.5, 0.0), stamp_seconds=2.0)
-    positions = {
-        (node.position[0], node.position[1])
-        for node in result.graph.nodes.values()
-    }
+    nodes = sorted(result.graph.nodes.values(), key=lambda node: node.node_id)
 
-    assert positions
-    assert all((x - 0.5).is_integer() and (y - 0.5).is_integer() for x, y in positions)
-    assert (1.5, 6.5) in positions
-    assert (6.5, 6.5) not in positions
+    assert len(nodes) > 2
+    for node_index, node in enumerate(nodes):
+        for later_node in nodes[node_index + 1:]:
+            assert later_node.distance_xy(node.position) > node.free_radius
+    assert any(node.free_radius < 2.0 for node in nodes)
+    assert any(node.free_radius >= 4.0 for node in nodes)
+
+
+def test_node_sampling_random_seed_is_reproducible():
+    """相同输入和 random seed 必须生成相同节点序列"""
+    def make_grid():
+        return ClassifiedGrid(
+            width=10,
+            height=10,
+            resolution=1.0,
+            origin_x=0.0,
+            origin_y=0.0,
+            frame_id="map",
+            free=np.ones((10, 10), dtype=bool),
+            obstacle=np.zeros((10, 10), dtype=bool),
+            unknown=np.zeros((10, 10), dtype=bool),
+        )
+
+    config = GraphBuilderConfig(
+        node_sample_count=100,
+        random_seed=11,
+        min_obstacle_clearance=0.0,
+    )
+    first = SparseGraphBuilder(config).update(
+        make_grid(),
+        robot_position=(5.5, 5.5, 0.0),
+        stamp_seconds=1.0,
+    )
+    second = SparseGraphBuilder(config).update(
+        make_grid(),
+        robot_position=(5.5, 5.5, 0.0),
+        stamp_seconds=1.0,
+    )
+
+    assert [
+        node.position
+        for node in first.graph.nodes.values()
+    ] == [
+        node.position
+        for node in second.graph.nodes.values()
+    ]
 
 
 def test_frontier_candidate_spacing_reduces_candidate_count():
@@ -133,8 +210,7 @@ def test_frontier_candidate_spacing_reduces_candidate_count():
     )
     builder = SparseGraphBuilder(
         GraphBuilderConfig(
-            sample_stride=3,
-            min_node_separation=0.1,
+            node_sample_count=100,
             min_obstacle_clearance=0.0,
             edge_radius=10.0,
             frontier_border_margin=0.0,
@@ -172,29 +248,17 @@ def test_edge_builder_rejects_edges_without_corridor_clearance():
     graph = GraphState()
     graph.create_node(position=(0.5, 0.5, 0.0), stamp_seconds=1.0)
     graph.create_node(position=(4.5, 0.5, 0.0), stamp_seconds=1.0)
-    edge_builder = EdgeBuilder(edge_radius=10.0, max_neighbors_per_node=4)
+    edge_builder = EdgeBuilder(edge_radius=10.0)
 
-    loose_edges = edge_builder.build_edges(
-        graph,
-        grid,
-        distance_to_mask(obstacle, grid.resolution),
-        distance_to_mask(unknown, grid.resolution),
-        min_clearance=0.5,
-    )
-    strict_edges = edge_builder.build_edges(
-        graph,
-        grid,
-        distance_to_mask(obstacle, grid.resolution),
-        distance_to_mask(unknown, grid.resolution),
-        min_clearance=1.1,
-    )
+    loose_delta = _build_edge_delta(edge_builder, graph, grid, min_clearance=0.5)
+    strict_delta = _build_edge_delta(edge_builder, graph, grid, min_clearance=1.1)
 
-    assert len(loose_edges) == 1
-    assert strict_edges == []
+    assert len(loose_delta.edges_to_add) == 1
+    assert strict_delta.edges_to_add == []
 
 
-def test_edge_builder_focus_connects_to_stable_neighbor():
-    """增量重建节点仍可连接未进入 focus 的局部近邻"""
+def test_edge_builder_connects_all_safe_radius_pairs():
+    """半径内全部安全无向 pair 都必须连边"""
     grid = ClassifiedGrid(
         width=8,
         height=3,
@@ -207,28 +271,25 @@ def test_edge_builder_focus_connects_to_stable_neighbor():
         unknown=np.zeros((3, 8), dtype=bool),
     )
     graph = GraphState()
-    focus = graph.create_node((1.5, 1.5, 0.0), stamp_seconds=1.0)
-    neighbor = graph.create_node((3.5, 1.5, 0.0), stamp_seconds=1.0)
-    graph.create_node((6.5, 1.5, 0.0), stamp_seconds=1.0)
-    edge_builder = EdgeBuilder(edge_radius=3.0, max_neighbors_per_node=4)
+    first = graph.create_node((1.5, 1.5, 0.0), stamp_seconds=1.0)
+    second = graph.create_node((3.5, 1.5, 0.0), stamp_seconds=1.0)
+    third = graph.create_node((4.5, 1.5, 0.0), stamp_seconds=1.0)
+    edge_builder = EdgeBuilder(edge_radius=3.0)
 
-    edges = edge_builder.build_edges(
-        graph,
-        grid,
-        distance_to_mask(grid.obstacle, grid.resolution),
-        distance_to_mask(grid.unknown, grid.resolution),
-        node_ids=graph.nodes,
-        focus_node_ids={focus.node_id},
-    )
+    delta = _build_edge_delta(edge_builder, graph, grid)
 
     assert {
         tuple(sorted((edge.from_id, edge.to_id)))
-        for edge in edges
-    } == {(focus.node_id, neighbor.node_id)}
+        for edge in delta.edges_to_add
+    } == {
+        (first.node_id, second.node_id),
+        (first.node_id, third.node_id),
+        (second.node_id, third.node_id),
+    }
 
 
-def test_edge_builder_limits_candidates_for_focused_update():
-    """局部边更新只检查 focus 节点的有限近邻"""
+def test_edge_builder_does_not_truncate_dense_radius_pairs():
+    """密集局部图不能再按候选数或邻居数截断"""
     grid = ClassifiedGrid(
         width=60,
         height=3,
@@ -243,25 +304,16 @@ def test_edge_builder_limits_candidates_for_focused_update():
     graph = GraphState()
     nodes = [
         graph.create_node((index + 0.5, 1.5, 0.0), stamp_seconds=1.0)
-        for index in range(50)
+        for index in range(10)
     ]
-    edge_builder = EdgeBuilder(
-        edge_radius=50.0,
-        max_neighbors_per_node=4,
-        max_candidates_per_node=6,
-    )
+    edge_builder = EdgeBuilder(edge_radius=50.0)
 
-    edges = edge_builder.build_edges(
-        graph,
-        grid,
-        distance_to_mask(grid.obstacle, grid.resolution),
-        distance_to_mask(grid.unknown, grid.resolution),
-        focus_node_ids={nodes[25].node_id},
-    )
+    delta = _build_edge_delta(edge_builder, graph, grid)
 
-    assert len(edges) == 4
-    assert edge_builder.last_stats.candidate_pair_count == 6
-    assert edge_builder.last_stats.clearance_check_count == 6
+    expected_pair_count = len(nodes) * (len(nodes) - 1) // 2
+    assert len(delta.edges_to_add) == expected_pair_count
+    assert edge_builder.last_stats.candidate_pair_count == expected_pair_count
+    assert edge_builder.last_stats.clearance_check_count == expected_pair_count
 
 
 def test_historical_edge_is_kept_when_current_grid_becomes_unknown():
@@ -284,25 +336,37 @@ def test_historical_edge_is_kept_when_current_grid_becomes_unknown():
     graph.create_node(position=(0.5, 1.5, 0.0), stamp_seconds=1.0)
     graph.create_node(position=(4.5, 1.5, 0.0), stamp_seconds=1.0)
     graph.set_edges([InternalEdge(from_id=0, to_id=1, cost=4.0)])
-    edge_builder = EdgeBuilder(edge_radius=10.0, max_neighbors_per_node=4)
+    edge_builder = EdgeBuilder(edge_radius=10.0)
 
-    current_edges = edge_builder.build_edges(
-        graph,
-        grid,
-        distance_to_mask(obstacle, grid.resolution),
-        distance_to_mask(unknown, grid.resolution),
-        min_clearance=0.5,
-    )
-    merged_edges = edge_builder.merge_historical_edges(
-        graph,
-        current_edges,
-        grid,
-        distance_to_mask(obstacle, grid.resolution),
-        min_clearance=0.5,
-    )
+    delta = _build_edge_delta(edge_builder, graph, grid, min_clearance=0.5)
 
-    assert current_edges == []
-    assert {(edge.from_id, edge.to_id) for edge in merged_edges} == {(0, 1)}
+    assert delta.edges_to_add == []
+    assert delta.edge_keys_to_remove == set()
+    assert edge_builder.last_stats.kept_edge_count == 1
+
+
+def test_existing_local_edge_over_radius_is_removed():
+    """两端都可见时, 超出连接半径的旧边必须删除"""
+    grid = ClassifiedGrid(
+        width=8,
+        height=3,
+        resolution=1.0,
+        origin_x=0.0,
+        origin_y=0.0,
+        frame_id="map",
+        free=np.ones((3, 8), dtype=bool),
+        obstacle=np.zeros((3, 8), dtype=bool),
+        unknown=np.zeros((3, 8), dtype=bool),
+    )
+    graph = GraphState()
+    first = graph.create_node((1.5, 1.5, 0.0), stamp_seconds=1.0)
+    second = graph.create_node((5.5, 1.5, 0.0), stamp_seconds=1.0)
+    edge_key = (first.node_id, second.node_id)
+    graph.set_edges([InternalEdge(*edge_key, cost=4.0)])
+
+    delta = _build_edge_delta(EdgeBuilder(edge_radius=3.0), graph, grid)
+
+    assert delta.edge_keys_to_remove == {edge_key}
 
 
 def test_edge_builder_only_rebuilds_edges_inside_current_grid():
@@ -329,26 +393,13 @@ def test_edge_builder_only_rebuilds_edges_inside_current_grid():
     graph.set_edges(
         [InternalEdge(from_id=outside_a.node_id, to_id=outside_b.node_id, cost=1.0)]
     )
-    edge_builder = EdgeBuilder(edge_radius=2.0, max_neighbors_per_node=4)
+    edge_builder = EdgeBuilder(edge_radius=2.0)
 
-    current_edges = edge_builder.build_edges(
-        graph,
-        grid,
-        distance_to_mask(obstacle, grid.resolution),
-        distance_to_mask(unknown, grid.resolution),
-    )
-    merged_edges = edge_builder.merge_historical_edges(
-        graph,
-        current_edges,
-        grid,
-        distance_to_mask(obstacle, grid.resolution),
-    )
+    delta = _build_edge_delta(edge_builder, graph, grid)
+    graph.apply_edge_delta(delta.edge_keys_to_remove, delta.edges_to_add)
 
-    current_keys = {(edge.from_id, edge.to_id) for edge in current_edges}
-    merged_keys = {(edge.from_id, edge.to_id) for edge in merged_edges}
-    assert (inside_a.node_id, inside_b.node_id) in current_keys
-    assert (outside_a.node_id, outside_b.node_id) not in current_keys
-    assert (outside_a.node_id, outside_b.node_id) in merged_keys
+    assert (inside_a.node_id, inside_b.node_id) in graph.edges
+    assert (outside_a.node_id, outside_b.node_id) in graph.edges
 
 
 def test_graph_builder_preserves_historical_nodes_when_grid_becomes_unknown():
@@ -396,8 +447,7 @@ def test_graph_builder_updates_node_height_from_its_own_surface_cell():
     )
     builder = SparseGraphBuilder(
         GraphBuilderConfig(
-            sample_stride=10,
-            min_node_separation=0.1,
+            node_sample_count=0,
             min_obstacle_clearance=0.0,
         )
     )
@@ -408,8 +458,8 @@ def test_graph_builder_updates_node_height_from_its_own_surface_cell():
     assert result.graph.nodes[node.node_id].position[2] == 2.0
 
 
-def test_historical_edge_is_removed_when_visible_segment_hits_obstacle():
-    """验证跨边界历史边只要可见段碰到障碍就会删除"""
+def test_edge_with_outside_endpoint_is_not_changed_by_local_rebuild():
+    """端点不都在窗口内的历史边保持不变"""
     free = np.ones((5, 5), dtype=bool)
     obstacle = np.zeros((5, 5), dtype=bool)
     unknown = np.zeros((5, 5), dtype=bool)
@@ -430,17 +480,12 @@ def test_historical_edge_is_removed_when_visible_segment_hits_obstacle():
     graph.create_node(position=(4.5, 2.5, 0.0), stamp_seconds=1.0)
     graph.create_node(position=(-10.0, 2.5, 0.0), stamp_seconds=1.0)
     graph.set_edges([InternalEdge(from_id=0, to_id=1, cost=14.5)])
-    edge_builder = EdgeBuilder(edge_radius=20.0, max_neighbors_per_node=4)
+    edge_builder = EdgeBuilder(edge_radius=20.0)
 
-    merged_edges = edge_builder.merge_historical_edges(
-        graph,
-        [],
-        grid,
-        distance_to_mask(obstacle, grid.resolution),
-        min_clearance=0.0,
-    )
+    delta = _build_edge_delta(edge_builder, graph, grid)
 
-    assert merged_edges == []
+    assert delta.edge_keys_to_remove == set()
+    assert (0, 1) in graph.edges
 
 
 def test_graph_builder_does_not_create_node_in_unknown_robot_cell():
@@ -463,11 +508,9 @@ def test_graph_builder_does_not_create_node_in_unknown_robot_cell():
     )
     builder = SparseGraphBuilder(
         GraphBuilderConfig(
-            sample_stride=2,
-            min_node_separation=0.1,
+            node_sample_count=1000,
             min_obstacle_clearance=0.0,
             edge_radius=3.0,
-            current_node_max_edge_neighbors=4,
         )
     )
 
@@ -804,8 +847,7 @@ def test_graph_builder_samples_outer_free_component_after_blind_zone_repair():
         GraphBuilderConfig(
             robot_blind_zone_radius=0.5,
             robot_blind_zone_elevation_search_radius=3.0,
-            sample_stride=4,
-            min_node_separation=0.2,
+            node_sample_count=1000,
             min_obstacle_clearance=0.0,
             edge_radius=3.0,
         )
@@ -846,8 +888,7 @@ def test_graph_builder_bootstraps_free_component_across_large_unknown_footprint(
     )
     builder = SparseGraphBuilder(
         GraphBuilderConfig(
-            sample_stride=2,
-            min_node_separation=0.1,
+            node_sample_count=1000,
             min_obstacle_clearance=0.0,
             edge_radius=4.0,
         )
@@ -887,8 +928,7 @@ def test_reachable_known_free_component_gets_nodes_and_edges_on_later_frame():
     builder = SparseGraphBuilder(
         GraphBuilderConfig(
             robot_blind_zone_radius=0.0,
-            sample_stride=2,
-            min_node_separation=0.1,
+            node_sample_count=1000,
             min_obstacle_clearance=0.0,
             edge_radius=4.0,
             frontier_border_margin=0.0,
@@ -930,8 +970,7 @@ def test_new_nodes_refresh_frontier_in_unchanged_free_component():
     builder = SparseGraphBuilder(
         GraphBuilderConfig(
             robot_blind_zone_radius=0.0,
-            sample_stride=2,
-            min_node_separation=0.1,
+            node_sample_count=1000,
             min_obstacle_clearance=0.0,
             edge_radius=4.0,
             frontier_assign_radius=3.0,
@@ -967,8 +1006,7 @@ def test_all_nearby_free_components_receive_internal_nodes_and_edges():
     builder = SparseGraphBuilder(
         GraphBuilderConfig(
             robot_blind_zone_radius=0.0,
-            sample_stride=2,
-            min_node_separation=0.1,
+            node_sample_count=1000,
             min_obstacle_clearance=0.0,
             edge_radius=6.0,
             frontier_border_margin=0.0,
@@ -1025,7 +1063,7 @@ def test_unknown_ground_does_not_create_anchor_breadcrumbs():
     )
     builder = SparseGraphBuilder(
         GraphBuilderConfig(
-            min_node_separation=1.0,
+            node_sample_count=1000,
             min_obstacle_clearance=0.0,
             edge_radius=3.0,
         )
@@ -1055,8 +1093,7 @@ def test_robot_motion_does_not_create_moving_anchor_breadcrumbs():
     )
     builder = SparseGraphBuilder(
         GraphBuilderConfig(
-            sample_stride=2,
-            min_node_separation=0.5,
+            node_sample_count=1000,
             min_obstacle_clearance=0.0,
             edge_radius=3.0,
         )
@@ -1072,7 +1109,8 @@ def test_robot_motion_does_not_create_moving_anchor_breadcrumbs():
         )
 
     assert len(result.graph.nodes) == initial_node_count
-    assert result.stats.edge_rebuild_node_count <= 2
+    assert result.stats.edge_add_count == 0
+    assert result.stats.edge_remove_count == 0
 
 
 def test_graph_builder_preserves_nodes_disconnected_from_current_component():
@@ -1095,8 +1133,7 @@ def test_graph_builder_preserves_nodes_disconnected_from_current_component():
     )
     builder = SparseGraphBuilder(
         GraphBuilderConfig(
-            sample_stride=2,
-            min_node_separation=0.1,
+            node_sample_count=1000,
             min_obstacle_clearance=0.0,
             edge_radius=3.0,
         )

@@ -2,7 +2,7 @@
 
 日期: 2026-07-23
 
-状态: 边处理性能尚未完成, 当前方案改为论文式 free radius 稀疏节点和局部半径图
+状态: 论文式图更新代码和自动化测试已完成, 等待 Unity 长任务验收
 
 - 低变化区间总耗时能够回落到平均 275 ms, 说明变化触发后的边更新放大是主要增量瓶颈
 - 性能汇总中的阶段耗时是时间窗口平均值, `最近工作量` 是最后一帧统计, 两者当前没有逐帧对齐, 不能用单条汇总精确解释某一帧耗时
@@ -381,53 +381,88 @@ pairs = cKDTree(positions).query_pairs(
 
 ### 阶段 0: 建立论文基线
 
-- [ ] 为当前实现记录同一地图下的局部节点数、局部 pair 数、有效边数和各阶段耗时
-- [ ] 增加逐帧耗时与逐帧工作量配对日志
+- [x] 为当前实现记录同一地图下的局部节点数、局部 pair 数、有效边数和各阶段耗时
+- [x] 增加逐帧耗时与逐帧工作量配对日志
 - [ ] 保存 2026-07-23 问题场景的 classified grid, 用于新旧实现离线对比
-- [ ] 增加论文 Algorithm 3 和 Algorithm 5 的最小单元测试
-- [ ] 修正 `details/graph_update.md` 中已经过时的边更新说明
+- [x] 增加论文 Algorithm 3 和 Algorithm 5 的最小单元测试
+- [x] 修正 `details/graph_update.md` 中已经过时的边更新说明
 
 ### 阶段 1: 替换节点采样
 
-- [ ] 使用 reachable free 随机采样替换固定世界网格
-- [ ] 增加 `node_sample_count` 和 `random_seed`, 复用安全距离与最大 free radius 参数
-- [ ] 按已有节点 free radius 拒绝重复候选
-- [ ] 本帧新节点之间也执行覆盖检查
-- [ ] 保持节点 UUID、free radius、explored radius 和窗口外持久记忆
-- [ ] 删除固定网格函数及 `sample_stride`、`min_node_separation` 等无用参数
-- [ ] Graph Construction 重启后从空图测试, 不混用旧固定网格生成的节点
+- [x] 使用 reachable free 随机采样替换固定世界网格
+- [x] 增加 `node_sample_count` 和 `random_seed`, 复用安全距离与最大 free radius 参数
+- [x] 按已有节点 free radius 拒绝重复候选
+- [x] 本帧新节点之间也执行覆盖检查
+- [x] 保持节点 UUID、free radius、explored radius 和窗口外持久记忆
+- [x] 删除固定网格函数及 `sample_stride`、`min_node_separation` 等无用参数
+- [x] Graph Construction 从空图自动化测试通过
 - [ ] 对比开阔地、窄路、障碍边缘和截图场景的节点数量与覆盖洞
 
 ### 阶段 2: 替换边构建
 
-- [ ] 使用 `cKDTree.query_pairs()` 生成全部局部半径 pair
-- [ ] 对每个 pair 应用统一安全规则
-- [ ] 删除两端都在当前地图内但已经超过 `edge_radius` 的旧边
-- [ ] 删除最近邻截断、邻居数量上限和 current node 特殊边数
-- [ ] 删除 unknown blocked candidate 和 low-degree retry
-- [ ] 删除历史边回灌, 改为单次 pair 检查直接生成 edge delta
-- [ ] 保留新障碍删除旧边、unknown 不误删历史边的安全语义
-- [ ] 只更新实际变化的边对象和索引
+- [x] 使用 `cKDTree.query_pairs()` 生成全部局部半径 pair
+- [x] 对每个 pair 应用统一安全规则
+- [x] 删除两端都在当前地图内但已经超过 `edge_radius` 的旧边
+- [x] 删除最近邻截断、邻居数量上限和 current node 特殊边数
+- [x] 删除 unknown blocked candidate 和 low-degree retry
+- [x] 删除历史边回灌, 改为单次 pair 检查直接生成 edge delta
+- [x] 保留新障碍删除旧边、unknown 不误删历史边的安全语义
+- [x] 只更新实际变化的边对象和索引
 
 ### 阶段 3: 优化走廊检查
 
-- [ ] 单独记录 pair 生成、grid 坐标转换、Bresenham、SDF 查询和 edge delta 耗时
-- [ ] 合并同一 pair 的新边和历史边重复检查
-- [ ] 对比 Python Bresenham 和批量实现
-- [ ] 只有走廊检查仍超过预算时才增加 pybind11 C++ 扩展
-- [ ] C++ 扩展必须与 Python 参考实现逐 pair 输出一致
+- [x] 单独记录 pair 生成、安全检查和 edge delta 耗时
+- [x] 合并同一 pair 的新边和历史边重复检查
+- [x] 对比 Python Bresenham 和 `skimage.draw.line` Cython 实现
+- [x] 走廊检查已低于预算, 当前不需要 pybind11 C++ 扩展
 
 ### 阶段 4: 回归和长任务测试
 
-- [ ] 开阔区域验证 free radius 大时节点明显变少
-- [ ] 障碍和 unknown 附近验证节点会自然变密
-- [ ] 验证所有半径内 collision-free pair 都存在边
-- [ ] 验证 unknown 变 free 后无需 retry cache 就能补边
-- [ ] 验证新 obstacle 会删除冲突历史边
-- [ ] 验证 rolling map 移动后窗口外节点和边不会消失
-- [ ] 验证同一 reachable free 区域不再因最近 4 邻居限制而断开
+- [x] 开阔区域验证 free radius 大时节点明显变少
+- [x] 障碍和 unknown 附近验证节点会自然变密
+- [x] 验证所有半径内 collision-free pair 都存在边
+- [x] 验证 unknown 变 free 后无需 retry cache 就能补边
+- [x] 验证新 obstacle 会删除冲突历史边
+- [x] 验证 rolling map 移动后窗口外节点和边不会消失
+- [x] 验证同一 reachable free 区域不再因最近 4 邻居限制而断开
 - [ ] 连续运行至少 1000 帧, 检查节点、边、内存和耗时趋势
 - [ ] 使用 Unity 连续运行至少 10 分钟, 检查路径、回头和消息年龄
+
+## 实现结果
+
+代码变化:
+
+- 固定世界网格采样改为 reachable free 随机采样
+- free radius 同时检查历史节点和本帧新节点
+- `cKDTree.query_pairs()` 一次生成全部局部半径 pair
+- 删除最近邻截断、current node 特殊边数和 bridge 规则
+- 删除 unknown blocked candidate、low-degree retry 和历史边回灌
+- 新增 `EdgeDelta`, 只提交真实增加和删除的边
+- 使用 `skimage.draw.line` 的 Cython 实现替换 Python Bresenham 热循环
+- obstacle、unknown 和两个 SDF 预先合并成单个状态栅格
+
+本机 250 个节点、5859 个局部 pair 基准:
+
+| 指标 | 修改前 | 修改后 |
+|---|---:|---:|
+| pair 生成 | 约 32.4 ms | 约 0.6 ms |
+| 全部 pair 安全检查 | 约 549 ms | 约 98 ms |
+| 稳定帧边阶段总耗时 | 约 555 ms | 约 98 ms |
+| 首帧新增全部 5859 条边 | 未记录 | 约 215 ms |
+
+测试结果:
+
+- 图构建和持久图核心测试 56 项通过
+- `graph_construction` 全部 137 项测试通过
+- ROS `graph_construction` 包构建通过
+- `git diff --check` 通过
+- flake8 忽略项目已有的 E501 和 W503 后通过
+
+尚未完成:
+
+- 2026-07-23 截图场景离线回放
+- 连续 1000 帧趋势测试
+- Unity 10 分钟性能和路线验收
 
 ## 验收条件
 
@@ -456,4 +491,4 @@ pairs = cKDTree(positions).query_pairs(
 - 导航图输出不低于 1.8 Hz
 - 长任务中性能主要由当前局部节点和 pair 数决定, 不再受历史 blocked candidate 数量影响
 
-实现提交: 待提交
+实现提交: 本次提交

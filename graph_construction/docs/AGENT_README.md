@@ -108,7 +108,7 @@ graph_construction/launch/elevation_visual_navigation_sim.launch.py
 
 | 模块 | 当前结果 | 仍需完成 |
 |---|---|---|
-| 导航图 | 精确增量边更新完成, 移动 anchor 已删除 | Unity 10 分钟性能回归 |
+| 导航图 | free radius 稀疏节点和局部全 pair 更新完成 | Unity 10 分钟性能回归 |
 | 启动观察 | 4.0 m 初始化阶段保守修补和条件扫描完成 | Unity 验证修补安全性和扫描执行 |
 | 探索路线 | 能持续探索和死路恢复 | 减少普通路线回头和频繁切换 |
 | 视觉检测 | 0.120/0.110 双门槛完成 | 无目标 10 分钟误检测试 |
@@ -118,7 +118,7 @@ graph_construction/launch/elevation_visual_navigation_sim.launch.py
 
 文档记录的最新分模块测试:
 
-- graph 116 项通过
+- graph 137 项通过
 - 粒子滤波 9 项通过
 - 目标链路 54 项通过, 1 项环境相关测试跳过
 - Goal Mux 29 项通过

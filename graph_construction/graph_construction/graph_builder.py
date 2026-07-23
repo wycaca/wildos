@@ -8,11 +8,10 @@ from typing import Tuple
 
 import numpy as np
 from scipy import ndimage
-from scipy.spatial import cKDTree
 
 from graph_construction.edge_builder import EdgeBuilder
 from graph_construction.frontier_detector import FrontierDetector
-from graph_construction.graph_memory import EdgeSpatialIndex, GraphState
+from graph_construction.graph_memory import GraphState
 from graph_construction.grid_types import ClassifiedGrid, distance_to_mask
 
 
@@ -20,7 +19,7 @@ from graph_construction.grid_types import ClassifiedGrid, distance_to_mask
 class GraphBuilderConfig:
     """图构建运行参数
 
-    这些参数对应论文中的局部地图半径, 节点采样间距, free radius, edge radius 等概念
+    这些参数对应论文中的随机采样, free radius, edge radius 等概念
     """
 
     # 过滤局部高程尖峰和帘状面噪声
@@ -33,23 +32,28 @@ class GraphBuilderConfig:
     robot_ground_elevation_tolerance: float = 0.5
     robot_blind_zone_initial_only: bool = True
 
-    sample_stride: int = 8
-    min_node_separation: float = 1.0
+    node_sample_count: int = 1000
+    random_seed: int = 7
     max_free_radius: float = 4.0
     min_obstacle_clearance: float = 0.5
     edge_radius: float = 8.0
-    max_edge_neighbors: int = 6
-    current_node_max_edge_neighbors: int = 10
-    max_edge_candidates_per_node: int = 24
-    low_degree_retry_threshold: int = 2
-    max_low_degree_retries_per_update: int = 12
-    max_low_degree_retry_attempts: int = 3
     frontier_assign_radius: float = 5.0
     frontier_min_points: int = 4
     frontier_min_span: float = 0.6
     frontier_border_margin: float = 0.8
     frontier_candidate_spacing: float = 0.0
     frontier_visited_corridor_radius: float = 0.65
+
+    def __post_init__(self) -> None:
+        """验证直接影响节点密度和局部 pair 数的核心参数"""
+        if self.node_sample_count < 0:
+            raise ValueError("node_sample_count must not be negative")
+        if self.max_free_radius <= 0.0:
+            raise ValueError("max_free_radius must be greater than 0")
+        if self.min_obstacle_clearance < 0.0:
+            raise ValueError("min_obstacle_clearance must not be negative")
+        if self.edge_radius <= 0.0:
+            raise ValueError("edge_radius must be greater than 0")
 
 
 @dataclass
@@ -67,20 +71,15 @@ class GraphUpdateStats:
 
     local_node_count: int = 0
     total_node_count: int = 0
-    affected_edge_count: int = 0
     total_edge_count: int = 0
     dirty_cell_count: int = 0
     newly_free_cell_count: int = 0
     newly_obstacle_cell_count: int = 0
-    edge_rebuild_node_count: int = 0
-    newly_free_rebuild_node_count: int = 0
-    obstacle_affected_edge_count: int = 0
-    edge_candidate_pair_count: int = 0
+    local_pair_count: int = 0
     edge_clearance_check_count: int = 0
-    historical_edge_check_count: int = 0
-    blocked_unknown_candidate_count: int = 0
-    blocked_unknown_retry_count: int = 0
-    low_degree_retry_node_count: int = 0
+    edge_add_count: int = 0
+    edge_remove_count: int = 0
+    edge_keep_count: int = 0
     frontier_candidate_count: int = 0
     active_frontier_owner_count: int = 0
     stage_seconds: dict[str, float] = field(default_factory=dict)
@@ -105,7 +104,7 @@ class _GridStateSnapshot:
 
 @dataclass(frozen=True)
 class _GridChanges:
-    """区分地图变化类型, 避免用同一策略重建全部附近边"""
+    """区分地图变化类型, 用于 Frontier 刷新和诊断"""
 
     dirty: np.ndarray
     newly_free: np.ndarray
@@ -124,7 +123,7 @@ class SparseGraphBuilder:
     """从局部栅格增量构建稀疏 NavigationGraph
 
     主流程保持和论文 Algorithm 1 一致
-    先更新已有节点, 再采样新节点, 再检测 frontier, 最后重建边和 current node
+    先更新已有节点, 再采样新节点, 再检测 frontier, 最后更新局部半径图
     输出的 NavigationGraph 会被 WildOS scoring 继续加工为 scored_nav_graph
     """
 
@@ -139,18 +138,10 @@ class SparseGraphBuilder:
             frontier_candidate_spacing=config.frontier_candidate_spacing,
             frontier_visited_corridor_radius=config.frontier_visited_corridor_radius,
         )
-        self.edge_builder = EdgeBuilder(
-            edge_radius=config.edge_radius,
-            max_neighbors_per_node=config.max_edge_neighbors,
-            current_node_max_neighbors=config.current_node_max_edge_neighbors,
-            max_candidates_per_node=config.max_edge_candidates_per_node,
-        )
+        self.edge_builder = EdgeBuilder(edge_radius=config.edge_radius)
+        self._random = np.random.default_rng(config.random_seed)
         self._previous_grid_state: _GridStateSnapshot | None = None
         self._blind_zone_initialization_complete = False
-        self._unknown_blocked_pairs: set[tuple[int, int]] = set()
-        self._unknown_blocked_index = EdgeSpatialIndex()
-        self._low_degree_retry_pending: set[int] = set()
-        self._low_degree_retry_attempts: dict[int, int] = {}
 
     def update(
         self,
@@ -212,11 +203,6 @@ class SparseGraphBuilder:
         stamp_seconds: float,
     ) -> GraphUpdateResult:
         stage_seconds: dict[str, float] = {}
-        previous_current_id = self.graph.current_node_id
-        previous_current_position = None
-        if previous_current_id in self.graph.nodes:
-            previous_current_position = self.graph.nodes[previous_current_id].position
-        first_new_node_id = self.graph.next_node_id
 
         stage_started = perf_counter()
         protected_unknown = self._sanitize_grid_surface(grid)
@@ -257,7 +243,7 @@ class SparseGraphBuilder:
         # 后续阶段共享同一局部查询结果, 避免重复扫描历史节点
         stage_started = perf_counter()
         local_node_ids = self._node_ids_in_grid(grid)
-        topology_dirty_node_ids = self._update_existing_nodes(
+        self._update_existing_nodes(
             grid,
             sdf_obstacle,
             sdf_unknown,
@@ -316,86 +302,29 @@ class SparseGraphBuilder:
         )
         stage_seconds["frontier"] = perf_counter() - stage_started
 
-        # 新 free 局部重连旧节点, 新障碍只复查实际经过附近的历史边
+        # free radius 已控制局部节点密度, 因此直接重算全部半径 pair
         stage_started = perf_counter()
         local_node_ids = self._node_ids_in_grid(grid)
-        edge_rebuild_node_ids = set(topology_dirty_node_ids)
-        edge_rebuild_node_ids.update(
-            node_id
-            for node_id in range(first_new_node_id, self.graph.next_node_id)
-            if node_id in self.graph.nodes
-        )
-        current_node_rebuild_ids = self._current_node_edge_neighborhood(
-            previous_current_id,
-            previous_current_position,
-        )
-        edge_rebuild_node_ids.update(current_node_rebuild_ids)
-        newly_free_rebuild_node_ids = self._node_ids_near_newly_free(
-            grid,
-            newly_free_cells,
-            first_new_node_id,
-            local_node_ids,
-        )
-        edge_rebuild_node_ids.update(newly_free_rebuild_node_ids)
-        blocked_unknown_retry_ids, blocked_unknown_retry_count = (
-            self._blocked_unknown_retry_nodes(
-                grid,
-                newly_free_cells,
-                local_node_ids,
-            )
-        )
-        edge_rebuild_node_ids.update(blocked_unknown_retry_ids)
-        for node_id in newly_free_rebuild_node_ids | blocked_unknown_retry_ids:
-            self._low_degree_retry_attempts.pop(node_id, None)
-            self._low_degree_retry_pending.discard(node_id)
-        retry_trigger_node_ids = (
-            set(topology_dirty_node_ids)
-            | set(new_node_ids)
-            | set(current_node_rebuild_ids)
-            | set(newly_free_rebuild_node_ids)
-            | set(blocked_unknown_retry_ids)
-        )
-        low_degree_retry_ids = self._take_low_degree_retry_nodes(
-            local_node_ids,
-            edge_rebuild_node_ids,
-            retry_trigger_node_ids,
-        )
-        edge_rebuild_node_ids.update(low_degree_retry_ids)
-        obstacle_affected_edge_keys = self._edge_keys_near_obstacles(
-            grid,
-            grid_changes.newly_obstacle,
-        )
-        affected_edge_keys = self.graph.edge_keys_for_nodes(
-            edge_rebuild_node_ids
-        )
-        affected_edge_keys.update(obstacle_affected_edge_keys)
-        if edge_rebuild_node_ids:
-            next_edges = self.edge_builder.build_edges(
-                self.graph,
-                grid,
-                sdf_obstacle,
-                sdf_unknown,
-                self.config.min_obstacle_clearance,
-                node_ids=local_node_ids,
-                focus_node_ids=edge_rebuild_node_ids,
-            )
-        else:
-            self.edge_builder.reset_stats()
-            next_edges = []
-        self._sync_unknown_blocked_candidates(
-            self.edge_builder.last_stats.evaluated_pairs,
-            self.edge_builder.last_stats.unknown_blocked_pairs,
-        )
-        next_edges = self.edge_builder.merge_historical_edges(
+        edge_delta = self.edge_builder.build_delta(
             self.graph,
-            next_edges,
             grid,
             sdf_obstacle,
+            sdf_unknown,
             self.config.min_obstacle_clearance,
-            historical_edge_keys=affected_edge_keys,
+            node_ids=local_node_ids,
         )
-        self.graph.replace_edges(affected_edge_keys, next_edges)
-        self._refresh_low_degree_retry_queue(edge_rebuild_node_ids)
+        stage_seconds["edge_pairs"] = (
+            self.edge_builder.last_stats.pair_generation_seconds
+        )
+        stage_seconds["edge_validation"] = (
+            self.edge_builder.last_stats.validation_seconds
+        )
+        delta_started = perf_counter()
+        self.graph.apply_edge_delta(
+            edge_delta.edge_keys_to_remove,
+            edge_delta.edges_to_add,
+        )
+        stage_seconds["edge_delta"] = perf_counter() - delta_started
         stage_seconds["edges"] = perf_counter() - stage_started
         self._previous_grid_state = _snapshot_grid_state(grid)
 
@@ -405,32 +334,21 @@ class SparseGraphBuilder:
             stats=GraphUpdateStats(
                 local_node_count=len(local_node_ids),
                 total_node_count=len(self.graph.nodes),
-                affected_edge_count=len(affected_edge_keys),
                 total_edge_count=len(self.graph.edges),
                 dirty_cell_count=int(np.count_nonzero(dirty_cells)),
                 newly_free_cell_count=int(np.count_nonzero(newly_free_cells)),
                 newly_obstacle_cell_count=int(
                     np.count_nonzero(grid_changes.newly_obstacle)
                 ),
-                edge_rebuild_node_count=len(edge_rebuild_node_ids),
-                newly_free_rebuild_node_count=len(
-                    newly_free_rebuild_node_ids
-                ),
-                obstacle_affected_edge_count=len(obstacle_affected_edge_keys),
-                edge_candidate_pair_count=(
+                local_pair_count=(
                     self.edge_builder.last_stats.candidate_pair_count
                 ),
                 edge_clearance_check_count=(
                     self.edge_builder.last_stats.clearance_check_count
                 ),
-                historical_edge_check_count=(
-                    self.edge_builder.last_stats.historical_check_count
-                ),
-                blocked_unknown_candidate_count=len(
-                    self._unknown_blocked_pairs
-                ),
-                blocked_unknown_retry_count=blocked_unknown_retry_count,
-                low_degree_retry_node_count=len(low_degree_retry_ids),
+                edge_add_count=self.edge_builder.last_stats.added_edge_count,
+                edge_remove_count=self.edge_builder.last_stats.removed_edge_count,
+                edge_keep_count=self.edge_builder.last_stats.kept_edge_count,
                 frontier_candidate_count=(
                     self.frontier_detector.last_candidate_count
                 ),
@@ -535,243 +453,6 @@ class SparseGraphBuilder:
         if self.config.robot_blind_zone_initial_only and complete:
             self._blind_zone_initialization_complete = True
         return _BlindZoneRepair(repaired_cells, complete)
-
-    def _node_ids_near_newly_free(
-        self,
-        grid: ClassifiedGrid,
-        newly_free: np.ndarray,
-        first_new_node_id: int,
-        local_node_ids: set[int],
-    ) -> set[int]:
-        """局部查找可能因 unknown 变 free 而新增边的旧节点
-
-        一条边受新增 free cell 影响时, 至少一个端点靠近该 cell
-        先用持久空间索引缩小范围, 再用 KDTree 精确过滤
-        """
-        if first_new_node_id <= 0 or not np.any(newly_free):
-            return set()
-
-        world_x, world_y = _grid_world_coordinates(grid)
-        points = np.column_stack(
-            (world_x[newly_free], world_y[newly_free])
-        )
-        influence_radius = sum(
-            (
-                0.5 * self.config.edge_radius,
-                self.config.min_obstacle_clearance,
-                math.sqrt(2.0) * grid.resolution,
-            )
-        )
-        candidate_ids = self.graph.node_ids_in_bounds(
-            float(np.min(points[:, 0])) - influence_radius,
-            float(np.max(points[:, 0])) + influence_radius,
-            float(np.min(points[:, 1])) - influence_radius,
-            float(np.max(points[:, 1])) + influence_radius,
-        )
-        point_tree = cKDTree(points)
-        affected_node_ids = set()
-        for node_id in candidate_ids:
-            if node_id >= first_new_node_id or node_id not in local_node_ids:
-                continue
-            node = self.graph.nodes.get(node_id)
-            if node is None:
-                continue
-            distance, _ = point_tree.query(
-                node.position[:2],
-                distance_upper_bound=influence_radius,
-            )
-            if math.isfinite(float(distance)):
-                affected_node_ids.add(node_id)
-        return affected_node_ids
-
-    def _blocked_unknown_retry_nodes(
-        self,
-        grid: ClassifiedGrid,
-        newly_free: np.ndarray,
-        local_node_ids: set[int],
-    ) -> tuple[set[int], int]:
-        """查找真正经过新 free 附近的 unknown 阻挡候选"""
-        if not np.any(newly_free) or not self._unknown_blocked_pairs:
-            return set(), 0
-        world_x, world_y = _grid_world_coordinates(grid)
-        points = np.column_stack(
-            (world_x[newly_free], world_y[newly_free])
-        )
-        query_radius = (
-            self.config.min_obstacle_clearance
-            + math.sqrt(2.0) * grid.resolution
-        )
-        candidate_pairs = self._unknown_blocked_index.query_points(
-            points,
-            query_radius,
-        )
-        retry_pairs = set()
-        retry_node_ids = set()
-        for edge_key in candidate_pairs:
-            if (
-                edge_key[0] not in self.graph.nodes
-                or edge_key[1] not in self.graph.nodes
-            ):
-                self._remove_unknown_blocked_candidate(edge_key)
-                continue
-            if edge_key[0] not in local_node_ids or edge_key[1] not in local_node_ids:
-                continue
-            retry_pairs.add(edge_key)
-            retry_node_ids.update(edge_key)
-        return retry_node_ids, len(retry_pairs)
-
-    def _sync_unknown_blocked_candidates(
-        self,
-        evaluated_pairs: set[tuple[int, int]],
-        blocked_pairs: set[tuple[int, int]],
-    ) -> None:
-        """用本帧检查结果更新 unknown 阻挡候选空间索引"""
-        for edge_key in evaluated_pairs:
-            self._remove_unknown_blocked_candidate(edge_key)
-        for edge_key in blocked_pairs:
-            first = self.graph.nodes.get(edge_key[0])
-            second = self.graph.nodes.get(edge_key[1])
-            if first is None or second is None:
-                continue
-            self._unknown_blocked_pairs.add(edge_key)
-            self._unknown_blocked_index.insert(
-                edge_key,
-                first.position,
-                second.position,
-            )
-
-    def _remove_unknown_blocked_candidate(
-        self,
-        edge_key: tuple[int, int],
-    ) -> None:
-        self._unknown_blocked_pairs.discard(edge_key)
-        self._unknown_blocked_index.remove(edge_key)
-
-    def _take_low_degree_retry_nodes(
-        self,
-        local_node_ids: set[int],
-        already_rebuilding: set[int],
-        trigger_node_ids: set[int],
-    ) -> set[int]:
-        """只重试拓扑变化附近的少量低连接节点"""
-        if not trigger_node_ids:
-            return set()
-        retry_limit = max(
-            0,
-            int(self.config.max_low_degree_retries_per_update),
-        )
-        max_attempts = max(
-            0,
-            int(self.config.max_low_degree_retry_attempts),
-        )
-        nearby_pending = set()
-        for trigger_id in trigger_node_ids:
-            trigger = self.graph.nodes.get(trigger_id)
-            if trigger is None:
-                continue
-            nearby_pending.update(
-                self.graph.node_ids_within(
-                    trigger.position,
-                    self.config.edge_radius,
-                )
-            )
-        nearby_pending &= self._low_degree_retry_pending
-        selected = set()
-        for node_id in sorted(nearby_pending):
-            if len(selected) >= retry_limit:
-                break
-            if node_id not in self.graph.nodes:
-                self._low_degree_retry_pending.discard(node_id)
-                self._low_degree_retry_attempts.pop(node_id, None)
-                continue
-            if node_id not in local_node_ids or node_id in already_rebuilding:
-                continue
-            attempts = self._low_degree_retry_attempts.get(node_id, 0)
-            if attempts >= max_attempts:
-                self._low_degree_retry_pending.discard(node_id)
-                continue
-            self._low_degree_retry_pending.discard(node_id)
-            self._low_degree_retry_attempts[node_id] = attempts + 1
-            selected.add(node_id)
-        return selected
-
-    def _refresh_low_degree_retry_queue(
-        self,
-        rebuilt_node_ids: set[int],
-    ) -> None:
-        """重建后只把仍然低连接的节点放回受限重试队列"""
-        degree_threshold = max(
-            0,
-            int(self.config.low_degree_retry_threshold),
-        )
-        max_attempts = max(
-            0,
-            int(self.config.max_low_degree_retry_attempts),
-        )
-        for node_id in rebuilt_node_ids:
-            if node_id not in self.graph.nodes:
-                self._low_degree_retry_pending.discard(node_id)
-                self._low_degree_retry_attempts.pop(node_id, None)
-                continue
-            degree = len(self.graph.adjacency.get(node_id, ()))
-            attempts = self._low_degree_retry_attempts.get(node_id, 0)
-            if degree < degree_threshold and attempts < max_attempts:
-                self._low_degree_retry_pending.add(node_id)
-            else:
-                self._low_degree_retry_pending.discard(node_id)
-                self._low_degree_retry_attempts.pop(node_id, None)
-
-    def _edge_keys_near_obstacles(
-        self,
-        grid: ClassifiedGrid,
-        newly_obstacle: np.ndarray,
-    ) -> set[tuple[int, int]]:
-        """用持久边空间索引找出新障碍附近可能冲突的历史边"""
-        if not np.any(newly_obstacle):
-            return set()
-        world_x, world_y = _grid_world_coordinates(grid)
-        points = np.column_stack(
-            (world_x[newly_obstacle], world_y[newly_obstacle])
-        )
-        query_radius = self.config.min_obstacle_clearance + math.sqrt(2.0) * grid.resolution
-        candidate_keys = self.graph.edge_keys_near_points(points, query_radius)
-        return {
-            edge_key
-            for edge_key in candidate_keys
-            if _edge_is_near_points(
-                self.graph,
-                edge_key,
-                points,
-                query_radius,
-            )
-        }
-
-    def _current_node_edge_neighborhood(
-        self,
-        previous_node_id: int | None,
-        previous_position: Tuple[float, float, float] | None,
-    ) -> set[int]:
-        """在 current node 切换时刷新新旧节点的局部连边"""
-        current_node_id = self.graph.current_node_id
-        current_node = self.graph.nodes.get(current_node_id)
-        current_position = current_node.position if current_node is not None else None
-        position_changed = (
-            previous_position is None
-            or current_position is None
-            or hypot(
-                previous_position[0] - current_position[0],
-                previous_position[1] - current_position[1],
-            ) > 1e-6
-        )
-        if previous_node_id == current_node_id and not position_changed:
-            return set()
-
-        node_ids = set()
-        if previous_node_id in self.graph.nodes:
-            node_ids.add(previous_node_id)
-        if current_node_id in self.graph.nodes:
-            node_ids.add(current_node_id)
-        return node_ids
 
     def _repair_robot_blind_zone(
         self,
@@ -910,9 +591,8 @@ class SparseGraphBuilder:
         sdf_unknown,
         stamp_seconds: float,
         local_node_ids: set[int],
-    ) -> set[int]:
+    ) -> None:
         """用可靠局部观测刷新历史节点, unknown 和窗口外区域不否定记忆"""
-        topology_dirty_node_ids = set()
         for node_id in tuple(local_node_ids):
             node = self.graph.nodes.get(node_id)
             if node is None:
@@ -926,10 +606,7 @@ class SparseGraphBuilder:
 
             ix, iy = grid_index
             if grid.is_obstacle_index(ix, iy):
-                for edge_key in self.graph.adjacency.get(node_id, ()):
-                    topology_dirty_node_ids.update(edge_key)
                 self.graph.remove_node(node_id)
-                topology_dirty_node_ids.discard(node_id)
                 continue
             if not grid.is_free_index(ix, iy):
                 continue
@@ -943,10 +620,7 @@ class SparseGraphBuilder:
             # min_obstacle_clearance 是新节点和新边的部署安全阈值
             # 历史节点只在自由圆完全消失时删除, 避免局部地图噪声擦除已走过路线
             if free_radius <= 0.0:
-                for edge_key in self.graph.adjacency.get(node_id, ()):
-                    topology_dirty_node_ids.update(edge_key)
                 self.graph.remove_node(node_id)
-                topology_dirty_node_ids.discard(node_id)
                 continue
 
             node.free_radius = free_radius
@@ -958,7 +632,6 @@ class SparseGraphBuilder:
                     (node.position[0], node.position[1], surface_z),
                 )
             node.last_seen_time = stamp_seconds
-        return topology_dirty_node_ids
 
     def _sample_new_nodes(
         self,
@@ -968,59 +641,66 @@ class SparseGraphBuilder:
         stamp_seconds: float,
         reachable_free: np.ndarray,
     ) -> set[int]:
-        """在当前可达 free 区域补充分层世界网格节点
+        """按论文 Algorithm 3 在可达 free 区域随机采样稀疏节点
 
-        最细网格由 sample stride 决定, free radius 越大则选择越粗的嵌套层级
-        所有层级共享世界坐标锚点, rolling GridMap 移动时不会改变节点排列
-        每帧重查固定局部采样点, 避免已知 free 区域后来可达时漏建节点
+        候选落入任一已有节点的 free radius 时拒绝
+        本帧新节点立即进入持久空间索引, 因此也参与后续覆盖判断
         """
         new_node_ids: set[int] = set()
-        stride = max(1, int(self.config.sample_stride))
-        base_spacing = max(grid.resolution, stride * grid.resolution)
-        lattice_offset = grid.resolution * 0.5
-        min_key_x, max_key_x, min_key_y, max_key_y = _world_lattice_bounds(
-            grid,
-            base_spacing,
-            lattice_offset,
+        sample_count = max(0, int(self.config.node_sample_count))
+        if sample_count == 0:
+            return new_node_ids
+
+        clearance = np.minimum(sdf_obstacle, sdf_unknown)
+        candidate_mask = (
+            reachable_free
+            & grid.free
+            & (clearance > self.config.min_obstacle_clearance)
         )
-        for lattice_y in range(min_key_y, max_key_y + 1):
-            for lattice_x in range(min_key_x, max_key_x + 1):
-                world_x = lattice_x * base_spacing + lattice_offset
-                world_y = lattice_y * base_spacing + lattice_offset
-                grid_index = grid.world_to_grid(world_x, world_y)
-                if grid_index is None:
-                    continue
-                ix, iy = grid_index
-                if not grid.is_free_index(ix, iy):
-                    continue
-                if not reachable_free[iy, ix]:
-                    continue
-                if float(sdf_obstacle[iy, ix]) < self.config.min_obstacle_clearance:
-                    continue
+        candidate_flat_indices = np.flatnonzero(candidate_mask)
+        if not len(candidate_flat_indices):
+            return new_node_ids
 
-                free_radius = min(
-                    float(sdf_obstacle[iy, ix]),
-                    float(sdf_unknown[iy, ix]),
-                    self.config.max_free_radius,
-                )
-                lattice_multiple = _adaptive_lattice_multiple(
-                    free_radius,
-                    base_spacing,
-                )
-                if lattice_x % lattice_multiple != 0 or lattice_y % lattice_multiple != 0:
-                    continue
+        sampled_offsets = self._random.integers(
+            0,
+            len(candidate_flat_indices),
+            size=sample_count,
+        )
+        sampled_flat_indices = candidate_flat_indices[sampled_offsets]
+        accepted_cells: set[int] = set()
+        for flat_index in sampled_flat_indices:
+            cell_key = int(flat_index)
+            if cell_key in accepted_cells:
+                continue
+            iy, ix = np.unravel_index(cell_key, candidate_mask.shape)
+            world_x, world_y, world_z = grid.grid_to_world(int(ix), int(iy))
+            position = (world_x, world_y, world_z)
 
-                position = (world_x, world_y, grid.elevation_at_index(ix, iy))
-                if self.graph.nearest_node(
-                    position,
-                    max_distance=self.config.min_node_separation,
-                ) is not None:
-                    continue
+            # max_free_radius 是所有覆盖圆上限, 可安全缩小空间桶查询范围
+            nearby_node_ids = self.graph.node_ids_within(
+                position,
+                self.config.max_free_radius,
+            )
+            if any(
+                self.graph.nodes[node_id].distance_xy(position)
+                <= self.graph.nodes[node_id].free_radius
+                for node_id in nearby_node_ids
+                if node_id in self.graph.nodes
+            ):
+                continue
 
-                node = self.graph.create_node(position=position, stamp_seconds=stamp_seconds)
-                node.free_radius = free_radius
-                node.explored_radius = float(sdf_unknown[iy, ix])
-                new_node_ids.add(node.node_id)
+            free_radius = min(
+                float(clearance[iy, ix]),
+                self.config.max_free_radius,
+            )
+            node = self.graph.create_node(
+                position=position,
+                stamp_seconds=stamp_seconds,
+            )
+            node.free_radius = free_radius
+            node.explored_radius = float(sdf_unknown[iy, ix])
+            accepted_cells.add(cell_key)
+            new_node_ids.add(node.node_id)
         return new_node_ids
 
     def _node_frontier_refresh_region(
@@ -1316,48 +996,6 @@ class SparseGraphBuilder:
         )
 
 
-def _edge_is_near_points(
-    graph: GraphState,
-    edge_key: tuple[int, int],
-    points: np.ndarray,
-    radius: float,
-) -> bool:
-    """精确检查边中心线是否进入任一变化 cell 的安全影响范围"""
-    edge = graph.edges.get(edge_key)
-    if edge is None or points.size == 0:
-        return False
-    node_a = graph.nodes.get(edge.from_id)
-    node_b = graph.nodes.get(edge.to_id)
-    if node_a is None or node_b is None:
-        return False
-    start_x, start_y = node_a.position[:2]
-    delta_x = node_b.position[0] - start_x
-    delta_y = node_b.position[1] - start_y
-    length_squared = delta_x * delta_x + delta_y * delta_y
-    radius_squared = max(0.0, float(radius)) ** 2
-    for point_x, point_y in points:
-        relative_x = float(point_x) - start_x
-        relative_y = float(point_y) - start_y
-        if length_squared <= 1e-12:
-            distance_squared = relative_x * relative_x + relative_y * relative_y
-        else:
-            ratio = min(
-                max(
-                    (relative_x * delta_x + relative_y * delta_y) / length_squared,
-                    0.0,
-                ),
-                1.0,
-            )
-            nearest_x = start_x + ratio * delta_x
-            nearest_y = start_y + ratio * delta_y
-            distance_x = float(point_x) - nearest_x
-            distance_y = float(point_y) - nearest_y
-            distance_squared = distance_x * distance_x + distance_y * distance_y
-        if distance_squared <= radius_squared:
-            return True
-    return False
-
-
 def _snapshot_grid_state(grid: ClassifiedGrid) -> _GridStateSnapshot:
     """复制增量更新需要的轻量分类快照"""
     return _GridStateSnapshot(
@@ -1447,37 +1085,3 @@ def _shift_slices(size: int, offset: int) -> tuple[slice, slice]:
     if offset > 0:
         return slice(0, size - offset), slice(offset, size)
     return slice(0, size), slice(0, size)
-
-
-def _adaptive_lattice_multiple(free_radius: float, base_spacing: float) -> int:
-    """选择不超过局部自由半径的二次幂网格倍数"""
-    safe_base_spacing = max(float(base_spacing), 1e-6)
-    target_spacing = max(safe_base_spacing, float(free_radius))
-    multiple = 1
-    while safe_base_spacing * multiple * 2 <= target_spacing:
-        multiple *= 2
-    return multiple
-
-
-def _world_lattice_bounds(
-    grid: ClassifiedGrid,
-    spacing: float,
-    offset: float,
-) -> Tuple[int, int, int, int]:
-    """计算覆盖当前 GridMap 的世界坐标网格键范围"""
-    corner_points = [
-        grid.grid_to_world(ix, iy)
-        for ix in (0, grid.width - 1)
-        for iy in (0, grid.height - 1)
-    ]
-    margin = grid.resolution
-    min_x = min(point[0] for point in corner_points) - margin
-    max_x = max(point[0] for point in corner_points) + margin
-    min_y = min(point[1] for point in corner_points) - margin
-    max_y = max(point[1] for point in corner_points) + margin
-    return (
-        int(math.ceil((min_x - offset) / spacing)),
-        int(math.floor((max_x - offset) / spacing)),
-        int(math.ceil((min_y - offset) / spacing)),
-        int(math.floor((max_y - offset) / spacing)),
-    )

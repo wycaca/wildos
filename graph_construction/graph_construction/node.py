@@ -129,6 +129,9 @@ class GraphConstructionNode(Node):
                 "sampling",
                 "frontier",
                 "current",
+                "edge_pairs",
+                "edge_validation",
+                "edge_delta",
                 "edges",
             )
         }
@@ -334,6 +337,9 @@ class GraphConstructionNode(Node):
             f"采样{update_summaries['sampling'].average_ms:.0f}ms/"
             f"Frontier{update_summaries['frontier'].average_ms:.0f}ms/"
             f"边{update_summaries['edges'].average_ms:.0f}ms"
+            f"(pair{update_summaries['edge_pairs'].average_ms:.0f}/"
+            f"检查{update_summaries['edge_validation'].average_ms:.0f}/"
+            f"delta{update_summaries['edge_delta'].average_ms:.0f}ms)"
             f"{workload}"
         )
 
@@ -348,16 +354,11 @@ class GraphConstructionNode(Node):
             f"变化栅格{stats.dirty_cell_count}, "
             f"新增free栅格{stats.newly_free_cell_count}, "
             f"新增障碍栅格{stats.newly_obstacle_cell_count}, "
-            f"重建边节点{stats.edge_rebuild_node_count}, "
-            f"新free附近旧节点{stats.newly_free_rebuild_node_count}, "
-            f"受影响边{stats.affected_edge_count}/{stats.total_edge_count}, "
-            f"障碍附近边{stats.obstacle_affected_edge_count}, "
-            f"边候选{stats.edge_candidate_pair_count}, "
+            f"局部pair{stats.local_pair_count}, "
             f"边碰撞检查{stats.edge_clearance_check_count}, "
-            f"历史边复查{stats.historical_edge_check_count}, "
-            f"unknown候选{stats.blocked_unknown_candidate_count}, "
-            f"unknown开放重试{stats.blocked_unknown_retry_count}, "
-            f"低连接节点重试{stats.low_degree_retry_node_count}, "
+            f"边增删保留{stats.edge_add_count}/"
+            f"{stats.edge_remove_count}/{stats.edge_keep_count}, "
+            f"总边{stats.total_edge_count}, "
             f"Frontier候选{stats.frontier_candidate_count}, "
             f"活动Frontier owner{stats.active_frontier_owner_count}"
         )

@@ -14,6 +14,7 @@
   <exec_depend>object_search_msgs</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-scipy</exec_depend>
+  <exec_depend>python3-skimage</exec_depend>
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>direct_lidar_inertial_odometry</exec_depend>
   <exec_depend>python3-yaml</exec_depend>

@@ -23,12 +23,10 @@ robot_ground_height_offset: 0.22
 robot_ground_elevation_tolerance: 0.5
 robot_blind_zone_initial_only: true
 
-# 仅保留偏离 GraphBuilderConfig 稳定默认值的调优项
-sample_stride: 6
+# 论文 Algorithm 3 随机采样和 Algorithm 5 半径图
+node_sample_count: 1000
+random_seed: 7
 min_obstacle_clearance: 0.5
 edge_radius: 8.0
-max_edge_neighbors: 4
-current_node_max_edge_neighbors: 12
-max_edge_candidates_per_node: 24
 frontier_candidate_spacing: 0.5
 frontier_visited_corridor_radius: 0.65

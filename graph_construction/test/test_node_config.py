@@ -19,9 +19,21 @@ def test_resolve_config_uses_graph_builder_defaults_once():
     assert builder_config == GraphBuilderConfig()
 
 
-def test_resolve_config_rejects_removed_or_misspelled_keys():
-    with pytest.raises(ValueError, match="robot_namespace"):
-        _resolve_config({"robot_namespace": "spot1"})
+@pytest.mark.parametrize(
+    "name",
+    [
+        "robot_namespace",
+        "sample_stride",
+        "min_node_separation",
+        "max_edge_neighbors",
+        "current_node_max_edge_neighbors",
+        "max_edge_candidates_per_node",
+        "low_degree_retry_threshold",
+    ],
+)
+def test_resolve_config_rejects_removed_or_misspelled_keys(name):
+    with pytest.raises(ValueError, match=name):
+        _resolve_config({name: 1})
 
 
 @pytest.mark.parametrize(
