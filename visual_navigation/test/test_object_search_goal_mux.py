@@ -285,8 +285,8 @@ def test_single_view_pending_estimate_holds_position_and_uses_bearing(mux_node):
     assert "pending_protection=true" not in mux_node._status_text(state, goal)
 
 
-def test_pending_observation_timeout_resumes_original_exploration_goal(mux_node):
-    """单视角短时观察结束后恢复原探索方向"""
+def test_stale_pending_observation_resumes_original_exploration_goal(mux_node):
+    """单视角候选不再可见后恢复原探索方向"""
     mux_node._on_odom(_odom(0.0, 0.0, 0.0))
     initial_state, initial_goal = mux_node._select_goal()
     mux_node._on_target_estimate(
@@ -300,7 +300,7 @@ def test_pending_observation_timeout_resumes_original_exploration_goal(mux_node)
         )
     )
     pending_state, _ = mux_node._select_goal()
-    mux_node.pending_observation_duration_sec = -1.0
+    mux_node.pending_evidence_time = None
 
     resumed_state, resumed_goal = mux_node._select_goal()
 
@@ -313,6 +313,42 @@ def test_pending_observation_timeout_resumes_original_exploration_goal(mux_node)
     assert resumed_goal.pose.position.y == pytest.approx(
         initial_goal.pose.position.y
     )
+
+
+def test_visible_pending_target_repositions_once_for_new_view(mux_node):
+    """单视角静止观察后目标仍可见时只横向换位一次"""
+    mux_node.pending_observation_duration_sec = 100.0
+    mux_node.pending_reposition_visibility_timeout_sec = 100.0
+    mux_node._on_odom(_odom(0.0, 0.0, 0.0))
+    mux_node._on_target_estimate(
+        _target_estimate(
+            12.0,
+            0.0,
+            stable=False,
+            accepted_views=1,
+            state="PENDING",
+            bearing_yaw=0.0,
+        )
+    )
+    first_state, _ = mux_node._select_goal()
+    mux_node.pending_observation_duration_sec = 0.0
+
+    reposition_state, reposition_goal = mux_node._select_goal()
+
+    assert first_state == ObjectSearchState.TARGET_PENDING_OBSERVATION
+    assert reposition_state == ObjectSearchState.TARGET_PENDING_REPOSITION
+    assert reposition_goal.pose.position.x == pytest.approx(0.0)
+    assert reposition_goal.pose.position.y == pytest.approx(0.6)
+    assert _yaw(reposition_goal) == pytest.approx(0.0)
+    assert mux_node.pending_reposition_attempts == 1
+
+    mux_node.pending_observation_duration_sec = 100.0
+    mux_node._on_odom(_odom(0.0, 0.6, 0.0))
+    observed_state, observed_goal = mux_node._select_goal()
+
+    assert observed_state == ObjectSearchState.TARGET_PENDING_OBSERVATION
+    assert observed_goal.pose.position.x == pytest.approx(0.0)
+    assert observed_goal.pose.position.y == pytest.approx(0.6)
 
 
 def test_two_view_tracking_estimate_replaces_initial_goal(mux_node):

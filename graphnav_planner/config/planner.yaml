@@ -28,5 +28,6 @@
     coarse_goal_radius: 0.75
     metric_goal_radius: 0.5
     final_reposition_goal_radius: 0.35
+    pending_reposition_goal_radius: 0.3
     diagnostics_log_period_sec: 30.0
     slow_planning_warning_ms: 200.0

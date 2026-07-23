@@ -54,6 +54,13 @@ class ObjectSearchGoalMux(Node):
         self.declare_parameter("target_observation_scan_hold_sec", 0.5)
         self.declare_parameter("pending_evidence_protection_sec", 3.0)
         self.declare_parameter("pending_observation_duration_sec", 1.5)
+        self.declare_parameter("pending_reposition_distance", 0.6)
+        self.declare_parameter("pending_reposition_tolerance", 0.3)
+        self.declare_parameter(
+            "pending_reposition_visibility_timeout_sec",
+            1.5,
+        )
+        self.declare_parameter("pending_reposition_max_attempts", 1)
         self.declare_parameter("final_observation_distance", 1.75)
         self.declare_parameter("final_observation_entry_tolerance", 0.4)
         self.declare_parameter("final_observation_duration_sec", 2.0)
@@ -175,6 +182,22 @@ class ObjectSearchGoalMux(Node):
         self.pending_observation_duration_sec = max(
             self._param_float("pending_observation_duration_sec"),
             0.1,
+        )
+        self.pending_reposition_distance = max(
+            self._param_float("pending_reposition_distance"),
+            0.3,
+        )
+        self.pending_reposition_tolerance = max(
+            self._param_float("pending_reposition_tolerance"),
+            0.1,
+        )
+        self.pending_reposition_visibility_timeout_sec = max(
+            self._param_float("pending_reposition_visibility_timeout_sec"),
+            0.1,
+        )
+        self.pending_reposition_max_attempts = max(
+            int(self.get_parameter("pending_reposition_max_attempts").value),
+            0,
         )
         self.final_observation_distance = max(
             self._param_float("final_observation_distance"),
@@ -309,6 +332,8 @@ class ObjectSearchGoalMux(Node):
         self.pending_observation_started_time = None
         self.pending_observation_complete = False
         self.pending_bearing_yaw: float | None = None
+        self.pending_reposition_goal: PoseStamped | None = None
+        self.pending_reposition_attempts = 0
         self.final_observation_started_time = None
         self.final_observation_phase = "ALIGN"
         self.final_observation_phase_time = None
@@ -477,6 +502,8 @@ class ObjectSearchGoalMux(Node):
                     self.latest_target_estimate_time
                 )
                 self.pending_observation_complete = False
+                self.pending_reposition_goal = None
+                self.pending_reposition_attempts = 0
                 self.get_logger().info(
                     "单视角目标候选观察已启用, "
                     f"观察={self.pending_observation_duration_sec:.1f}s, "
@@ -604,11 +631,9 @@ class ObjectSearchGoalMux(Node):
         if self.latest_odom is None:
             return ObjectSearchState.WAIT_FOR_ODOM, None
 
-        if self._pending_observation_is_active(now):
-            return (
-                ObjectSearchState.TARGET_PENDING_OBSERVATION,
-                self._build_pending_observation_goal(now),
-            )
+        pending_state, pending_goal = self._select_pending_target_goal(now)
+        if pending_state is not None:
+            return pending_state, pending_goal
 
         if not self._startup_observation_is_complete(now):
             return (
@@ -631,7 +656,7 @@ class ObjectSearchGoalMux(Node):
         return math.atan2(bearing_y, bearing_x)
 
     def _pending_observation_is_active(self, now) -> bool:
-        """单视角候选只触发一次短时原地观察"""
+        """判断当前单视角静止观察阶段是否仍在进行"""
         if (
             self.pending_bearing_yaw is None
             or self.pending_observation_started_time is None
@@ -645,9 +670,100 @@ class ObjectSearchGoalMux(Node):
             return True
         self.pending_observation_complete = True
         self.get_logger().info(
-            "单视角目标候选观察结束, 未形成粗目标, 恢复原探索分支"
+            "单视角目标候选静止观察结束, "
+            "准备换位或恢复探索"
         )
         return False
+
+    def _select_pending_target_goal(
+        self,
+        now,
+    ) -> tuple[str | None, PoseStamped | None]:
+        """先静止观察单视角候选, 仍可见时只横向换位一次"""
+        if (
+            self.latest_odom is None
+            or self.pending_bearing_yaw is None
+            or not self._pending_evidence_protection_active(now)
+        ):
+            return None, None
+
+        evidence_age = self._age_seconds(
+            now,
+            self.pending_evidence_time,
+        )
+        evidence_fresh = (
+            evidence_age <= self.pending_reposition_visibility_timeout_sec
+        )
+        if self.pending_reposition_goal is not None:
+            if not evidence_fresh:
+                self.pending_reposition_goal = None
+                self.pending_observation_complete = True
+                self.get_logger().info(
+                    "单视角目标在换位途中失去新鲜证据, "
+                    "恢复原探索分支"
+                )
+                return None, None
+            if self._odom_distance_to_pose(self.pending_reposition_goal) > (
+                self.pending_reposition_tolerance
+            ):
+                return (
+                    ObjectSearchState.TARGET_PENDING_REPOSITION,
+                    self._retime_pose(self.pending_reposition_goal, now),
+                )
+            self.pending_reposition_goal = None
+            self.pending_observation_started_time = now
+            self.pending_observation_complete = False
+            self.get_logger().info(
+                "已到达单视角横向观察点, 继续面向目标观察"
+            )
+
+        if self._pending_observation_is_active(now):
+            return (
+                ObjectSearchState.TARGET_PENDING_OBSERVATION,
+                self._build_pending_observation_goal(now),
+            )
+
+        if (
+            evidence_fresh
+            and self.pending_reposition_attempts
+            < self.pending_reposition_max_attempts
+        ):
+            return (
+                ObjectSearchState.TARGET_PENDING_REPOSITION,
+                self._start_pending_reposition(now),
+            )
+        return None, None
+
+    def _start_pending_reposition(self, now) -> PoseStamped:
+        """按目标射线切向移动, 不使用单视角目标距离"""
+        assert self.latest_odom is not None
+        assert self.pending_bearing_yaw is not None
+        robot = self.latest_odom.pose.pose.position
+        side = 1.0 if self.pending_reposition_attempts % 2 == 0 else -1.0
+        tangent_x = -math.sin(self.pending_bearing_yaw) * side
+        tangent_y = math.cos(self.pending_bearing_yaw) * side
+        goal = PoseStamped()
+        goal.header.frame_id = (
+            self.frame_id or self.latest_odom.header.frame_id
+        )
+        goal.header.stamp = now.to_msg()
+        goal.pose.position.x = (
+            robot.x + tangent_x * self.pending_reposition_distance
+        )
+        goal.pose.position.y = (
+            robot.y + tangent_y * self.pending_reposition_distance
+        )
+        goal.pose.position.z = robot.z
+        self._set_pose_yaw(goal, self.pending_bearing_yaw)
+        self.pending_reposition_attempts += 1
+        self.pending_reposition_goal = copy.deepcopy(goal)
+        self.get_logger().info(
+            "单视角目标持续可见但证据不足, "
+            "横向更换观察点, "
+            f"距离={self.pending_reposition_distance:.2f}m, "
+            f"attempt={self.pending_reposition_attempts}"
+        )
+        return goal
 
     def _build_pending_observation_goal(self, now) -> PoseStamped:
         """保持当前位置并朝向单视角候选"""
@@ -1214,6 +1330,8 @@ class ObjectSearchGoalMux(Node):
         self.pending_observation_started_time = None
         self.pending_observation_complete = False
         self.pending_bearing_yaw = None
+        self.pending_reposition_goal = None
+        self.pending_reposition_attempts = 0
 
     def _build_hold_goal(self, now) -> PoseStamped:
         """到达目标观察点后发布当前位置, 让 planner 不再继续追远处点"""
@@ -1404,6 +1522,7 @@ class ObjectSearchGoalMux(Node):
             state in {
                 ObjectSearchState.SEARCHING_WITH_INITIAL_GOAL,
                 ObjectSearchState.TARGET_PENDING_OBSERVATION,
+                ObjectSearchState.TARGET_PENDING_REPOSITION,
             }
             and self._pending_evidence_protection_active(self.get_clock().now())
         ):
@@ -1448,6 +1567,9 @@ def _object_search_state_name(state: str) -> str:
         ),
         ObjectSearchState.TARGET_PENDING_OBSERVATION: (
             "单视角目标短时观察(TARGET_PENDING_OBSERVATION)"
+        ),
+        ObjectSearchState.TARGET_PENDING_REPOSITION: (
+            "单视角目标横向换位(TARGET_PENDING_REPOSITION)"
         ),
         ObjectSearchState.SEARCHING_WITH_INITIAL_GOAL: (
             "按初始方向探索(SEARCHING_WITH_INITIAL_GOAL)"

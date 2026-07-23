@@ -36,8 +36,11 @@ stateDiagram-v2
     WAIT_FOR_ODOM --> STARTUP_OBSERVATION
     STARTUP_OBSERVATION --> SEARCHING_WITH_INITIAL_GOAL
     SEARCHING_WITH_INITIAL_GOAL --> TARGET_PENDING_OBSERVATION: 单视角候选
-    TARGET_PENDING_OBSERVATION --> SEARCHING_WITH_INITIAL_GOAL: 短时观察结束
+    TARGET_PENDING_OBSERVATION --> TARGET_PENDING_REPOSITION: 仍可见但证据不足
+    TARGET_PENDING_REPOSITION --> TARGET_PENDING_OBSERVATION: 到达横向观察点
+    TARGET_PENDING_OBSERVATION --> SEARCHING_WITH_INITIAL_GOAL: 换位后仍无粗目标
     TARGET_PENDING_OBSERVATION --> TARGET_APPROACH_COARSE: 形成两视角粗目标
+    TARGET_PENDING_REPOSITION --> TARGET_APPROACH_COARSE: 形成两视角粗目标
     SEARCHING_WITH_INITIAL_GOAL --> TARGET_APPROACH_COARSE: 粗目标通过门控
     TARGET_APPROACH_COARSE --> TARGET_OBSERVATION: 到达观察位置
     TARGET_OBSERVATION --> TARGET_APPROACH_COARSE: 更换观察点
@@ -56,6 +59,7 @@ stateDiagram-v2
 | `STARTUP_OBSERVATION` | 等地图和视觉评分稳定 |
 | `SEARCHING_WITH_INITIAL_GOAL` | 按初始方向探索 |
 | `TARGET_PENDING_OBSERVATION` | 保持位置并面向单视角候选 |
+| `TARGET_PENDING_REPOSITION` | 只按射线切向横移, 获取第二观察位置 |
 | `TARGET_APPROACH_COARSE` | 接近粗目标的安全观察位置 |
 | `TARGET_OBSERVATION` | 面向粗目标观察或换位 |
 | `TARGET_APPROACH_METRIC` | 接近稳定目标外的安全观察点 |
@@ -244,11 +248,15 @@ Frontier 位置移动不足 0.75 m 时继续执行原路线, 等累计移动达�
 
 第一帧有效 Mask 只有方向, 深度仍不确定
 
-系统短暂保护这份证据, 保持当前路线并冻结失败计时, 但不会让单视角目标接管导航
+系统短暂保护这份证据, 暂停远距离探索并冻结失败计时, 但不会导航到单视角粒子位置
 
 融合节点发布 Mask 质心射线方向, Goal Mux 丢弃不可靠的距离, 在当前位置面向目标约 1.5 s
 
-观察后仍未形成两视角粗目标时恢复原探索分支
+如果目标仍在持续更新但没有形成两视角粗目标, 机器人沿射线切向横移 0.6 m, 到新位置后再观察一次
+
+横移只执行一次, 使用 0.3 m 到达半径, 不需要也不使用单视角目标距离
+
+目标失去新鲜证据, 或换位后仍未形成粗目标时, 恢复原探索分支
 
 ### 粗目标
 
@@ -319,11 +327,13 @@ Frontier 位置移动不足 0.75 m 时继续执行原路线, 等累计移动达�
 - 短暂空图不会清空活动路线
 - 恢复新分支后使用岔路处的局部方向
 - 目标观察期间暂停探索状态, 候选失效后恢复原分支
+- 单视角目标持续可见时允许一次 0.6 m 横向换位, 仍不使用粒子距离
+- 目标状态切换会立即暂停探索路线, 不受 2.5 s 路线保持时间拦截
 - 稳定目标使用专用安全观察点和 0.5 m Planner 到达半径
 - 最终观察支持静止确认、小角度重捕获和附近换位
 - 30 s 日志汇总路线变化、保持、负向拒绝、恢复和释放原因
 
-28 项 C++ 探索路线测试通过
+29 项 C++ 探索路线测试和 29 项 Goal Mux 测试通过
 
 收到新的完整运行日志后需要检查:
 
@@ -356,6 +366,8 @@ Frontier 位置移动不足 0.75 m 时继续执行原路线, 等累计移动达�
 | `coarse_goal_radius` | 0.75 m | 粗目标观察位姿到达半径 |
 | `metric_goal_radius` | 0.5 m | 稳定目标安全观察位姿到达半径 |
 | `final_reposition_goal_radius` | 0.35 m | 最终观察换位到达半径 |
+| `pending_reposition_goal_radius` | 0.3 m | 单视角横向换位到达半径 |
+| `pending_reposition_distance` | 0.6 m | 单视角最多一次的横向移动距离 |
 | `final_observation_distance` | 1.75 m | 稳定目标外的观察距离 |
 | `object_reached_max_target_distance` | 2.0 m | 最终完成允许的目标距离 |
 

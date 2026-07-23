@@ -122,6 +122,9 @@ public:
     this->declare_parameter("final_reposition_goal_radius", 0.35);
     final_reposition_goal_radius_ =
       this->get_parameter("final_reposition_goal_radius").as_double();
+    this->declare_parameter("pending_reposition_goal_radius", 0.3);
+    pending_reposition_goal_radius_ =
+      this->get_parameter("pending_reposition_goal_radius").as_double();
     diagnostics_log_period_sec_ = std::max(
       this->get_parameter("diagnostics_log_period_sec").as_double(), 5.0);
     slow_planning_warning_ms_ = std::max(
@@ -206,6 +209,10 @@ private:
     {
       return "单视角目标短时观察";
     }
+    if (state == "TARGET_PENDING_REPOSITION")
+    {
+      return "单视角目标横向换位";
+    }
     if (state == "TARGET_APPROACH_COARSE")
     {
       return "接近视觉粗目标";
@@ -236,6 +243,7 @@ private:
   static bool target_override_state(const std::string& state)
   {
     return state == "TARGET_PENDING_OBSERVATION" ||
+      state == "TARGET_PENDING_REPOSITION" ||
       state == "TARGET_APPROACH_COARSE" ||
       state == "TARGET_OBSERVATION" ||
       state == "TARGET_APPROACH_METRIC" ||
@@ -404,6 +412,10 @@ private:
       else if (object_search_state_ == "TARGET_FINAL_REPOSITION")
       {
         active_goal_radius = final_reposition_goal_radius_;
+      }
+      else if (object_search_state_ == "TARGET_PENDING_REPOSITION")
+      {
+        active_goal_radius = pending_reposition_goal_radius_;
       }
       std::optional<Eigen::Vector3d> robot_position;
       std::optional<geometry_msgs::msg::PoseStamped> robot_pose_for_hold;
@@ -707,6 +719,7 @@ private:
   double coarse_goal_radius_;
   double metric_goal_radius_;
   double final_reposition_goal_radius_;
+  double pending_reposition_goal_radius_;
   double diagnostics_log_period_sec_;
   double slow_planning_warning_ms_;
   double max_graph_age_sec_;
