@@ -153,6 +153,7 @@ def generate_launch_description():
             _profile_arg("nav_graph_topic", "nav_graph_topic"),
             _profile_arg("graph_construction_viz_topic", "graph_construction_viz_topic"),
             _profile_arg("scored_nav_graph_topic", "scored_nav_graph_topic"),
+            _profile_arg("planner_path_topic", "planner_path_topic"),
             _profile_arg("model_viz_topic", "model_viz_topic"),
             _profile_arg("valid_geofrontiers_topic", "valid_geofrontiers_topic"),
             _profile_arg("score_ring_topic", "score_ring_topic"),
@@ -616,6 +617,12 @@ def _launch_setup(context):
         condition=IfCondition(LaunchConfiguration("do_object_search")),
     )
 
+    planner_path_topic = _value(
+        context,
+        profile,
+        "planner_path_topic",
+        "planner_path_topic",
+    )
     planner = _planner_node(
         ns,
         use_sim_time,
@@ -623,14 +630,10 @@ def _launch_setup(context):
         goal_pose_topic,
         scored_nav_graph_topic,
         _value(context, profile, "object_search_status_topic", "object_search_status_topic"),
+        planner_path_topic,
         isolated_tf_remappings,
     )
 
-    planner_path_topic = (
-        f"/{normalized_ns}/graphnav_planner/path"
-        if normalized_ns
-        else "/graphnav_planner/path"
-    )
     pipeline_performance_monitor = Node(
         package="graph_construction",
         executable="pipeline_performance_monitor",
@@ -970,6 +973,7 @@ def _planner_node(
     goal_pose_topic,
     scored_nav_graph_topic,
     object_search_status_topic,
+    planner_path_topic,
     tf_remappings,
 ):
     return Node(
@@ -987,6 +991,7 @@ def _planner_node(
             ("~/odom", odom_topic),
             ("~/goal_pose", goal_pose_topic),
             ("~/object_search_status", object_search_status_topic),
+            ("~/path", planner_path_topic),
             *tf_remappings,
         ],
     )

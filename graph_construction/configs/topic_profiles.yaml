@@ -35,6 +35,7 @@ profiles:
     nav_graph_topic: /spot1/nav_graph
     graph_construction_viz_topic: /spot1/graph_construction_viz
     scored_nav_graph_topic: /spot1/scored_nav_graph
+    planner_path_topic: /spot1/graphnav_planner/path
     model_viz_topic: /spot1/model_visualization
     valid_geofrontiers_topic: /spot1/within_range_geofrontiers
     score_ring_topic: /spot1/score_rings
@@ -116,6 +117,7 @@ profiles:
     nav_graph_topic: /spot1/nav_graph
     graph_construction_viz_topic: /spot1/graph_construction_viz
     scored_nav_graph_topic: /spot1/scored_nav_graph
+    planner_path_topic: /spot1/graphnav_planner/path
     model_viz_topic: /spot1/model_visualization
     valid_geofrontiers_topic: /spot1/within_range_geofrontiers
     score_ring_topic: /spot1/score_rings
@@ -187,6 +189,7 @@ profiles:
     nav_graph_topic: /spot1/nav_graph
     graph_construction_viz_topic: /spot1/graph_construction_viz
     scored_nav_graph_topic: /spot1/scored_nav_graph
+    planner_path_topic: /spot1/graphnav_planner/path
     model_viz_topic: /spot1/model_visualization
     valid_geofrontiers_topic: /spot1/within_range_geofrontiers
     score_ring_topic: /spot1/score_rings

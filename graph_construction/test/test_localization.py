@@ -51,6 +51,10 @@ def test_unity_profile_normalizes_camera_stamps():
     assert _unity_profile()["camera_stamp_mode"] == "now"
 
 
+def test_unity_planner_publishes_source_path_topic():
+    assert _unity_profile()["planner_path_topic"] == "/spot1/graphnav_planner/path"
+
+
 def test_unity_dlio_disables_unstable_adaptive_gicp():
     config = _unity_dlio_config()
 

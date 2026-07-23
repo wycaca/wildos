@@ -136,6 +136,18 @@ def test_camera_stamp_adapter_can_be_disabled():
     assert "camera_stamp_adapter" not in executables
 
 
+def test_unity_planner_output_is_remapped_to_source_path():
+    module = _load_launch_module()
+    context = _context_with_defaults(module)
+    planner = next(
+        node
+        for node in _all_nodes(module._launch_setup(context))
+        if _expanded(context, node.node_executable) == "planner_node"
+    )
+
+    assert ("~/path", "/spot1/graphnav_planner/path") in _remappings(context, planner)
+
+
 def test_dlio_odom_adapter_defaults_to_message_pose():
     module = _load_launch_module()
     context = _context_with_defaults(module)

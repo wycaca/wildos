@@ -45,6 +45,7 @@ PROFILE_KEY_DESCRIPTIONS = {
     "nav_graph_topic": "graph_construction 输出 NavigationGraph topic",
     "graph_construction_viz_topic": "graph_construction MarkerArray 可视化 topic",
     "scored_nav_graph_topic": "WildOS 打分后的 NavigationGraph topic",
+    "planner_path_topic": "graphnav_planner 输出给运动执行适配层的原始 Path topic",
     "model_viz_topic": "WildOS 模型输出可视化 topic",
     "valid_geofrontiers_topic": "WildOS 有效几何 frontier 可视化 topic",
     "score_ring_topic": "WildOS heading score 圆环 topic",
