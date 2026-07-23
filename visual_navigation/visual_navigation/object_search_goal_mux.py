@@ -86,6 +86,7 @@ class ObjectSearchGoalMux(Node):
         self.declare_parameter("startup_scan_yaw_deg", 35.0)
         self.declare_parameter("startup_scan_yaw_tolerance_deg", 5.0)
         self.declare_parameter("startup_scan_hold_sec", 0.5)
+        self.declare_parameter("startup_scan_phase_timeout_sec", 4.0)
 
         self.output_goal_topic = self._param_str("output_goal_topic")
         self.status_topic = self._param_str("status_topic")
@@ -294,6 +295,10 @@ class ObjectSearchGoalMux(Node):
             self._param_float("startup_scan_hold_sec"),
             0.0,
         )
+        self.startup_scan_phase_timeout_sec = max(
+            self._param_float("startup_scan_phase_timeout_sec"),
+            self.startup_scan_hold_sec + 0.1,
+        )
 
         self.latest_odom: Odometry | None = None
         self.metric_target: PoseStamped | None = None
@@ -311,6 +316,7 @@ class ObjectSearchGoalMux(Node):
         self._last_reached_gate_reason = ""
         self._warned_frame_mismatch = False
         self.startup_started_time = None
+        self.startup_observation_position = None
         self.startup_completed = not self.startup_observation_enabled
         self.startup_nav_graph_frames = 0
         self.startup_scored_graph_frames = 0
@@ -399,6 +405,9 @@ class ObjectSearchGoalMux(Node):
         self.latest_odom = msg
         if self.startup_started_time is None:
             self.startup_started_time = self.get_clock().now()
+            self.startup_observation_position = copy.deepcopy(
+                msg.pose.pose.position
+            )
         if self.exploration_heading_yaw is None:
             self.exploration_heading_yaw = (
                 _yaw_from_quaternion(msg.pose.pose.orientation)
@@ -976,14 +985,29 @@ class ObjectSearchGoalMux(Node):
             )
             return False
 
-        if not self._startup_scan_target_reached():
-            return False
         phase_age = self._age_seconds(now, self.startup_scan_phase_time)
+        target_reached = self._startup_scan_target_reached()
+        phase_timed_out = phase_age >= self.startup_scan_phase_timeout_sec
+        if not target_reached and not phase_timed_out:
+            return False
         new_scored_frames = (
             self.startup_scored_graph_frames - self.startup_scan_phase_scored_frames
         )
-        if phase_age < self.startup_scan_hold_sec or new_scored_frames < 1:
+        if (
+            target_reached
+            and not phase_timed_out
+            and (
+                phase_age < self.startup_scan_hold_sec
+                or new_scored_frames < 1
+            )
+        ):
             return False
+        if phase_timed_out and not target_reached:
+            self.get_logger().warning(
+                "启动观察转向超时, 跳过当前朝向, "
+                f"phase={self.startup_scan_phase}, "
+                f"等待={phase_age:.1f}s"
+            )
 
         next_phase = {
             "SCAN_LEFT": "SCAN_RIGHT",
@@ -1305,7 +1329,9 @@ class ObjectSearchGoalMux(Node):
         goal = PoseStamped()
         goal.header.frame_id = self.frame_id or odom.header.frame_id
         goal.header.stamp = now.to_msg()
-        goal.pose.position = copy.deepcopy(odom.pose.pose.position)
+        goal.pose.position = copy.deepcopy(
+            self.startup_observation_position or odom.pose.pose.position
+        )
         goal.pose.orientation.z = math.sin(yaw * 0.5)
         goal.pose.orientation.w = math.cos(yaw * 0.5)
         return goal

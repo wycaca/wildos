@@ -4,6 +4,7 @@ import math
 from nav_msgs.msg import Odometry
 import pytest
 import rclpy
+from rclpy.duration import Duration
 from std_msgs.msg import Bool
 from graphnav_msgs.msg import NavigationGraph, Node, NodeTraversabilityProperties
 from object_search_msgs.msg import TargetEstimate
@@ -190,6 +191,45 @@ def test_startup_scan_requires_repeated_insufficient_forward_graph(mux_node):
     mux_node._on_scored_nav_graph(_graph(forward=False, stamp=6))
     complete_state, _ = mux_node._select_goal()
     assert complete_state == ObjectSearchState.SEARCHING_WITH_INITIAL_GOAL
+
+
+def test_startup_scan_keeps_anchor_and_times_out_without_rotation(mux_node):
+    """底层未执行纯转向时也要结束启动观察并保持固定观察位置"""
+    _enable_test_startup(mux_node)
+    mux_node.startup_scan_phase_timeout_sec = 0.1
+    mux_node._on_odom(_odom(0.0, 0.0, 0.0))
+    for stamp in (1, 2):
+        mux_node._on_nav_graph(_graph(forward=False, stamp=stamp))
+        mux_node._on_scored_nav_graph(_graph(forward=False, stamp=stamp))
+    mux_node._on_scored_nav_graph(_graph(forward=False, stamp=3))
+
+    _, left_goal = mux_node._select_goal()
+    mux_node._on_odom(_odom(0.02, -0.01, 0.0))
+    _, repeated_goal = mux_node._select_goal()
+
+    assert mux_node.startup_scan_phase == "SCAN_LEFT"
+    assert repeated_goal.pose.position.x == pytest.approx(
+        left_goal.pose.position.x
+    )
+    assert repeated_goal.pose.position.y == pytest.approx(
+        left_goal.pose.position.y
+    )
+
+    for expected_phase in ("SCAN_RIGHT", "SCAN_RETURN"):
+        mux_node.startup_scan_phase_time = (
+            mux_node.get_clock().now() - Duration(seconds=1.0)
+        )
+        state, _ = mux_node._select_goal()
+        assert state == ObjectSearchState.STARTUP_OBSERVATION
+        assert mux_node.startup_scan_phase == expected_phase
+
+    mux_node.startup_scan_phase_time = (
+        mux_node.get_clock().now() - Duration(seconds=1.0)
+    )
+    state, _ = mux_node._select_goal()
+
+    assert state == ObjectSearchState.SEARCHING_WITH_INITIAL_GOAL
+    assert mux_node.startup_scan_phase == "COMPLETE"
 
 
 def test_initial_goal_orientation_matches_configured_heading(mux_node):

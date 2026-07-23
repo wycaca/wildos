@@ -30,6 +30,7 @@
     startup_scan_yaw_deg: 35.0
     startup_scan_yaw_tolerance_deg: 5.0
     startup_scan_hold_sec: 0.5
+    startup_scan_phase_timeout_sec: 4.0
 
     # 论文式两视角视觉粗定位先替换初始探索 goal, 稳定估计随后提升精度
     publish_rate: 5.0
