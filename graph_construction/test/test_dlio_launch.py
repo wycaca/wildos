@@ -111,6 +111,14 @@ def test_unity_dlio_launch_owns_dlio_and_skips_xyz_adapter():
         "deskewed",
         "/spot1/dlio/odom_node/pointcloud/deskewed_raw",
     ) in remappings
+    assert (
+        "/tf",
+        "/spot1/dlio/odom_node/tf_raw",
+    ) in remappings
+    assert (
+        "/tf_static",
+        "/spot1/dlio/odom_node/tf_static_raw",
+    ) in remappings
 
 
 def test_camera_stamp_adapter_can_be_disabled():

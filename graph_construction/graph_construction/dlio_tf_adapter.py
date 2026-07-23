@@ -42,6 +42,67 @@ class OdometryHealthEvaluation:
     finite: bool
 
 
+@dataclass(frozen=True)
+class HeadingConsistencySummary:
+    """汇总启动方向差和对齐后的累计变化"""
+
+    initial_raw_error_deg: float
+    current_aligned_error_deg: float
+    cumulative_change_deg: float
+    maximum_aligned_error_deg: float
+    samples: int
+
+
+class HeadingConsistencyMonitor:
+    """区分固定启动方向差和运行中的累计 yaw 漂移"""
+
+    def __init__(self) -> None:
+        self._initial_raw_error_deg: float | None = None
+        self._previous_aligned_error_deg: float | None = None
+        self._current_aligned_error_deg = 0.0
+        self._cumulative_change_deg = 0.0
+        self._maximum_aligned_error_deg = 0.0
+        self._samples = 0
+
+    def update(
+        self,
+        local: Odometry,
+        aligned: Odometry,
+        reference: Odometry | None,
+    ) -> HeadingConsistencySummary | None:
+        """使用同一时刻数据更新方向差, 不参与健康门控"""
+        if reference is None:
+            return self.summary()
+
+        raw_error = _signed_yaw_error_deg(local, reference)
+        aligned_error = _signed_yaw_error_deg(aligned, reference)
+        if self._initial_raw_error_deg is None:
+            self._initial_raw_error_deg = raw_error
+        if self._previous_aligned_error_deg is not None:
+            self._cumulative_change_deg += _normalize_angle_deg(
+                aligned_error - self._previous_aligned_error_deg
+            )
+        self._previous_aligned_error_deg = aligned_error
+        self._current_aligned_error_deg = aligned_error
+        self._maximum_aligned_error_deg = max(
+            self._maximum_aligned_error_deg,
+            abs(aligned_error),
+        )
+        self._samples += 1
+        return self.summary()
+
+    def summary(self) -> HeadingConsistencySummary | None:
+        if self._initial_raw_error_deg is None:
+            return None
+        return HeadingConsistencySummary(
+            initial_raw_error_deg=self._initial_raw_error_deg,
+            current_aligned_error_deg=self._current_aligned_error_deg,
+            cumulative_change_deg=self._cumulative_change_deg,
+            maximum_aligned_error_deg=self._maximum_aligned_error_deg,
+            samples=self._samples,
+        )
+
+
 class OdometryHealthMonitor:
     """监测参考残差变化, 避免累计漂移永久关闭里程计链路"""
 
@@ -288,13 +349,20 @@ def relay_extrinsic_transforms(
     odom_frame: str,
     base_frame: str,
 ) -> TFMessage:
-    """Keep DLIO sensor extrinsics while dropping its odom to base transform"""
+    """保留唯一的传感器外参, 丢弃 DLIO 原始位姿 TF"""
     output = TFMessage()
-    output.transforms = [
-        copy.deepcopy(transform)
-        for transform in msg.transforms
-        if not _is_pose_transform(transform, odom_frame, base_frame)
-    ]
+    seen_frames: set[tuple[str, str]] = set()
+    for transform in msg.transforms:
+        if _is_pose_transform(transform, odom_frame, base_frame):
+            continue
+        frame_pair = (
+            transform.header.frame_id.strip("/"),
+            transform.child_frame_id.strip("/"),
+        )
+        if frame_pair in seen_frames:
+            continue
+        seen_frames.add(frame_pair)
+        output.transforms.append(copy.deepcopy(transform))
     return output
 
 
@@ -392,6 +460,37 @@ def _rotation_angle_deg(
     """返回单位四元数表示的最小旋转角"""
     normalized = _normalize_quaternion(rotation)
     return math.degrees(2.0 * math.acos(min(1.0, abs(normalized[3]))))
+
+
+def _signed_yaw_error_deg(
+    estimated: Odometry,
+    reference: Odometry,
+) -> float:
+    """返回 estimated 相对 reference 的有符号 yaw 差"""
+    return _normalize_angle_deg(
+        _odometry_yaw_deg(estimated) - _odometry_yaw_deg(reference)
+    )
+
+
+def _odometry_yaw_deg(msg: Odometry) -> float:
+    orientation = _normalize_quaternion(
+        (
+            msg.pose.pose.orientation.x,
+            msg.pose.pose.orientation.y,
+            msg.pose.pose.orientation.z,
+            msg.pose.pose.orientation.w,
+        )
+    )
+    x, y, z, w = orientation
+    yaw = math.atan2(
+        2.0 * (w * z + x * y),
+        1.0 - 2.0 * (y * y + z * z),
+    )
+    return math.degrees(yaw)
+
+
+def _normalize_angle_deg(angle_deg: float) -> float:
+    return (float(angle_deg) + 180.0) % 360.0 - 180.0
 
 
 def _stamp_nanoseconds(msg: Odometry) -> int:
@@ -600,6 +699,7 @@ class DlioTfAdapter(Node):
         self._max_jump_metrics = [0.0, 0.0]
         self._callback_timing = TimingWindow()
         self._input_rate = EventRate()
+        self._heading_monitor = HeadingConsistencyMonitor()
         self.extrinsics_ready = not bool(self.reference_odom_topic)
 
         tf_qos = QoSProfile(
@@ -705,10 +805,12 @@ class DlioTfAdapter(Node):
             )
             delta_ms = stamp_delta_ns / 1.0e6
             translation = self.alignment.translation
+            initial_heading_error = _signed_yaw_error_deg(msg, reference)
             self.get_logger().info(
                 "已锁定 DLIO 到全局坐标的启动对齐, "
                 f"delta={delta_ms:.1f}ms, translation=({translation[0]:.3f}, "
-                f"{translation[1]:.3f}, {translation[2]:.3f})"
+                f"{translation[1]:.3f}, {translation[2]:.3f}), "
+                f"原始方向差=DLIO-参考{initial_heading_error:.2f}度"
             )
 
         aligned_odom = align_odometry(
@@ -718,6 +820,7 @@ class DlioTfAdapter(Node):
             self.base_frame,
         )
         reference = self._nearest_reference(msg)
+        self._heading_monitor.update(msg, aligned_odom, reference)
         evaluation = self.health_monitor.evaluate(aligned_odom, reference)
         metrics = evaluation.metrics
         self._max_health_metrics = [
@@ -817,6 +920,15 @@ class DlioTfAdapter(Node):
         input_rate = self._input_rate.sample(reset=True)
         maxima = self._max_health_metrics
         jump_maxima = self._max_jump_metrics
+        heading = self._heading_monitor.summary()
+        heading_text = "方向差=无同时刻参考"
+        if heading is not None:
+            heading_text = (
+                f"方向差=启动原始{heading.initial_raw_error_deg:.2f}度/"
+                f"当前对齐后{heading.current_aligned_error_deg:.2f}度/"
+                f"累计变化{heading.cumulative_change_deg:.2f}度/"
+                f"最大对齐后{heading.maximum_aligned_error_deg:.2f}度"
+            )
         self.get_logger().info(
             "DLIO 位姿状态, "
             f"输入频率={input_rate:.1f}Hz, "
@@ -828,6 +940,7 @@ class DlioTfAdapter(Node):
             f"速度{maxima[2]:.3f}m/s, "
             f"最大瞬时跳变=位置{jump_maxima[0]:.3f}m/"
             f"角度{jump_maxima[1]:.2f}度, "
+            f"{heading_text}, "
             f"回调耗时=平均{timing.average_ms:.1f}/95%上限{timing.p95_ms:.1f}/"
             f"最大{timing.maximum_ms:.1f}ms"
         )

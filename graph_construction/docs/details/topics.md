@@ -123,6 +123,8 @@ launch_dlio:=true
 - DLIO 健康失败时暂停 canonical odom、TF 和下游点云
 - 修复错误定位后重启高程图, 防止旧错误位姿继续留在地图中
 
+坐标对齐、外参方向、TF 发布权和方向差诊断见 [DLIO 坐标与 TF](dlio.md)
+
 ## 6. 内部 canonical 输入
 
 | Topic | 类型 | 发布者 | 消费者 | 说明 |

@@ -70,8 +70,13 @@ def test_unity_dlio_matches_unity_livox_extrinsics():
     config = _unity_dlio_config()
 
     expected_translation = [0.093, 0.0, 0.334]
+    expected_rotation = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
     assert config["extrinsics/baselink2imu/t"] == expected_translation
     assert config["extrinsics/baselink2lidar/t"] == expected_translation
+    assert config["extrinsics/baselink2imu/R"] == expected_rotation
+    assert config["extrinsics/baselink2lidar/R"] == expected_rotation
+    assert config["frames/imu"] == "livox_frame"
+    assert config["frames/lidar"] == "livox_frame"
 
 
 def test_unknown_localization_backend_is_rejected():

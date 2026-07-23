@@ -6,6 +6,7 @@ import pytest
 from tf2_msgs.msg import TFMessage
 
 from graph_construction.dlio_tf_adapter import (
+    HeadingConsistencyMonitor,
     HealthStateFilter,
     OdometryHealthMonitor,
     align_odometry,
@@ -91,6 +92,19 @@ def test_relay_extrinsics_drops_stale_dlio_pose_tf():
     assert output.transforms[0].child_frame_id == "livox_frame"
 
 
+def test_relay_extrinsics_deduplicates_shared_imu_lidar_frame():
+    first = _transform("base_link", "livox_frame")
+    duplicate = _transform("base_link", "livox_frame")
+
+    output = relay_extrinsic_transforms(
+        TFMessage(transforms=[first, duplicate]),
+        "dlio_odom",
+        "base_link",
+    )
+
+    assert len(output.transforms) == 1
+
+
 def test_alignment_anchors_first_dlio_pose_to_reference_pose():
     reference = _odom(2.0, -1.0, 0.3, 90.0)
     local = _odom(0.2, 0.1, 0.0, 15.0)
@@ -124,6 +138,105 @@ def test_alignment_rotates_later_dlio_motion_into_global_frame():
     assert aligned.pose.pose.position.y == pytest.approx(0.0)
     assert transform.header.frame_id == "odom_3D"
     assert transform.child_frame_id == "dlio_odom"
+
+
+def test_aligned_odom_matches_composed_tf_chain():
+    reference = _odom(2.0, -1.0, 0.3, 90.0)
+    local_initial = _odom(0.2, 0.1, 0.0, 15.0)
+    local_later = _odom(1.2, 0.1, 0.0, 30.0)
+
+    alignment = alignment_from_odometry(reference, local_initial)
+    aligned = align_odometry(local_later, alignment, "odom_3D", "base_link")
+    alignment_tf = alignment_to_transform(
+        alignment,
+        aligned.header.stamp,
+        "odom_3D",
+        "dlio_odom",
+    )
+    local_tf = odom_to_transform(local_later, "dlio_odom", "base_link")
+
+    assert aligned.header.frame_id == alignment_tf.header.frame_id
+    assert aligned.child_frame_id == local_tf.child_frame_id
+    assert alignment_tf.child_frame_id == local_tf.header.frame_id
+    assert aligned.pose.pose.position.x == pytest.approx(
+        2.258819045,
+        abs=1.0e-6,
+    )
+    assert aligned.pose.pose.position.y == pytest.approx(
+        -0.034074174,
+        abs=1.0e-6,
+    )
+    assert _yaw_deg(aligned) == pytest.approx(105.0)
+
+
+def test_heading_monitor_static_input_has_no_yaw_drift():
+    monitor = HeadingConsistencyMonitor()
+    reference = _odom(0.0, 0.0, 0.0, 30.0)
+    local = _odom(0.0, 0.0, 0.0, -10.0)
+    alignment = alignment_from_odometry(reference, local)
+
+    for _ in range(10):
+        aligned = align_odometry(local, alignment, "odom_3D", "base_link")
+        summary = monitor.update(local, aligned, reference)
+
+    assert summary.initial_raw_error_deg == pytest.approx(-40.0)
+    assert summary.current_aligned_error_deg == pytest.approx(0.0)
+    assert summary.cumulative_change_deg == pytest.approx(0.0)
+
+
+def test_heading_monitor_known_rotation_keeps_direction_and_units():
+    monitor = HeadingConsistencyMonitor()
+    reference_initial = _odom(0.0, 0.0, 0.0, 20.0)
+    local_initial = _odom(0.0, 0.0, 0.0, -10.0)
+    alignment = alignment_from_odometry(reference_initial, local_initial)
+    aligned_initial = align_odometry(
+        local_initial,
+        alignment,
+        "odom_3D",
+        "base_link",
+    )
+    monitor.update(local_initial, aligned_initial, reference_initial)
+
+    reference_rotated = _odom(0.0, 0.0, 0.0, 110.0)
+    local_rotated = _odom(0.0, 0.0, 0.0, 80.0)
+    aligned_rotated = align_odometry(
+        local_rotated,
+        alignment,
+        "odom_3D",
+        "base_link",
+    )
+    summary = monitor.update(local_rotated, aligned_rotated, reference_rotated)
+
+    assert _yaw_deg(aligned_rotated) == pytest.approx(110.0)
+    assert summary.current_aligned_error_deg == pytest.approx(0.0)
+    assert summary.cumulative_change_deg == pytest.approx(0.0)
+
+
+def test_heading_monitor_separates_fixed_offset_from_accumulated_drift():
+    monitor = HeadingConsistencyMonitor()
+    reference = _odom(0.0, 0.0, 0.0, 0.0)
+    local_initial = _odom(0.0, 0.0, 0.0, 10.0)
+    alignment = alignment_from_odometry(reference, local_initial)
+    aligned_initial = align_odometry(
+        local_initial,
+        alignment,
+        "odom_3D",
+        "base_link",
+    )
+    monitor.update(local_initial, aligned_initial, reference)
+
+    local_drifted = _odom(0.0, 0.0, 0.0, 15.0)
+    aligned_drifted = align_odometry(
+        local_drifted,
+        alignment,
+        "odom_3D",
+        "base_link",
+    )
+    summary = monitor.update(local_drifted, aligned_drifted, reference)
+
+    assert summary.initial_raw_error_deg == pytest.approx(10.0)
+    assert summary.current_aligned_error_deg == pytest.approx(5.0)
+    assert summary.cumulative_change_deg == pytest.approx(5.0)
 
 
 def test_health_check_accepts_small_simulation_error():
