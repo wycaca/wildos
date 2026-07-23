@@ -8,16 +8,17 @@
     frontier_progress_start_grace: 20.0
     directional_min_forward_progress: 0.5
     directional_max_initial_backtrack: 2.0
+    directional_max_continuation_backtrack: 1.25
+    directional_min_continuation_progress: -0.5
     directional_block_confirm_timeout: 5.0
+    frontier_route_hold_duration: 2.5
+    frontier_min_update_distance: 0.75
     frontier_failure_cooldown: 60.0
     frontier_failure_merge_radius: 2.5
     path_invalid_confirm_duration: 1.5
     path_invalid_confirm_frames: 3
     recovery_observe_duration: 3.0
-    dead_end_backtrack_step: 2.0
-    dead_end_backtrack_step_duration: 5.0
-    dead_end_max_backtrack: 10.0
-    deferred_branch_cost_penalty: 3.0
+    branch_recovery_cost_penalty: 3.0
     revisit_cost_factor: 1.0
     max_graph_age_sec: 2.0
     max_odom_age_sec: 1.0

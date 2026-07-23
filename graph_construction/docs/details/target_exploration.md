@@ -1,320 +1,345 @@
 # 目标搜索与探索路线
 
-> 状态: 当前实现说明
->
-> 更新时间: 2026-07-22
+> 更新时间: 2026-07-23
 
-## 1. 这个模块解决什么问题
+## 1. 这个模块做什么
 
-目标搜索不是直接向一个已知坐标导航, 因为任务开始时系统只知道文本目标, 例如 `blue bucket`, 并不知道目标在哪里
+任务开始时只有文本目标, 没有目标坐标
 
-系统需要先探索未知区域, 在相机看到目标后再从探索切换到目标接近, 最后完成近距离确认
+系统需要先探索, 看到目标后切换到目标观察和接近, 最后完成近距离确认
 
-本模块主要回答两个问题:
+本模块回答:
 
-1. 还没找到目标时, 机器人下一步往哪里走
-2. 已经有目标位置时, 谁来决定继续探索、接近目标、观察目标或停止
+1. 还没看到目标时往哪里走
+2. 看到目标后何时停止探索
+3. 粗目标、稳定目标和最终完成如何切换
 
-目标三维坐标如何计算由 `target_localization.md` 说明
+目标坐标如何计算见 [目标定位与视觉雷达融合](target_localization.md)
 
 ## 2. 模块分工
 
 | 模块 | 职责 |
 |---|---|
-| WildOS | 给 Frontier 打视觉分数, 检测目标 Mask, 生成近距离到达证据 |
-| `object_target_fusion` | 把多视角 Mask 和 LiDAR 融合为目标坐标 |
-| `ObjectSearchGoalMux` | 统一决定当前高层目标和任务状态 |
-| `graphnav_planner` | 在 scored graph 上选择可执行路线 |
-| 局部控制器 | 执行 Path, 处理底层运动和避障 |
+| WildOS | 给 Frontier 打分、检测目标、生成近距离视觉证据 |
+| `object_target_fusion` | 计算目标三维位置和稳定性 |
+| `ObjectSearchGoalMux` | 选择当前高层目标和任务状态 |
+| `graphnav_planner` | 在 scored graph 上计算路径 |
+| 外部控制器 | 执行 Path 和底层避障 |
 
-`ObjectSearchGoalMux` 是高层 goal 和完成状态的唯一 owner, WildOS、融合节点和 Planner 都不能绕过它直接宣布任务完成
+Goal Mux 是高层目标和最终完成状态的唯一 owner
 
-## 3. 整体流程
-
-```mermaid
-flowchart TD
-    A["文本目标和三相机图像"] --> B["WildOS 视觉推理"]
-    C["NavigationGraph"] --> B
-    B --> D["带视觉分数的 scored graph"]
-    D --> E["Planner 选择探索路线"]
-    B --> F["确认后的目标 Mask"]
-    F --> G["目标位置融合"]
-    G --> H["Goal Mux 判断目标质量"]
-    H -->|"没有可靠目标"| E
-    H -->|"粗目标"| I["接近并观察粗目标"]
-    H -->|"稳定目标"| J["规划目标接近路线"]
-    B --> K["近距离视觉到达证据"]
-    K --> H
-    J --> L["稳定目标 + 距离 + 视觉证据"]
-    L --> M["锁定完成并停止"]
-```
-
-## 4. 搜索状态
+## 3. 状态流程
 
 ```mermaid
 stateDiagram-v2
     [*] --> WAIT_FOR_ODOM
-    WAIT_FOR_ODOM --> STARTUP_OBSERVATION: 收到 odom
-    STARTUP_OBSERVATION --> SEARCHING_WITH_INITIAL_GOAL: 地图和评分图可用
+    WAIT_FOR_ODOM --> STARTUP_OBSERVATION
+    STARTUP_OBSERVATION --> SEARCHING_WITH_INITIAL_GOAL
     SEARCHING_WITH_INITIAL_GOAL --> TARGET_APPROACH_COARSE: 粗目标通过门控
-    TARGET_APPROACH_COARSE --> TARGET_OBSERVATION: 到达安全观察距离
-    TARGET_OBSERVATION --> TARGET_APPROACH_COARSE: 需要横向换观察点
-    SEARCHING_WITH_INITIAL_GOAL --> TARGET_APPROACH_METRIC: 直接得到稳定目标
+    TARGET_APPROACH_COARSE --> TARGET_OBSERVATION: 到达观察位置
+    TARGET_OBSERVATION --> TARGET_APPROACH_COARSE: 更换观察点
+    SEARCHING_WITH_INITIAL_GOAL --> TARGET_APPROACH_METRIC: 直接获得稳定目标
     TARGET_APPROACH_COARSE --> TARGET_APPROACH_METRIC: 目标变稳定
     TARGET_OBSERVATION --> TARGET_APPROACH_METRIC: 目标变稳定
     TARGET_APPROACH_METRIC --> TARGET_REACHED_VIEWPOINT: 完成门控通过
 ```
 
-状态含义:
-
 | 状态 | 通俗说明 |
 |---|---|
-| `WAIT_FOR_ODOM` | 还不知道机器人在哪里 |
-| `STARTUP_OBSERVATION` | 暂不探索, 等地图和视觉评分稳定 |
-| `SEARCHING_WITH_INITIAL_GOAL` | 沿初始方向持续探索未知区域 |
-| `TARGET_APPROACH_COARSE` | 已有两视角粗目标, 先走到安全观察位置 |
-| `TARGET_OBSERVATION` | 面向粗目标等待、局部重捕获或准备换位 |
-| `TARGET_APPROACH_METRIC` | 已有稳定三维目标, 直接规划接近路线 |
-| `TARGET_REACHED_VIEWPOINT` | 完成门控已经通过, 锁定当前位置停止 |
+| `WAIT_FOR_ODOM` | 等待机器人位置 |
+| `STARTUP_OBSERVATION` | 等地图和视觉评分稳定 |
+| `SEARCHING_WITH_INITIAL_GOAL` | 按初始方向探索 |
+| `TARGET_APPROACH_COARSE` | 接近粗目标的安全观察位置 |
+| `TARGET_OBSERVATION` | 面向粗目标观察或换位 |
+| `TARGET_APPROACH_METRIC` | 接近稳定三维目标 |
+| `TARGET_REACHED_VIEWPOINT` | 完成门控通过, 停止任务 |
 
-## 5. 启动观察
+## 4. 启动观察
 
-启动后不立即发送远距离路线, 也不默认原地旋转 360 度
+启动后不会立即发送远距离路线, 也不会默认旋转 360 度
 
 Goal Mux 先等待:
 
-- 预热时间达到 3 s
-- 连续收到足够的原始导航图
-- 连续收到足够的 scored graph
+- 预热约 3 s
+- 连续有效导航图
+- 连续有效 scored graph
 - 图消息没有过期
-- 前方存在足够节点和 Frontier
+- 前方存在可规划节点和 Frontier
 
-前向区域已经可规划时直接进入探索
+前方可规划时直接开始探索
 
-只有连续多帧确认前方不足时, 才依次观察初始方向左侧和右侧的小角度区域, 最后回到初始朝向
+只有连续多帧确认前方不足时, 才左右小角度观察并回到初始朝向
 
-启动观察期间 Planner 只执行同位置观察 Pose, 不创建普通探索分支, 也不累计探索失败时间
+启动观察期间不累计探索失败时间
 
-## 6. 初始方向探索
+## 5. 初始方向如何工作
 
-### 6.1 初始 goal 不是必须走到的固定点
+Goal Mux 根据第一帧 odom 和配置方向生成远距离虚拟 goal
 
-Goal Mux 根据第一帧 odom 和配置方向, 在前方生成一个远距离 goal
+这个 goal 只用于告诉 Planner 主要探索方向, 不是必须踩到的固定坐标
 
-Planner 只使用它确定固定探索方向和前视距离, 机器人前进后会把虚拟 goal 沿同一方向继续向前移动
+机器人前进后, 虚拟 goal 会沿同一方向继续向前移动, 避免旧 goal 落到身后导致掉头
 
-```text
-虚拟 goal = 初始起点 + 固定方向 × 当前前向进度 + 前视距离
+Planner 对每个可达 Frontier 综合考虑:
+
+- 路线是否连通
+- 路线长度和可通行代价
+- 是否重复经过旧边
+- 沿初始方向前进多少
+- 需要回退多少
+- Frontier 视觉分数
+
+virtual goal 只参与候选排序, 不会被追加成穿过 unknown 的执行路径
+
+## 6. 探索状态机
+
+底层仍使用 Dijkstra 计算当前位置到选定节点的最短路径
+
+状态机只决定当前探索哪个方向, 以及什么时候允许回头
+
+```mermaid
+stateDiagram-v2
+    [*] --> FOLLOW_BRANCH
+    FOLLOW_BRANCH --> CHECK_DEAD_END: 路径持续失效或无进展
+    CHECK_DEAD_END --> FOLLOW_BRANCH: 原方向重新出现
+    CHECK_DEAD_END --> CHOOSE_BRANCH: 连续观察后确认死路
+    CHOOSE_BRANCH --> BACKTRACK: 选择最近岔路的未探索方向
+    BACKTRACK --> FOLLOW_BRANCH: 接上新方向的实时 Frontier
+    CHOOSE_BRANCH --> EXPLORATION_EXHAUSTED: 没有未探索方向
+    EXPLORATION_EXHAUSTED --> CHOOSE_BRANCH: 出现新的可达 Frontier
 ```
 
-这样机器人走过最初 30 m 后不会因为固定 goal 落到身后而自动掉头
+| 状态 | 行为 |
+|---|---|
+| `FOLLOW_BRANCH` | 沿当前方向持续前进 |
+| `CHECK_DEAD_END` | 停止换路, 等待连续有效地图确认 |
+| `CHOOSE_BRANCH` | 从岔路记忆中选择未探索方向 |
+| `BACKTRACK` | Dijkstra 沿历史安全图返回岔路并进入新方向 |
+| `EXPLORATION_EXHAUSTED` | 没有已知可达分支, 等待新地图 |
 
-### 6.2 Frontier 如何评分
+## 7. 路线和岔路记忆
 
-对每个可达 Frontier, Planner 计算两部分代价:
+### ActiveBranch
 
-```text
-总代价 = 当前节点到 Frontier owner 的图路径代价
-       + Frontier 指向未知区域的视觉和方向代价
-```
+当前正在执行的走廊
 
-影响选择的主要因素:
+只要路线仍有效并持续有进展, Planner 优先延伸它, 不因附近 Frontier 分数轻微变化立即换路
 
-- 路线是否可达
-- 路线总长度和 traversability cost
-- 是否重复经过已经走过的边
-- Frontier 在初始方向上的前进量
-- 路线需要回退多少距离
-- Frontier 方向与初始方向是否一致
-- WildOS 对对应方向给出的视觉分数
+每次发布新路线后至少保持 2.5 s
 
-Planner 使用 Dijkstra 计算图路径, virtual goal 只用于候选排序, 不会被追加成一条穿过未知区域的可执行直线
+以下情况不需要等待保持时间:
 
-## 7. 三类探索记忆
+- 已提交路径连续确认失效
+- Goal Mux 切换到粗目标或稳定目标
+- 正在恢复的历史分支到达入口后需要接上实时 Frontier
 
-### 7.1 ActiveBranch
+Frontier 位置移动不足 0.75 m 时继续执行原路线, 等累计移动达到门槛后再更新
 
-ActiveBranch 是当前已经提交执行的走廊
+### JunctionRecord
 
-它记录:
+保存发现侧向分支时的图节点和世界位置
 
-- 当前 Frontier UUID 和位置
-- 路线节点 UUID 和路径点
-- 路线尾部方向
-- 开始时间和最近进展时间
-- 已走到的路径段和弧长
+岔路按发现顺序压入栈中, 死路后优先处理最近发现的岔路
 
-新 scored graph 到来时, Planner 优先寻找当前走廊的延伸, 不因为相邻 Frontier 分数轻微变化就立即全局换路
+### BranchRecord
 
-### 7.2 DeferredBranch
+保存岔路处尚未探索的大方向
 
-当前没有选择的其他岔路会记录为 DeferredBranch
+方向按 8 个扇区归并, 身份由“岔路 UUID + 方向扇区”组成
 
-活动路线真正失败后, Planner 可以回到以前记住的岔路, 不需要依赖已经滑出局部地图的 Frontier 仍然存在
+同一方向内 Frontier UUID 变化只更新实时入口, 不创建新的长期分支
 
-### 7.3 FailedBranch
+### FailedBranch
 
-确认失败的走廊会记录位置、方向和失败次数, 并进入冷却
+已经确认失败的走廊
 
-相同 UUID 或空间位置和方向相近的失败走廊会合并, 短时间内不能立即再次选择
+相同位置和方向的失败记录会合并并进入冷却, 避免新 UUID 绕过失败记忆
 
-冷却时间会随连续失败次数增加, 当前基础值为 60 s
+## 8. 如何判断路线有进展
 
-## 8. 如何判断路线是否有进展
+系统检查真实执行路线, 不只看世界坐标某一个方向:
 
-当前实现不只看机器人沿初始方向前进了多少, 而是检查实际提交路径:
-
-- 是否进入了下一段路径
-- 沿路径的累计弧长是否增加
+- 是否进入下一段路径
+- 已走路径弧长是否增加
 - 是否更靠近下一个路点
-- 实际移动方向是否朝向下一段路线
+- 实际移动是否朝向下一段路线
 
-只要其中一项有明确改善, 就刷新进展时间
+任意一项明显改善都会刷新进展时间
 
-这样允许机器人正常绕障或短暂侧移, 不会因为没有严格沿世界坐标直线前进而立刻判定失败
+这样允许正常绕障和短暂侧移
 
-## 9. 路线何时释放
+## 9. 如何限制普通回头
 
-### 9.1 路径持续无进展
+首次选择路线时允许最多 2.0 m 的局部绕行, 避免狭窄区域因第一段短暂向侧后方而无路可走
 
-当前路线先有 20 s 启动宽限, 之后连续 12 s 没有实际进展才释放
+路线开始执行后, 每次普通延伸使用更严格规则:
 
-### 9.2 路径失效
+- 相对当前路线最多新增 1.25 m 回退
+- Frontier 相对机器人最多落后 0.5 m
+- 必须属于当前路线的有序后继, 不能只共享路口附近公共路径
 
-Planner 只检查机器人尚未走过的路线段
+这三个条件只限制普通 continuation
 
-两个节点仍然存在但连接边连续多帧消失时, 才认为路径失效
+只有状态明确进入 `BACKTRACK` 后才允许明显回头
 
-当前要求:
+进入新分支后, 方向基准会切换为岔路处的局部方向, 不再持续使用最初 odom 方向限制整张图
 
-- 至少连续 3 帧
-- 持续至少 1.5 s
+## 10. 什么时候释放路线
 
-节点短暂没有出现在消息里不会直接判定路径失效
+### 无进展
 
-### 9.3 输入不健康时冻结时间
+新路线先有 20 s 启动宽限, 之后连续 12 s 没有进展才释放
 
-以下情况不会继续消耗失败计时:
+### 路径失效
+
+只检查机器人尚未走过的路线段
+
+连接边至少连续 3 帧、持续 1.5 s 消失后才确认路径失效
+
+### 输入异常
+
+以下情况会冻结失败计时:
 
 - graph 过期
 - odom 过期
-- 目标候选证据正在保护
+- 目标候选正在保护
 - Unity 位姿重置正在处理
 
-输入恢复后重新开始连续确认, 避免 DLIO 或构图短暂停顿被误判成死路
+## 11. 死路恢复
 
-## 10. 死路恢复
-
-当活动分支确认失败后:
+路线确认失败后:
 
 1. 记录失败走廊并开始冷却
-2. 先观察约 3 s, 等待新地图和 Frontier
-3. 优先恢复仍可达的历史 DeferredBranch
-4. 如果仍没有前向路线, 分阶段放宽允许回退距离
-5. 最大回退范围受 `dead_end_max_backtrack` 限制
+2. 进入 `CHECK_DEAD_END`, 等待约 3 s 和连续有效地图
+3. 进入 `CHOOSE_BRANCH`, 从岔路栈由近到远查找未探索方向
+4. 进入 `BACKTRACK`, 使用 Dijkstra 生成安全回退路线
+5. 接上新方向的实时 Frontier 后回到 `FOLLOW_BRANCH`
+6. 没有未探索方向时进入 `EXPLORATION_EXHAUSTED`
 
-明显回头应该只发生在确认死路或恢复历史分支时
+普通 Frontier 不能获得恢复权限
 
-## 11. 目标出现后的切换
+短暂空图只暂停规划, 不会清空活动分支和岔路记忆
 
-### 11.1 PENDING 只保护证据, 不接管导航
+## 12. 目标出现后如何切换
 
-第一帧有效 Mask 形成单视角 `PENDING` 后, Goal Mux 启用 3 s 证据保护
+### PENDING
 
-保护期间:
+第一帧有效 Mask 只有方向, 深度仍不确定
 
-- 保持当前探索路线
-- 冻结探索失败计时
-- 不让单视角深度不确定的目标直接成为导航 goal
+系统短暂保护这份证据, 保持当前路线并冻结失败计时, 但不会让单视角目标接管导航
 
-### 11.2 粗目标
+### 粗目标
 
-粗目标需要至少 2 个有效视角、置信度不低于 0.5, 并通过坐标系、高度、距离和水平标准差门控
+粗目标至少需要 2 个独立视角和 0.5 置信度, 同时通过 frame、距离、高度和误差范围检查
 
-机器人不会直接踩到粗目标坐标, 而是在距离目标约 2.75 m 的位置停下并面向目标
+机器人先到目标外约 2.75 m 的观察位置:
 
-观察逻辑:
+1. 面向目标静止约 2 s
+2. 目标丢失时左右约 20 度重捕获
+3. 仍不稳定时横向移动约 0.75 m
+4. 到新位置后继续面向目标观察
 
-1. 对准目标并静止观察 2 s
-2. 目标丢失时, 围绕预测方向左右各约 20 度重捕获
-3. 仍不稳定时, 沿目标切向移动约 0.75 m 形成新视差
-4. 到达新观察点后重新对准观察
+### 稳定目标
 
-### 11.3 稳定目标
+`STABLE_VISION` 或 `LIDAR_LOCKED` 可以进入稳定目标接近
 
-收到 `STABLE_VISION` 或 `LIDAR_LOCKED` 后, Goal Mux 进入 `TARGET_APPROACH_METRIC`, Planner 直接规划到稳定目标附近
+小于 0.3 m 的目标位置变化通常不会反复移动 goal
 
-稳定目标的小幅位置变化低于 0.3 m 时不会反复移动 goal
+当前已知缺口: 到达稳定目标半径后仍可能直接 hold, 还没有完整执行面向目标的最终观察
 
-当前代码会在稳定目标进入 Planner 普通 3.0 m 半径后停止, 但不会自动转入面向目标的最终观察, 这是当前已知缺口
+## 13. 最终完成
 
-## 12. 最终完成门控
+任务完成必须同时满足:
 
-任务完成不能只依赖机器人和目标坐标的距离
-
-必须同时满足:
-
-- WildOS 发布当前近距离视觉到达证据
-- 到达证据没有过期
-- 当前存在稳定融合目标
-- 机器人距离稳定目标不超过配置上限, Unity 当前为 2.0 m
+- 当前有稳定融合目标
+- WildOS 发布近距离视觉到达证据
+- 视觉证据没有过期
+- 机器人与稳定目标距离满足门槛
 
 门控通过后:
 
 1. Goal Mux 锁定完成状态
-2. 持续发布当前位置 hold goal
+2. 发布当前位置停止目标
 3. 发布 `/spot1/object_search_completed=true`
-4. 融合节点收到完成通知后把状态标为 `REACHED`
+4. 融合状态进入 `REACHED`
 
-完成状态是终态, 当前节点生命周期内不会因为后续 Mask 消失重新开始搜索
+只到达估计坐标附近不能直接宣布完成
 
-## 13. 当前运行结论
+## 14. 当前效果和问题
 
-2026-07-22 最近一次完整运行中:
+2026-07-22 长任务中已经确认:
 
-有效部分:
+- 启动观察能够进入前向探索
+- 系统可以持续探索、恢复死路并发现目标
+- 稳定目标接管后约 0.44 s 发布路径
+- 主链路没有规划器崩溃
 
-- 启动观察约 8.3 s 后正常进入前向探索
-- 全程没有 Unity 重置和 Planner 错误
-- 能够持续探索、恢复死路并最终发现目标
-- 稳定目标接管后约 0.44 s 发布目标路径
+2026-07-23 已完成代码改进:
 
-仍然存在的问题:
+- 普通延伸限制新增回退和负向终点
+- 路线增加 2.5 s 最短保持时间
+- 小于 0.75 m 的 Frontier 移动不再重新发布路线
+- 增加五个明确的探索状态
+- 使用 `JunctionRecord`、`BranchRecord` 和 `ExplorationMemory` 保存岔路
+- 未探索方向按岔路和方向扇区归并, 不依赖单个 Frontier UUID
+- 只有 `BACKTRACK` 可以绕过普通回退限制
+- 短暂空图不会清空活动路线
+- 恢复新分支后使用岔路处的局部方向
+- 30 s 日志汇总路线变化、保持、负向拒绝、恢复和释放原因
 
-- 9 次活动分支释放, 其中 6 次无进展、3 次路径失效
-- 19 次候选路线前进量为负
-- 局部 60 s 内出现 35 次路线变化
-- 普通 `continuation` 仍可能把后方候选当作当前走廊延伸
-- 到达稳定目标半径后直接 hold, 最终没有进入 `REACHED`
+24 项 C++ 探索路线测试通过
 
-因此当前搜索链路能够完成“探索并到达目标估计附近”, 但路线稳定性和最终确认闭环仍未通过验收
+收到新的完整运行日志后需要检查:
 
-下一轮修改计划记录在 `docs/2026-07-22/2026-07-22-follow-up-todo.md`
+- 普通路线实际回头次数是否下降
+- 路线切换频率是否下降
+- 狭窄区域的必要绕障是否被误拦截
+- 小范围 Frontier 合并是否导致旧终点停留过久
+- `BACKTRACK` 是否只在死路确认后出现
 
-## 14. 关键参数
+详细 TODO 见 `docs/2026-07-23/2026-07-23-todo.md`
 
-Planner 参数位于 `graphnav_planner/config/planner.yaml`
+## 15. 关键参数
 
 | 参数 | 当前值 | 含义 |
 |---|---:|---|
-| `frontier_progress_start_grace` | 20 s | 新路线开始后的进展宽限 |
-| `frontier_progress_timeout` | 12 s | 连续无进展释放时间 |
-| `directional_min_forward_progress` | 0.5 m | 初始前向候选最低进展 |
-| `directional_max_initial_backtrack` | 2.0 m | 初始候选最大允许回退 |
+| `frontier_progress_start_grace` | 20 s | 新路线起步宽限 |
+| `frontier_progress_timeout` | 12 s | 无进展释放时间 |
+| `directional_min_forward_progress` | 0.5 m | 前向候选最低进展 |
+| `directional_max_initial_backtrack` | 2.0 m | 初始路线最大回退 |
+| `directional_max_continuation_backtrack` | 1.25 m | 普通延伸允许新增的最大回退 |
+| `directional_min_continuation_progress` | -0.5 m | 普通延伸终点允许落后机器人的范围 |
+| `frontier_route_hold_duration` | 2.5 s | 路线更新后的最短保持时间 |
+| `frontier_min_update_distance` | 0.75 m | Frontier 小变化合并距离 |
 | `frontier_failure_cooldown` | 60 s | 失败走廊基础冷却 |
+| `branch_recovery_cost_penalty` | 3.0 | 历史分支恢复附加代价 |
 | `path_invalid_confirm_duration` | 1.5 s | 路径失效持续时间 |
 | `path_invalid_confirm_frames` | 3 | 路径失效连续帧数 |
-| `recovery_observe_duration` | 3.0 s | 死路恢复前观察时间 |
+| `recovery_observe_duration` | 3.0 s | 恢复前观察时间 |
 | `goal_radius` | 3.0 m | 稳定目标 Planner 半径 |
 | `coarse_goal_radius` | 0.75 m | 粗目标观察位姿到达半径 |
 
-Goal Mux 参数位于 `visual_navigation/configs/object_search_goal_mux.yaml`
+## 16. 低频诊断日志
 
-## 15. 代码入口
+每 30 s 输出一次探索路线统计:
+
+```text
+探索路线统计, 分支变化=..., 正常延伸=..., 小变化保持=...,
+负向延伸拒绝=..., 恢复=历史.../方向.../死路...,
+释放=路径失效.../无进展..., 状态切换=...
+```
+
+判断方式:
+
+- `小变化保持` 增加且 `分支变化` 下降, 说明抑制 Frontier 抖动有效
+- `负向延伸拒绝` 很高且经常无路, 说明 1.25 m 可能过严
+- `状态切换` 和状态原因用于确认回头前是否进入 `BACKTRACK`
+- `路径失效` 或 `无进展` 持续很高, 需要继续检查地图或路线质量
+
+## 17. 代码入口
 
 - `visual_navigation/visual_navigation/object_search_goal_mux.py`
 - `visual_navigation/configs/object_search_goal_mux.yaml`
 - `graphnav_planner/src/planner.cpp`
-- `graphnav_planner/src/planner_node.cpp`
 - `graphnav_planner/config/planner.yaml`
 - `visual_navigation/visual_navigation/wildos/nav.py`

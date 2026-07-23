@@ -110,8 +110,8 @@ if(BUILD_TESTING)
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
 
-  ament_add_gtest(test_deferred_branch test/test_deferred_branch.cpp)
-  target_link_libraries(test_deferred_branch graphnav_planner_component)
+  ament_add_gtest(test_exploration_state test/test_exploration_state.cpp)
+  target_link_libraries(test_exploration_state graphnav_planner_component)
 endif()
 
 ament_package()

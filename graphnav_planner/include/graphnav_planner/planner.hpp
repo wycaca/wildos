@@ -224,11 +224,33 @@ private:
 class Planner
 {
 public:
+  enum class ExplorationState
+  {
+    follow_branch,
+    check_dead_end,
+    backtrack,
+    choose_branch,
+    exploration_exhausted,
+  };
 
   struct PlanningResult
   {
     std::vector<Eigen::Vector3d> path;
     bool path_changed;
+  };
+
+  struct ExplorationDiagnostics
+  {
+    size_t route_changes = 0;
+    size_t continuation_updates = 0;
+    size_t held_updates = 0;
+    size_t negative_extension_rejections = 0;
+    size_t branch_recoveries = 0;
+    size_t directional_recoveries = 0;
+    size_t dead_end_recoveries = 0;
+    size_t invalid_path_releases = 0;
+    size_t stalled_releases = 0;
+    size_t state_transitions = 0;
   };
 
   Planner(rclcpp::Logger logger);
@@ -238,7 +260,9 @@ public:
     const Eigen::Vector3d& direction,
     double lookahead_distance);
   bool has_directional_exploration() const;
+  ExplorationState exploration_state() const;
   void reset_exploration_state();
+  ExplorationDiagnostics take_exploration_diagnostics();
 
   void update_graph(graphnav_msgs::msg::NavigationGraph::ConstSharedPtr graph);
   PlanningResult plan_to_goal(
@@ -279,16 +303,35 @@ private:
     std::vector<std::string> path_node_uuids;
     std::vector<Eigen::Vector3d> path_points;
     std::optional<Eigen::Vector3d> terminal_direction;
-    bool recovering_deferred;
+    bool recovering_branch;
     double backtrack_limit;
+    double directional_backtrack;
+    rclcpp::Time route_change_time;
   };
 
-  struct DeferredBranch
+  struct BranchRecord
   {
+    std::string junction_uuid;
+    Eigen::Vector3d junction_position;
     std::string node_uuid;
     Eigen::Vector3d position;
     Eigen::Vector3d discovery_direction;
+    int direction_sector;
     std::uint64_t discovery_order;
+  };
+
+  struct JunctionRecord
+  {
+    std::string node_uuid;
+    Eigen::Vector3d position;
+    std::vector<std::string> branch_keys;
+  };
+
+  struct ExplorationMemory
+  {
+    std::vector<std::string> junction_stack;
+    std::unordered_map<std::string, JunctionRecord> junctions;
+    std::unordered_map<std::string, BranchRecord> untried_branches;
   };
 
   struct FailedBranch
@@ -314,7 +357,8 @@ private:
     double directional_alignment;
     double frontier_cost;
     double total_cost;
-    bool is_deferred;
+    std::uint64_t recovery_order;
+    bool is_recovery_branch;
   };
 
   enum class BranchRelation
@@ -323,7 +367,7 @@ private:
     same_frontier,
     ordered_extension,
     spatial_migration,
-    deferred_handoff,
+    recovery_handoff,
   };
 
   using NodeIdsByUuid = std::unordered_map<std::string, graaf::vertex_id_t>;
@@ -340,28 +384,38 @@ private:
   std::optional<DirectionalExploration> directional_exploration_;
   std::optional<rclcpp::Time> directional_blocked_since_;
   bool directional_alternatives_allowed_ = false;
+  ExplorationState exploration_state_ = ExplorationState::follow_branch;
+  std::optional<rclcpp::Time> exploration_state_since_;
   std::optional<ActiveBranch> active_branch_;
-  std::unordered_map<std::string, DeferredBranch> deferred_branches_;
-  std::uint64_t next_deferred_branch_order_ = 0;
+  ExplorationMemory exploration_memory_;
+  std::uint64_t next_branch_order_ = 0;
   std::vector<FailedBranch> failed_branches_;
   std::optional<rclcpp::Time> path_invalid_since_;
   size_t path_invalid_frames_ = 0;
-  std::optional<rclcpp::Time> recovery_observe_since_;
-  size_t recovery_log_stage_ = 0;
   std::optional<std::string> last_current_node_uuid_;
   std::unordered_set<std::string> traversed_edges_;
   std::vector<std::string> direct_path_node_uuids_;
   std::vector<Eigen::Vector3d> direct_path_points_;
+  ExplorationDiagnostics exploration_diagnostics_;
 
   std::unordered_map<graaf::vertex_id_t, std::pair<graphnav_msgs::msg::Node, std::pair<double, double>>> frontier_scores_;
 
   void update_traversal_memory(const graphnav_msgs::msg::NavigationGraph& graph);
   void reset_frontier_branch();
-  void clear_deferred_branches();
-  void remember_deferred_branch(
+  void clear_untried_branches();
+  void remember_untried_branch(
+    const std::string& junction_uuid,
+    const Eigen::Vector3d& junction_position,
     const std::string& node_uuid,
     const Eigen::Vector3d& position,
     const Eigen::Vector3d& direction);
+  std::optional<BranchRecord> untried_branch_for_candidate(
+    const FrontierCandidate& candidate) const;
+  void erase_untried_branch(const FrontierCandidate& candidate);
+  void set_exploration_state(
+    ExplorationState state,
+    rclcpp::Time current_time,
+    const char* reason);
   void update_active_branch_progress(
     const Eigen::Vector3d& current_position,
     rclcpp::Time current_time);
@@ -385,6 +439,10 @@ private:
     BranchRelation relation,
     const Eigen::Vector3d& current_position,
     rclcpp::Time current_time);
+  bool should_hold_route_update(
+    const FrontierCandidate& candidate,
+    BranchRelation relation,
+    rclcpp::Time current_time) const;
   static std::string stable_edge_key(
     const graphnav_msgs::msg::UUID& from_uuid,
     const graphnav_msgs::msg::UUID& to_uuid);
@@ -398,16 +456,17 @@ public:
   double frontier_progress_start_grace_ = 20.0;
   double directional_min_forward_progress_ = 0.5;
   double directional_max_initial_backtrack_ = 2.0;
+  double directional_max_continuation_backtrack_ = 1.25;
+  double directional_min_continuation_progress_ = -0.5;
   double directional_block_confirm_timeout_ = 5.0;
+  double frontier_route_hold_duration_ = 2.5;
+  double frontier_min_update_distance_ = 0.75;
   double frontier_failure_cooldown_ = 60.0;
   double frontier_failure_merge_radius_ = 2.5;
   double path_invalid_confirm_duration_ = 1.5;
   size_t path_invalid_confirm_frames_ = 3;
   double recovery_observe_duration_ = 3.0;
-  double dead_end_backtrack_step_ = 2.0;
-  double dead_end_backtrack_step_duration_ = 5.0;
-  double dead_end_max_backtrack_ = 10.0;
-  double deferred_branch_cost_penalty_ = 3.0;
+  double branch_recovery_cost_penalty_ = 3.0;
   double revisit_cost_factor_ = 1.0;
 
   visualization_msgs::msg::MarkerArray get_score_visualization(const rclcpp::Time& stamp, std::string frame_id, bool with_id_text = false) const;

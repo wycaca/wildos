@@ -40,16 +40,17 @@ public:
     this->declare_parameter("frontier_progress_start_grace", 20.0);
     this->declare_parameter("directional_min_forward_progress", 0.5);
     this->declare_parameter("directional_max_initial_backtrack", 2.0);
+    this->declare_parameter("directional_max_continuation_backtrack", 1.25);
+    this->declare_parameter("directional_min_continuation_progress", -0.5);
     this->declare_parameter("directional_block_confirm_timeout", 5.0);
+    this->declare_parameter("frontier_route_hold_duration", 2.5);
+    this->declare_parameter("frontier_min_update_distance", 0.75);
     this->declare_parameter("frontier_failure_cooldown", 60.0);
     this->declare_parameter("frontier_failure_merge_radius", 2.5);
     this->declare_parameter("path_invalid_confirm_duration", 1.5);
     this->declare_parameter("path_invalid_confirm_frames", 3);
     this->declare_parameter("recovery_observe_duration", 3.0);
-    this->declare_parameter("dead_end_backtrack_step", 2.0);
-    this->declare_parameter("dead_end_backtrack_step_duration", 5.0);
-    this->declare_parameter("dead_end_max_backtrack", 10.0);
-    this->declare_parameter("deferred_branch_cost_penalty", 3.0);
+    this->declare_parameter("branch_recovery_cost_penalty", 3.0);
     this->declare_parameter("revisit_cost_factor", 1.0);
     this->declare_parameter("max_graph_age_sec", 2.0);
     this->declare_parameter("max_odom_age_sec", 1.0);
@@ -76,8 +77,16 @@ public:
       nonnegative_parameter("directional_min_forward_progress");
     planner_.directional_max_initial_backtrack_ =
       nonnegative_parameter("directional_max_initial_backtrack");
+    planner_.directional_max_continuation_backtrack_ =
+      nonnegative_parameter("directional_max_continuation_backtrack");
+    planner_.directional_min_continuation_progress_ =
+      this->get_parameter("directional_min_continuation_progress").as_double();
     planner_.directional_block_confirm_timeout_ =
       nonnegative_parameter("directional_block_confirm_timeout");
+    planner_.frontier_route_hold_duration_ =
+      nonnegative_parameter("frontier_route_hold_duration");
+    planner_.frontier_min_update_distance_ =
+      nonnegative_parameter("frontier_min_update_distance");
     planner_.frontier_failure_cooldown_ =
       nonnegative_parameter("frontier_failure_cooldown");
     planner_.frontier_failure_merge_radius_ =
@@ -94,14 +103,8 @@ public:
       static_cast<size_t>(invalid_confirm_frames);
     planner_.recovery_observe_duration_ =
       nonnegative_parameter("recovery_observe_duration");
-    planner_.dead_end_backtrack_step_ =
-      nonnegative_parameter("dead_end_backtrack_step");
-    planner_.dead_end_backtrack_step_duration_ =
-      nonnegative_parameter("dead_end_backtrack_step_duration");
-    planner_.dead_end_max_backtrack_ =
-      nonnegative_parameter("dead_end_max_backtrack");
-    planner_.deferred_branch_cost_penalty_ =
-      nonnegative_parameter("deferred_branch_cost_penalty");
+    planner_.branch_recovery_cost_penalty_ =
+      nonnegative_parameter("branch_recovery_cost_penalty");
     planner_.revisit_cost_factor_ = nonnegative_parameter("revisit_cost_factor");
     max_graph_age_sec_ = nonnegative_parameter("max_graph_age_sec");
     max_odom_age_sec_ = nonnegative_parameter("max_odom_age_sec");
@@ -590,6 +593,7 @@ private:
       samples.size() - 1);
     const double average = std::accumulate(samples.begin(), samples.end(), 0.0) / samples.size();
     const double rate = planning_calls_ / diagnostics_log_period_sec_;
+    const auto exploration = planner_.take_exploration_diagnostics();
     RCLCPP_INFO(
       this->get_logger(),
       "路径规划性能, 频率=%.2fHz, 规划耗时=平均%.1f/95%%上限%.1f/最大%.1fms, "
@@ -601,6 +605,21 @@ private:
       path_changes_,
       empty_paths_,
       manual_reset_events_);
+    RCLCPP_INFO(
+      this->get_logger(),
+      "探索路线统计, 分支变化=%zu, 正常延伸=%zu, 小变化保持=%zu, "
+      "负向延伸拒绝=%zu, 恢复=历史%zu/方向%zu/死路%zu, "
+      "释放=路径失效%zu/无进展%zu, 状态切换=%zu",
+      exploration.route_changes,
+      exploration.continuation_updates,
+      exploration.held_updates,
+      exploration.negative_extension_rejections,
+      exploration.branch_recoveries,
+      exploration.directional_recoveries,
+      exploration.dead_end_recoveries,
+      exploration.invalid_path_releases,
+      exploration.stalled_releases,
+      exploration.state_transitions);
     planning_timings_ms_.clear();
     planning_calls_ = 0;
     path_changes_ = 0;

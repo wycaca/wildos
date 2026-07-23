@@ -62,6 +62,20 @@ graphnav_msgs::msg::NavigationGraph::SharedPtr make_opposite_branch_graph(
   return graph;
 }
 
+graphnav_msgs::msg::NavigationGraph::SharedPtr make_single_forward_graph(
+  bool frontier_active)
+{
+  auto graph = std::make_shared<graphnav_msgs::msg::NavigationGraph>();
+  graph->trav_classes = {"default"};
+  graph->nodes = {
+    make_node(1, 0.0, 0.0, false),
+    make_node(2, 5.0, 0.0, frontier_active),
+  };
+  graph->edges = {make_edge(0, 1)};
+  graph->current_node_idx = 0;
+  return graph;
+}
+
 graphnav_msgs::msg::NavigationGraph::SharedPtr make_forward_detour_graph()
 {
   auto graph = std::make_shared<graphnav_msgs::msg::NavigationGraph>();
@@ -156,16 +170,36 @@ graphnav_msgs::msg::NavigationGraph::SharedPtr make_invalid_forward_path_graph()
   return graph;
 }
 
-graphnav_msgs::msg::NavigationGraph::SharedPtr make_migrated_frontier_graph()
+graphnav_msgs::msg::NavigationGraph::SharedPtr make_migrated_frontier_graph(
+  double frontier_x = 6.0)
 {
   auto graph = std::make_shared<graphnav_msgs::msg::NavigationGraph>();
   graph->trav_classes = {"default"};
   graph->nodes = {
     make_node(1, 0.0, 0.0, false),
     make_node(3, -5.0, 0.0, true),
-    make_node(4, 6.0, 0.0, true),
+    make_node(4, frontier_x, 0.0, true),
   };
   graph->edges = {make_edge(0, 1), make_edge(0, 2)};
+  graph->current_node_idx = 0;
+  return graph;
+}
+
+graphnav_msgs::msg::NavigationGraph::SharedPtr make_negative_extension_graph()
+{
+  auto graph = std::make_shared<graphnav_msgs::msg::NavigationGraph>();
+  graph->trav_classes = {"default"};
+  graph->nodes = {
+    make_node(2, 5.0, 0.0, false),
+    make_node(4, 6.0, 0.0, false),
+    make_node(5, 4.0, 0.0, false),
+    make_node(6, 10.0, 0.0, true),
+  };
+  graph->edges = {
+    make_edge(0, 1, 1.0),
+    make_edge(1, 2, 1.0),
+    make_edge(2, 3, 1.0),
+  };
   graph->current_node_idx = 0;
   return graph;
 }
@@ -197,7 +231,7 @@ graphnav_msgs::msg::NavigationGraph::SharedPtr make_failed_alias_graph()
   return graph;
 }
 
-graphnav_msgs::msg::NavigationGraph::SharedPtr make_deferred_handoff_graph()
+graphnav_msgs::msg::NavigationGraph::SharedPtr make_recovery_handoff_graph()
 {
   auto graph = std::make_shared<graphnav_msgs::msg::NavigationGraph>();
   graph->trav_classes = {"default"};
@@ -228,7 +262,7 @@ graphnav_msgs::msg::NavigationGraph::SharedPtr make_direct_goal_graph(
 
 Planner make_planner()
 {
-  Planner planner(rclcpp::get_logger("test_deferred_branch"));
+  Planner planner(rclcpp::get_logger("test_exploration_state"));
   planner.set_trav_class("default");
   planner.frontier_continuity_radius_ = 5.0;
   planner.frontier_progress_timeout_ = 12.0;
@@ -604,7 +638,7 @@ TEST(CommittedBranch, FailedCorridorsSuppressNearbyUuidAliases)
   EXPECT_TRUE(exhausted.path.empty());
 }
 
-TEST(CommittedBranch, DeferredHandoffRebuildsPathWithoutReturningToOldTail)
+TEST(CommittedBranch, RecoveryHandoffRebuildsPathWithoutReturningToOldTail)
 {
   Planner planner = make_planner();
   Eigen::Vector3d goal(30.0, 0.0, 0.0);
@@ -625,7 +659,7 @@ TEST(CommittedBranch, DeferredHandoffRebuildsPathWithoutReturningToOldTail)
     rclcpp::Time(29, 0, RCL_ROS_TIME),
     Eigen::Vector3d::Zero()).path_changed);
 
-  planner.update_graph(make_deferred_handoff_graph());
+  planner.update_graph(make_recovery_handoff_graph());
   const auto handoff = planner.plan_to_goal(
     goal,
     3.0,
@@ -652,11 +686,84 @@ TEST(CommittedBranch, AllowsForwardSpatialMigrationAfterUuidDisappears)
   const auto migrated = planner.plan_to_goal(
     goal,
     3.0,
-    rclcpp::Time(2, 0, RCL_ROS_TIME),
+    rclcpp::Time(3, 0, RCL_ROS_TIME),
     Eigen::Vector3d(1.0, 0.0, 0.0));
   EXPECT_TRUE(migrated.path_changed);
   ASSERT_FALSE(migrated.path.empty());
   EXPECT_DOUBLE_EQ(migrated.path.back().x(), 6.0);
+}
+
+TEST(CommittedBranch, HoldsForwardMigrationDuringMinimumDuration)
+{
+  Planner planner = make_planner();
+  Eigen::Vector3d goal(30.0, 0.0, 0.0);
+  planner.update_graph(make_opposite_branch_graph(true));
+  ASSERT_TRUE(planner.plan_to_goal(
+    goal,
+    3.0,
+    rclcpp::Time(0, 0, RCL_ROS_TIME),
+    Eigen::Vector3d::Zero()).path_changed);
+
+  planner.update_graph(make_migrated_frontier_graph());
+  const auto held = planner.plan_to_goal(
+    goal,
+    3.0,
+    rclcpp::Time(1, 0, RCL_ROS_TIME),
+    Eigen::Vector3d(1.0, 0.0, 0.0));
+
+  EXPECT_FALSE(held.path_changed);
+  ASSERT_FALSE(held.path.empty());
+  EXPECT_DOUBLE_EQ(held.path.back().x(), 5.0);
+  EXPECT_EQ(planner.take_exploration_diagnostics().held_updates, 1U);
+}
+
+TEST(CommittedBranch, CoalescesSmallFrontierMigrationAfterHold)
+{
+  Planner planner = make_planner();
+  Eigen::Vector3d goal(30.0, 0.0, 0.0);
+  planner.update_graph(make_opposite_branch_graph(true));
+  ASSERT_TRUE(planner.plan_to_goal(
+    goal,
+    3.0,
+    rclcpp::Time(0, 0, RCL_ROS_TIME),
+    Eigen::Vector3d::Zero()).path_changed);
+
+  planner.update_graph(make_migrated_frontier_graph(5.5));
+  const auto held = planner.plan_to_goal(
+    goal,
+    3.0,
+    rclcpp::Time(3, 0, RCL_ROS_TIME),
+    Eigen::Vector3d(1.0, 0.0, 0.0));
+
+  EXPECT_FALSE(held.path_changed);
+  ASSERT_FALSE(held.path.empty());
+  EXPECT_DOUBLE_EQ(held.path.back().x(), 5.0);
+}
+
+TEST(CommittedBranch, RejectsNewBacktrackDuringNormalContinuation)
+{
+  Planner planner = make_planner();
+  Eigen::Vector3d goal(30.0, 0.0, 0.0);
+  planner.update_graph(make_opposite_branch_graph(true));
+  ASSERT_TRUE(planner.plan_to_goal(
+    goal,
+    3.0,
+    rclcpp::Time(0, 0, RCL_ROS_TIME),
+    Eigen::Vector3d::Zero()).path_changed);
+
+  planner.update_graph(make_negative_extension_graph());
+  const auto retained = planner.plan_to_goal(
+    goal,
+    3.0,
+    rclcpp::Time(5, 0, RCL_ROS_TIME),
+    Eigen::Vector3d(5.5, 0.0, 0.0));
+
+  EXPECT_FALSE(retained.path_changed);
+  ASSERT_FALSE(retained.path.empty());
+  EXPECT_DOUBLE_EQ(retained.path.back().x(), 5.0);
+  EXPECT_GT(
+    planner.take_exploration_diagnostics().negative_extension_rejections,
+    0U);
 }
 
 TEST(CommittedBranch, RejectsBackwardSpatialMigrationWithinContinuityRadius)
@@ -679,6 +786,138 @@ TEST(CommittedBranch, RejectsBackwardSpatialMigrationWithinContinuityRadius)
   EXPECT_FALSE(retained.path_changed);
   ASSERT_FALSE(retained.path.empty());
   EXPECT_DOUBLE_EQ(retained.path.back().x(), 5.0);
+}
+
+TEST(ExplorationState, ConfirmsDeadEndBeforeBacktracking)
+{
+  Planner planner = make_planner();
+  Eigen::Vector3d goal(30.0, 0.0, 0.0);
+  planner.update_graph(make_opposite_branch_graph(true));
+  ASSERT_TRUE(planner.plan_to_goal(
+    goal,
+    3.0,
+    rclcpp::Time(0, 0, RCL_ROS_TIME),
+    Eigen::Vector3d::Zero()).path_changed);
+  EXPECT_EQ(
+    planner.exploration_state(),
+    Planner::ExplorationState::follow_branch);
+
+  const auto checking = planner.plan_to_goal(
+    goal,
+    3.0,
+    rclcpp::Time(21, 0, RCL_ROS_TIME),
+    Eigen::Vector3d::Zero());
+  EXPECT_TRUE(checking.path_changed);
+  EXPECT_TRUE(checking.path.empty());
+  EXPECT_EQ(
+    planner.exploration_state(),
+    Planner::ExplorationState::check_dead_end);
+
+  const auto backtracking = planner.plan_to_goal(
+    goal,
+    3.0,
+    rclcpp::Time(24, 0, RCL_ROS_TIME),
+    Eigen::Vector3d::Zero());
+  EXPECT_TRUE(backtracking.path_changed);
+  EXPECT_FALSE(backtracking.path.empty());
+  EXPECT_EQ(
+    planner.exploration_state(),
+    Planner::ExplorationState::backtrack);
+
+  planner.update_graph(make_recovery_handoff_graph());
+  planner.plan_to_goal(
+    goal,
+    3.0,
+    rclcpp::Time(25, 0, RCL_ROS_TIME),
+    Eigen::Vector3d::Zero());
+  EXPECT_EQ(
+    planner.exploration_state(),
+    Planner::ExplorationState::follow_branch);
+}
+
+TEST(ExplorationState, EntersExhaustedWhenNoBranchRemains)
+{
+  Planner planner = make_planner();
+  Eigen::Vector3d goal(30.0, 0.0, 0.0);
+  planner.update_graph(make_single_forward_graph(true));
+  ASSERT_TRUE(planner.plan_to_goal(
+    goal,
+    3.0,
+    rclcpp::Time(0, 0, RCL_ROS_TIME),
+    Eigen::Vector3d::Zero()).path_changed);
+
+  planner.plan_to_goal(
+    goal,
+    3.0,
+    rclcpp::Time(21, 0, RCL_ROS_TIME),
+    Eigen::Vector3d::Zero());
+  const auto exhausted = planner.plan_to_goal(
+    goal,
+    3.0,
+    rclcpp::Time(24, 0, RCL_ROS_TIME),
+    Eigen::Vector3d::Zero());
+
+  EXPECT_FALSE(exhausted.path_changed);
+  EXPECT_TRUE(exhausted.path.empty());
+  EXPECT_EQ(
+    planner.exploration_state(),
+    Planner::ExplorationState::exploration_exhausted);
+}
+
+TEST(ExplorationState, EmptyGraphDoesNotClearActiveBranch)
+{
+  Planner planner = make_planner();
+  Eigen::Vector3d goal(30.0, 0.0, 0.0);
+  planner.update_graph(make_opposite_branch_graph(true));
+  ASSERT_TRUE(planner.plan_to_goal(
+    goal,
+    3.0,
+    rclcpp::Time(0, 0, RCL_ROS_TIME),
+    Eigen::Vector3d::Zero()).path_changed);
+
+  auto empty_graph =
+    std::make_shared<graphnav_msgs::msg::NavigationGraph>();
+  empty_graph->trav_classes = {"default"};
+  planner.update_graph(empty_graph);
+  EXPECT_EQ(
+    planner.exploration_state(),
+    Planner::ExplorationState::follow_branch);
+
+  planner.update_graph(make_opposite_branch_graph(true));
+  const auto resumed = planner.plan_to_goal(
+    goal,
+    3.0,
+    rclcpp::Time(2, 0, RCL_ROS_TIME),
+    Eigen::Vector3d::Zero());
+  EXPECT_FALSE(resumed.path_changed);
+  EXPECT_FALSE(resumed.path.empty());
+}
+
+TEST(ExplorationState, ExplicitResetClearsRecoveryState)
+{
+  Planner planner = make_planner();
+  Eigen::Vector3d goal(30.0, 0.0, 0.0);
+  planner.update_graph(make_opposite_branch_graph(true));
+  ASSERT_TRUE(planner.plan_to_goal(
+    goal,
+    3.0,
+    rclcpp::Time(0, 0, RCL_ROS_TIME),
+    Eigen::Vector3d::Zero()).path_changed);
+  planner.plan_to_goal(
+    goal,
+    3.0,
+    rclcpp::Time(21, 0, RCL_ROS_TIME),
+    Eigen::Vector3d::Zero());
+  EXPECT_EQ(
+    planner.exploration_state(),
+    Planner::ExplorationState::check_dead_end);
+
+  planner.reset_exploration_state();
+
+  EXPECT_EQ(
+    planner.exploration_state(),
+    Planner::ExplorationState::follow_branch);
+  EXPECT_FALSE(planner.has_directional_exploration());
 }
 
 TEST(CommittedBranch, SuppressesDirectGoalPathWhenOnlyTraversedPrefixChanges)
