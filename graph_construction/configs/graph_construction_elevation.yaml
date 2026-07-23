@@ -19,15 +19,16 @@ grid_map_fill_hole_min_free_neighbor_ratio: 0.65
 grid_map_fill_elevation_radius_cells: 5
 
 # 用周边地面修补机器人可占用的脚下雷达盲区
-robot_blind_zone_radius: 1.2
+robot_blind_zone_radius: 4.0
 robot_blind_zone_elevation_search_radius: 6.0
 robot_ground_height_offset: 0.22
 robot_ground_elevation_tolerance: 0.5
+robot_blind_zone_initial_only: true
 
 # 仅保留偏离 GraphBuilderConfig 稳定默认值的调优项
 sample_stride: 6
-min_obstacle_clearance: 0.3
-edge_radius: 6.0
+min_obstacle_clearance: 0.5
+edge_radius: 8.0
 max_edge_neighbors: 4
 current_node_max_edge_neighbors: 12
 max_edge_candidates_per_node: 24

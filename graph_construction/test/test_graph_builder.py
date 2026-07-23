@@ -10,6 +10,14 @@ from graph_construction.grid_types import ClassifiedGrid
 from graph_construction.grid_types import distance_to_mask
 
 
+def test_graph_builder_defaults_match_paper_geometry():
+    """默认几何净空和连边半径应与论文参数一致"""
+    config = GraphBuilderConfig()
+
+    assert config.min_obstacle_clearance == 0.5
+    assert config.edge_radius == 8.0
+
+
 def test_unknown_distance_field_treats_grid_exterior_as_unknown():
     """局部地图没有 unknown cell 时, 地图外部仍提供有限未知距离"""
     unknown = np.zeros((5, 5), dtype=bool)
@@ -517,7 +525,7 @@ def test_graph_builder_repairs_robot_blind_zone_from_nearby_ground():
 
 
 def test_default_blind_zone_repairs_ground_out_to_1_2_metres():
-    """验证默认盲区半径覆盖 1.2 m 且不向外扩张"""
+    """验证默认盲区修补覆盖配置范围且不向外扩张"""
     resolution = 0.2
     size = 21
     center = 10
@@ -552,6 +560,107 @@ def test_default_blind_zone_repairs_ground_out_to_1_2_metres():
     assert result.classified_grid.is_free_index(center + 5, center)
     assert result.classified_grid.is_free_index(center, center + 5)
     assert result.classified_grid.stats["robot_blind_zone_status"] == "repaired"
+
+
+def test_blind_zone_repair_only_runs_during_initialization():
+    """初始化完成后不能在机器人新位置继续填充 unknown"""
+
+    def make_grid() -> ClassifiedGrid:
+        """构造两个相互分离的脚下 unknown 区域"""
+        free = np.ones((9, 17), dtype=bool)
+        unknown = np.zeros((9, 17), dtype=bool)
+        elevation = np.zeros((9, 17), dtype=float)
+        unknown[3:6, 2:5] = True
+        unknown[3:6, 12:15] = True
+        free[unknown] = False
+        elevation[unknown] = np.nan
+        return ClassifiedGrid(
+            width=17,
+            height=9,
+            resolution=0.5,
+            origin_x=0.0,
+            origin_y=0.0,
+            frame_id="map",
+            free=free,
+            obstacle=np.zeros((9, 17), dtype=bool),
+            unknown=unknown,
+            elevation=elevation,
+            stats={},
+        )
+
+    builder = SparseGraphBuilder(
+        GraphBuilderConfig(
+            robot_blind_zone_radius=0.8,
+            robot_blind_zone_elevation_search_radius=2.0,
+            min_obstacle_clearance=0.0,
+        )
+    )
+    first = builder.update(
+        make_grid(),
+        robot_position=(1.75, 2.25, 0.22),
+        stamp_seconds=1.0,
+    )
+    second = builder.update(
+        make_grid(),
+        robot_position=(6.75, 2.25, 0.22),
+        stamp_seconds=2.0,
+    )
+
+    first_center = first.classified_grid.world_to_grid(1.75, 2.25)
+    second_center = second.classified_grid.world_to_grid(6.75, 2.25)
+    assert first_center is not None
+    assert second_center is not None
+    assert first.classified_grid.is_free_index(*first_center)
+    assert second.classified_grid.is_unknown_index(*second_center)
+    assert second.classified_grid.stats["robot_blind_zone_filled"] == 0
+    assert (
+        second.classified_grid.stats["robot_blind_zone_status"]
+        == "initial_only_complete"
+    )
+
+
+def test_artificial_initial_free_does_not_count_as_sensor_new_free():
+    """初始化人工 free 不得触发旧节点局部重连"""
+    free = np.ones((9, 9), dtype=bool)
+    unknown = np.zeros((9, 9), dtype=bool)
+    elevation = np.zeros((9, 9), dtype=float)
+    unknown[3:6, 3:6] = True
+    free[unknown] = False
+    elevation[unknown] = np.nan
+    grid = ClassifiedGrid(
+        width=9,
+        height=9,
+        resolution=0.5,
+        origin_x=0.0,
+        origin_y=0.0,
+        frame_id="map",
+        free=free,
+        obstacle=np.zeros((9, 9), dtype=bool),
+        unknown=unknown,
+        elevation=elevation,
+        stats={},
+    )
+    builder = SparseGraphBuilder(
+        GraphBuilderConfig(
+            robot_blind_zone_radius=0.8,
+            robot_blind_zone_elevation_search_radius=2.0,
+            min_obstacle_clearance=0.0,
+        )
+    )
+
+    result = builder.update(
+        grid,
+        robot_position=(2.25, 2.25, 0.22),
+        stamp_seconds=1.0,
+    )
+
+    artificial_count = result.classified_grid.stats[
+        "robot_blind_zone_artificial_free"
+    ]
+    assert artificial_count > 0
+    assert result.stats.newly_free_cell_count == (
+        int(np.count_nonzero(result.classified_grid.free)) - artificial_count
+    )
 
 
 def test_blind_zone_preserves_slope_step_pit_and_obstacle_surfaces():
@@ -748,6 +857,157 @@ def test_graph_builder_bootstraps_free_component_across_large_unknown_footprint(
 
     assert len(result.graph.nodes) > 1
     assert len(result.graph.edges) > 0
+
+
+def _make_three_component_grid() -> ClassifiedGrid:
+    """构造状态稳定但彼此被 unknown 分隔的三块 free 地面"""
+    free_columns = np.asarray(
+        [1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1],
+        dtype=bool,
+    )
+    free = np.tile(free_columns, (9, 1))
+    unknown = ~free
+    return ClassifiedGrid(
+        width=21,
+        height=9,
+        resolution=1.0,
+        origin_x=0.0,
+        origin_y=0.0,
+        frame_id="map",
+        free=free,
+        obstacle=np.zeros((9, 21), dtype=bool),
+        unknown=unknown,
+        elevation=np.zeros((9, 21), dtype=float),
+        stats={},
+    )
+
+
+def test_reachable_known_free_component_gets_nodes_and_edges_on_later_frame():
+    """已知 free 区域后来可达时仍需补齐节点和局部边"""
+    builder = SparseGraphBuilder(
+        GraphBuilderConfig(
+            robot_blind_zone_radius=0.0,
+            sample_stride=2,
+            min_node_separation=0.1,
+            min_obstacle_clearance=0.0,
+            edge_radius=4.0,
+            frontier_border_margin=0.0,
+        )
+    )
+
+    first = builder.update(
+        _make_three_component_grid(),
+        robot_position=(10.5, 4.5, 0.0),
+        stamp_seconds=1.0,
+    )
+    assert not any(
+        node.position[0] >= 16.0
+        for node in first.graph.nodes.values()
+    )
+
+    second = builder.update(
+        _make_three_component_grid(),
+        robot_position=(18.5, 4.5, 0.0),
+        stamp_seconds=2.0,
+    )
+
+    right_node_ids = {
+        node.node_id
+        for node in second.graph.nodes.values()
+        if node.position[0] >= 16.0
+    }
+    assert second.stats.newly_free_cell_count == 0
+    assert len(right_node_ids) > 1
+    assert second.graph.current_node_id in right_node_ids
+    assert any(
+        edge.from_id in right_node_ids and edge.to_id in right_node_ids
+        for edge in second.graph.edges.values()
+    )
+
+
+def test_new_nodes_refresh_frontier_in_unchanged_free_component():
+    """新节点出现时需要重新分配附近未变化的 Frontier"""
+    builder = SparseGraphBuilder(
+        GraphBuilderConfig(
+            robot_blind_zone_radius=0.0,
+            sample_stride=2,
+            min_node_separation=0.1,
+            min_obstacle_clearance=0.0,
+            edge_radius=4.0,
+            frontier_assign_radius=3.0,
+            frontier_min_points=1,
+            frontier_min_span=0.0,
+            frontier_border_margin=0.0,
+            frontier_visited_corridor_radius=0.0,
+        )
+    )
+    builder.update(
+        _make_three_component_grid(),
+        robot_position=(10.5, 4.5, 0.0),
+        stamp_seconds=1.0,
+    )
+
+    result = builder.update(
+        _make_three_component_grid(),
+        robot_position=(18.5, 4.5, 0.0),
+        stamp_seconds=2.0,
+    )
+
+    assert result.stats.dirty_cell_count == 0
+    assert result.stats.frontier_candidate_count > 0
+    assert any(
+        node.is_frontier and node.position[0] >= 16.0
+        for node in result.graph.nodes.values()
+    )
+
+
+def test_all_nearby_free_components_receive_internal_nodes_and_edges():
+    """脚下周围多个 free 分量都应补点, 但不能跨 unknown 连边"""
+    grid = _make_three_component_grid()
+    builder = SparseGraphBuilder(
+        GraphBuilderConfig(
+            robot_blind_zone_radius=0.0,
+            sample_stride=2,
+            min_node_separation=0.1,
+            min_obstacle_clearance=0.0,
+            edge_radius=6.0,
+            frontier_border_margin=0.0,
+        )
+    )
+
+    result = builder.update(
+        grid,
+        robot_position=(10.5, 4.5, 0.0),
+        stamp_seconds=1.0,
+    )
+
+    left_node_ids = {
+        node.node_id
+        for node in result.graph.nodes.values()
+        if node.position[0] < 5.0
+    }
+    right_node_ids = {
+        node.node_id
+        for node in result.graph.nodes.values()
+        if node.position[0] >= 16.0
+    }
+    assert len(left_node_ids) > 1
+    assert len(right_node_ids) > 1
+    assert any(
+        edge.from_id in left_node_ids and edge.to_id in left_node_ids
+        for edge in result.graph.edges.values()
+    )
+    assert any(
+        edge.from_id in right_node_ids and edge.to_id in right_node_ids
+        for edge in result.graph.edges.values()
+    )
+    assert all(
+        grid.is_world_collision_free(
+            result.graph.nodes[edge.from_id].position[:2],
+            result.graph.nodes[edge.to_id].position[:2],
+        )
+        for edge in result.graph.edges.values()
+    )
 
 
 def test_unknown_ground_does_not_create_anchor_breadcrumbs():

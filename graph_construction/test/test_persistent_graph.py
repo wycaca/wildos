@@ -374,6 +374,50 @@ def test_identical_grid_skips_stable_edge_rebuild():
     assert second.graph.edges == stable_edges
 
 
+def test_newly_free_cells_locally_reconnect_existing_nodes():
+    """unknown 变 free 后只重连附近旧节点并保留远处边"""
+    builder = SparseGraphBuilder(
+        GraphBuilderConfig(
+            sample_stride=100,
+            min_node_separation=100.0,
+            min_obstacle_clearance=0.0,
+            edge_radius=8.0,
+            max_edge_neighbors=6,
+            max_edge_candidates_per_node=12,
+        )
+    )
+    left = builder.graph.create_node((1.5, 1.5, 0.0), stamp_seconds=0.0)
+    right = builder.graph.create_node((7.5, 1.5, 0.0), stamp_seconds=0.0)
+    remote_a = builder.graph.create_node((18.5, 1.5, 0.0), stamp_seconds=0.0)
+    remote_b = builder.graph.create_node((20.5, 1.5, 0.0), stamp_seconds=0.0)
+    blocked_key = (left.node_id, right.node_id)
+    remote_key = (remote_a.node_id, remote_b.node_id)
+
+    free = np.ones((3, 24), dtype=bool)
+    unknown = np.zeros((3, 24), dtype=bool)
+    free[:, 4] = False
+    unknown[:, 4] = True
+    first = builder.update(
+        _grid(width=24, height=3, free=free, unknown=unknown),
+        robot_position=(1.5, 1.5, 0.0),
+        stamp_seconds=1.0,
+    )
+    assert blocked_key not in first.graph.edges
+    assert remote_key in first.graph.edges
+    remote_edge = first.graph.edges[remote_key]
+
+    changed = builder.update(
+        _grid(width=24, height=3),
+        robot_position=(1.5, 1.5, 0.0),
+        stamp_seconds=2.0,
+    )
+
+    assert changed.stats.newly_free_cell_count == 3
+    assert changed.stats.newly_free_rebuild_node_count == 2
+    assert blocked_key in changed.graph.edges
+    assert changed.graph.edges[remote_key] is remote_edge
+
+
 def test_rolling_grid_marks_only_entering_cells_dirty():
     """平移一格的地图只把新进入窗口的 cell 标为变化"""
     builder = SparseGraphBuilder(
@@ -400,7 +444,7 @@ def test_rolling_grid_marks_only_entering_cells_dirty():
 
 
 def test_single_obstacle_without_crossing_edge_skips_edge_rebuild():
-    """没有边经过的新障碍不应触发附近节点重建"""
+    """没有边经过的新障碍不应触发历史边重建"""
     builder = SparseGraphBuilder(
         GraphBuilderConfig(
             sample_stride=1,
@@ -409,11 +453,12 @@ def test_single_obstacle_without_crossing_edge_skips_edge_rebuild():
             edge_radius=2.0,
         )
     )
-    builder.update(
+    first = builder.update(
         _grid(width=20, height=20),
         robot_position=(2.5, 2.5, 0.0),
         stamp_seconds=1.0,
     )
+    stable_edges = dict(first.graph.edges)
     free = np.ones((20, 20), dtype=bool)
     obstacle = np.zeros((20, 20), dtype=bool)
     free[10, 10] = False
@@ -427,9 +472,13 @@ def test_single_obstacle_without_crossing_edge_skips_edge_rebuild():
 
     assert changed.stats.dirty_cell_count == 1
     assert changed.stats.newly_obstacle_cell_count == 1
-    assert changed.stats.edge_rebuild_node_count == 0
+    assert changed.stats.edge_rebuild_node_count > 0
     assert changed.stats.obstacle_affected_edge_count == 0
-    assert changed.stats.affected_edge_count < changed.stats.total_edge_count
+    assert changed.stats.historical_edge_check_count == 0
+    assert all(
+        changed.graph.edges.get(key) == edge
+        for key, edge in stable_edges.items()
+    )
 
 
 def test_new_obstacle_removes_only_crossing_indexed_edge():
@@ -478,8 +527,8 @@ def test_new_obstacle_removes_only_crossing_indexed_edge():
     assert remote_key in changed.graph.edges
 
 
-def test_unknown_changes_do_not_rebuild_confirmed_edges():
-    """free 变 unknown 只更新可见状态, 不否定或重建历史边"""
+def test_unknown_changes_preserve_confirmed_edges_while_sampling_new_nodes():
+    """free 变 unknown 可补充边界节点, 但不能否定历史边"""
     builder = SparseGraphBuilder(
         GraphBuilderConfig(
             sample_stride=1,
@@ -509,11 +558,14 @@ def test_unknown_changes_do_not_rebuild_confirmed_edges():
 
     assert changed.stats.dirty_cell_count == len(changed_cells)
     assert changed.stats.newly_obstacle_cell_count == 0
-    assert changed.stats.edge_rebuild_node_count == 0
+    assert changed.stats.edge_rebuild_node_count > 0
     assert changed.stats.obstacle_affected_edge_count == 0
-    assert changed.stats.edge_candidate_pair_count == 0
+    assert changed.stats.edge_candidate_pair_count > 0
     assert changed.stats.historical_edge_check_count == 0
-    assert changed.graph.edges == stable_edges
+    assert all(
+        changed.graph.edges.get(key) == edge
+        for key, edge in stable_edges.items()
+    )
 
 
 def test_edge_spatial_index_returns_only_nearby_corridors():
