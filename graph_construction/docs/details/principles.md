@@ -1,227 +1,140 @@
-# WildOS 当前实现原理
+# WildOS 实现原则
+
+> 本文记录当前代码必须保持的行为, 不记录历史排障过程
+
+## 1. 地图原则
+
+- 唯一几何输入是 elevation `GridMap`
+- `free` 表示当前确认可通行
+- `obstacle` 表示当前明确不可通行
+- `unknown` 表示当前看不到, 不等于历史路线已经失效
+- 已知 obstacle 不能被脚下盲区修补覆盖
+- 图更新失败时保留上一张有效图, 不能发布半完成结果
+
+高程图启动时先初始化机器人脚下地面, 再融合第一帧点云
+
+导航图层还有一个保守兜底: 只在机器人附近、地面高度可信时修补少量 unknown
+
+## 2. 导航图原则
+
+### 节点
+
+- 节点只生成在机器人可达的 free 区域
+- 节点使用世界坐标固定采样, 避免 rolling map 移动后重复生成
+- 历史节点使用稳定 UUID
+- 当前节点优先选择机器人附近可安全直达的普通节点
+- unknown 或 obstacle 中不能虚构起点节点
+- 旧的持续移动 anchor 已删除, 不得恢复 breadcrumb 生成逻辑
+
+### 边
+
+- 新边不能穿过 obstacle 或 unknown
+- 新障碍出现后必须立即删除冲突边
+- free 变 unknown 时保留以前确认安全的历史边
+- 边更新范围由真实地图变化决定, 不能随历史图总大小线性增长
+
+### Frontier
+
+- Frontier 表示当前 free 和 unknown 的交界
+- Frontier 挂在附近安全节点上, 不为每个 Frontier cell 创建节点
+- 滑出局部地图的 Frontier 不继续作为活动 Frontier
+- 历史岔路由 Planner 的分支记忆保存
+
+## 3. 视觉原则
+
+- 视觉方向评分、目标检测和最终完成是三件不同的事
+- 目标 Mask 必须通过分数、连通区域和连续帧门槛
+- 单帧或单视角目标不能直接接管导航
+- 相机观测必须使用测量时刻的 TF
+- 三相机、LiDAR、IMU 和 odom 必须使用同一时间基准
+- 大体积图像处理应优先保留最新帧, 避免旧帧积压
+
+## 4. 目标定位原则
+
+- 第一视角只能确定方向, 不能假装得到准确距离
+- 不同位置的相机观测通过粒子滤波逐步缩小目标范围
+- 完全重复帧不累计证据
+- 弱视角可以低权重参与, 但不能增加独立视角数
+- 0.3 m 和 3 度是满质量参考, 不是双重硬门槛
+- 稳定目标必须同时检查独立视角、粒子方差和置信度
+- LiDAR 是近距离精修证据, 不是多视角视觉成立的前提
+- 单帧 LiDAR 不能直接覆盖已有视觉目标
+- 连续一致的 LiDAR 测量才能进入锁定状态
+- 高程图不把目标粒子强制贴到地面
+
+## 5. 目标搜索原则
+
+- `ObjectSearchGoalMux` 是高层目标和完成状态的唯一 owner
+- 启动时先等地图和评分图稳定, 不默认旋转 360 度
+- `PENDING` 只保护视觉证据, 不直接成为导航目标
+- 粗目标先引导机器人到安全观察位置
+- 观察时优先面向目标静止等待, 丢失后只做小角度重捕获
+- 只有目标持续可见但定位仍不稳定时才横向换观察点
+- 明显回头只允许发生在确认死路或恢复历史分支时
+- 距离目标较近不等于任务完成
+- 最终完成必须同时满足稳定目标、距离门槛和近距离视觉证据
+
+## 6. DLIO 和 TF 原则
+
+- 真机默认使用 DLIO 或经过同等验证的 6DoF LiDAR-inertial odometry
+- Unity 可使用 DLIO, Unity 真值 odom 只用于启动锚定和评测
+- DLIO 直接订阅原始 LiDAR 和 IMU, 不使用 Python 转发高频传感器数据
+- 点云逐点时间用于运动去畸变, header 时间不能替代逐点采样时间
+- DLIO odom、统一 TF 和下游对齐点云必须来自同一位姿源
+- Unity 真值 TF 和 DLIO TF 必须隔离, 不能同时发布同一个 child frame
+- DLIO 异常时暂停下游输出, 恢复后才继续更新地图
+- 修复定位输入后必须重启已经被错误位姿污染的高程图
+
+## 7. ROS 和配置原则
+
+- 平台差异统一放在 `topic_profiles.yaml`
+- 算法参数放在所属模块的配置中
+- 只有需要按平台、场景或实验调整的值才作为参数
+- 消息字段约定、固定后处理步骤和诊断采样周期写成代码常量
+- 已转为常量的旧参数必须由配置加载器明确拒绝, 避免无效配置被静默接受
+- 默认集成 launch 只能有一套
+- 同一语义只能有一个数据 owner 或状态 owner
+- debug topic 无订阅者时不应执行高成本消息构造
+- 纯导航图算法不导入 `rclpy` 或 ROS message
+- GridMap 解码集中在 `grid_adapter.py`
+- ROS message 生成集中在 `msg_utils.py`
+
+当前参数边界:
 
-> 本文随当前实现长期维护，核心原理变化时必须同步更新
+| 模块 | 保留为参数的内容 | 固定为常量的内容 |
+|---|---|---|
+| Topic profile | 平台 topic、frame、RMW 和传感器接线 | 算法内部实现 |
+| Graph Construction | free/obstacle 阈值、洞修复尺度、节点采样和连边尺度 | GridMap layer 名、归一化分位数、Z 偏移、majority fill 次数和诊断周期 |
+| WildOS | 模型、输入同步、视觉筛选和目标检测阈值 | 性能日志采样周期和慢帧告警阈值 |
+| Target Fusion | 粒子数量、视角质量、LiDAR 匹配和稳定性阈值 | 健康日志周期和慢回调告警阈值 |
+| Goal Mux | 状态机距离、时间、置信度和观察动作阈值 | 状态枚举和内部阶段约定 |
+| Planner | 代价权重、分支连续性、失败恢复、输入新鲜度和到达半径 | 性能日志周期和慢规划告警阈值 |
+| DLIO adapters | topic、frame、对齐和健康判定阈值 | 周期诊断频率 |
 
-## 1. 几何地图原则
+本轮已从参数文件移除的固定实现值:
 
-当前唯一几何输入是 elevation mapping 发布的 `GridMap`
+- Planner 的诊断周期和慢规划告警阈值
+- Graph Construction 的固定 GridMap layer、归一化、Z 偏移和 majority fill 参数
+- WildOS 与 Target Fusion 的性能诊断参数
+- DLIO adapter 和全链路性能监控的诊断周期
 
-高程图启动时先完成一次脚下地面初始化:
+## 8. 验证原则
 
-1. 第一帧点云到达后，按同一时间戳查询 `map_frame -> base_frame`
-2. 将 rolling map 中心移动到机器人初始位姿
-3. 单 `base_link` 配置按 `initialize_tf_grid_size` 展开为 4 个方形地面锚点
-4. 地面锚点高度使用 `base_link` 高度加 `initialize_tf_offset`
-5. 插值和膨胀完成后才接收第一帧点云，防止点云先写入又被初始化清空
+代码修改后按影响范围验证:
 
-当前 Unity 配置使用 `initialize_tf_offset=-0.22m`、`initialize_tf_grid_size=1.0m` 和 `dilation_size_initialize=5`
+1. 运行对应单元测试
+2. 运行 flake8 和 pydocstyle 的项目兼容检查
+3. 从 ROS workspace 根目录执行 `colcon build`
+4. 涉及状态机或实时数据时运行 Unity 场景
+5. 涉及性能时至少运行 10 分钟并记录平均值、P95 和最大值
+6. 涉及退出流程时检查 Ctrl-C 后是否还有残留进程
 
-启动初始化负责从源头给出脚下初始地面，`SparseGraphBuilder` 的局部 unknown 修补继续作为保守兜底，两者不能互相替代
+禁止在仓库目录内运行 `colcon build`, 构建产物只能位于 ROS workspace 的 `build/`、`install/` 和 `log/`
 
-`grid_adapter.py` 负责:
+## 9. 文档原则
 
-1. 根据 GridMap layout 和 circular buffer 起点恢复二维 layer
-2. 读取 traversability、elevation、variance 和辅助 layer
-3. 将 layer 统一分类为 free、obstacle 和 unknown
-4. 对固定的小孔洞做后处理
-5. 生成带 origin、resolution、frame 和高度查询能力的 `ClassifiedGrid`
-
-不再支持:
-
-- `OccupancyGrid` 输入
-- free 和 obstacle 的 2D 数值阈值
-- transpose 或 flip 兼容开关
-- 关闭当前必要后处理的兼容分支
-
-## 2. 稀疏图构建
-
-`SparseGraphBuilder.update` 的核心过程:
-
-```text
-ClassifiedGrid
-  -> distance fields
-  -> current node sampling
-  -> historical node validation
-  -> edge building and validation
-  -> frontier detection and assignment
-  -> robot anchor update
-  -> GraphUpdateResult
-```
-
-`GraphUpdateResult` 返回当前 graph、classified grid 和轻量 `GraphUpdateStats`
-
-`GraphUpdateStats` 只记录本帧局部节点、dirty cell、边候选和各阶段耗时, ROS 节点负责按周期汇总日志, 不把 ROS 诊断逻辑放入纯算法层
-
-### 2.1 节点
-
-节点使用世界坐标对齐的自适应 lattice 采样:
-
-- unknown 附近保持更密集
-- 已充分探索区域减少重复节点
-- `min_node_separation` 防止滚动窗口产生近距离副本
-- 历史节点通过稳定 ID 保留
-
-机器人当前位置使用独立 anchor node 表达，不与持久 graph 节点身份混合
-
-### 2.2 边
-
-边必须满足:
-
-- 两端节点距离在连接半径内
-- 线段在当前可见地图中 collision free
-- corridor clearance 满足 obstacle 和 unknown 约束
-- 历史边在局部窗口变 unknown 时不会被误删
-- 当前可见障碍明确阻断时会失效
-
-### 2.3 Frontier
-
-frontier 是 free cell 与 unknown 邻域的边界，不是每个 cell 都创建 graph node
-
-处理过程:
-
-1. 扫描有效 free cell
-2. 过滤 rolling grid 外边缘
-3. 按米制 spacing 选代表 cell
-4. 将候选分配给附近 collision-free graph owner
-5. 按点数、跨度和历史 owner 规则过滤噪声
-
-历史窗口外分支由 planner 的 deferred branch 逻辑处理，不继续伪装成活动 frontier
-
-## 3. 视觉评分
-
-WildOS 对三路相机做 ExploRFM 推理，获得:
-
-- frontier confidence
-- traversability confidence
-- spatial feature
-- query similarity mask
-
-几何 frontier 投影到各相机后，视觉评分写入 `NavigationGraph` 的 frontier score 字段
-
-当前 `frontier_scores` 的维护位置是:
-
-```text
-visual_navigation/visual_navigation/wildos/nav.py
-```
-
-它不属于 `graph_construction`
-
-## 4. 目标检测和到达证据
-
-目标检测必须先通过:
-
-- peak score 阈值
-- connected component 像素数和面积占比
-- 连续帧确认
-
-确认后的 mask 才会发布为 `ObjectMaskWithTf`
-
-近距离完成证据使用独立的 mask fraction、pixel count 和连续帧规则，并发布到 `object_reached_topic`
-
-视觉评分、目标位置融合和最终完成是三个不同职责，不能合并成一个布尔 latch
-
-## 5. 目标位置融合
-
-当前融合入口:
-
-```text
-visual_navigation/visual_navigation/object_target_fusion.py
-```
-
-纯算法:
-
-```text
-triangulation3d/triangulation3d/target_particle_filter.py
-```
-
-融合过程:
-
-1. 第一张确认 mask 沿相机射线初始化固定数量粒子
-2. 后续不同视角根据 mask 投影一致性递归更新权重
-3. 重复视角和与稳定目标冲突的观测被拒绝
-4. 两个有效视角后可以形成视觉跟踪目标
-5. 视角数、有效粒子和方差满足条件后形成稳定视觉目标
-6. LiDAR mask 内点先移除地面，再优先选择离相机最近的有效前景簇
-7. 已有视觉轨迹时，单帧 LiDAR 只记录候选，不改变位置、置信度或 source，连续两帧空间一致后才更新和锁定
-
-LiDAR 不是多视角视觉融合成立的前提
-
-Unity 场景的粒子射线最大深度为 `30m`，其他 profile 当前保持 `100m`
-
-## 6. Goal Mux 状态所有权
-
-`ObjectSearchGoalMux` 是 goal 和完成状态的唯一 owner
-
-优先级:
-
-```text
-completion latch
-  > stable target estimate
-  > physically valid coarse target estimate
-  > initial heading exploration goal
-```
-
-关键约束:
-
-- 初始探索目标只基于首帧 odom 和配置 heading 计算一次
-- 单视角 pending 估计不能替换初始目标
-- 粗目标必须通过 frame、距离、高度、水平标准差和置信度门控
-- 稳定目标也必须通过 frame 和高度门控
-- 稳定融合目标使用独立的小门槛持续纠偏
-- 普通目标小于 `target_update_min_distance` 的抖动不会移动目标
-- `object_reached` 只有在稳定目标距离满足约束时才能触发完成
-- 完成后持续发布当前位置停止目标和 completed 状态
-
-## 7. Graph Planner
-
-`graphnav_planner` 消费:
-
-- scored navigation graph
-- odom
-- high-level goal pose
-- object search status
-
-planner 内部固定使用当前 traversability class，virtual goal 只参与搜索，不追加到可执行 path
-
-算法参数统一位于:
-
-```text
-graphnav_planner/config/planner.yaml
-```
-
-`path_follower_node` 保留为可选的 path-to-goal 适配器，通过独立 launch 启动，不属于默认集成链路
-
-## 8. 平台适配
-
-平台差异通过 topic profile 注入，不复制主 launch
-
-profile 负责:
-
-- domain 和 RMW
-- point cloud axis mode 和 frame
-- odom 输入、输出和 pose source
-- 相机 topic 和静态 TF 约定
-- graph、目标搜索和 planner topic
-
-核心算法不得读取固定机器绝对路径
-
-模型和仓库资源由 `repository_root()` 解析，可通过 `WILDOS_REPO_ROOT` 显式覆盖
-
-## 9. 研究基线原则
-
-研究仓库保留 LRN、ImgFrontier 和 GeoFrontier 等 baseline
-
-基线和当前主线共享消息与工具时，公共契约修改必须同步所有调用方
-
-基线可以有独立 launch 和算法配置，但不能复制或接管默认 elevation 集成入口
-
-## 10. 验证原则
-
-每次结构清理至少验证:
-
-- Python 和 launch 静态编译
-- YAML 可解析
-- graph、frontier、目标融合和 Goal Mux 单元测试
-- `object_search_msgs` 到 `visual_navigation` 的消息构建
-- `graphnav_planner` C++ 干净构建
-- 旧 entrypoint、旧参数和旧 topic 的静态残留扫描
+- 当前架构和长期规则写入 `docs/details/`
+- 当天问题、方案、测试和 TODO 写入日期目录
+- 同一个问题在同一天只维护一份文档
+- 历史日期文档保持当时记录, 不用改写成当前状态
+- 当前行为变化后必须同步更新对应 details 文档

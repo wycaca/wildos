@@ -325,6 +325,7 @@ Frontier 位置移动不足 0.75 m 时继续执行原路线, 等累计移动达�
 - 岔路记忆拆成独立类, 用单元测试覆盖同一岔路多方向和嵌套岔路回退
 - 只有 `BACKTRACK` 可以绕过普通回退限制
 - 短暂空图不会清空活动路线
+- Frontier 暂未连接时先沿初始方向前往最远可达安全节点
 - 恢复新分支后使用岔路处的局部方向
 - 目标观察期间暂停探索状态, 候选失效后恢复原分支
 - 单视角目标持续可见时允许一次 0.6 m 横向换位, 仍不使用粒子距离
@@ -333,7 +334,7 @@ Frontier 位置移动不足 0.75 m 时继续执行原路线, 等累计移动达�
 - 最终观察支持静止确认、小角度重捕获和附近换位
 - 30 s 日志汇总路线变化、保持、负向拒绝、恢复和释放原因
 
-29 项 C++ 探索路线测试和 29 项 Goal Mux 测试通过
+28 项 C++ 路线策略测试、3 项分支记忆测试和 29 项 Goal Mux 测试通过
 
 收到新的完整运行日志后需要检查:
 
@@ -378,7 +379,8 @@ Frontier 位置移动不足 0.75 m 时继续执行原路线, 等累计移动达�
 ```text
 探索路线统计, 分支变化=..., 正常延伸=..., 小变化保持=...,
 负向延伸拒绝=..., 恢复=历史.../方向.../死路...,
-释放=路径失效.../无进展..., 状态切换=...
+释放=路径失效.../无进展..., 状态切换=...,
+安全节点回退=..., 无路线周期=...
 ```
 
 判断方式:
@@ -387,11 +389,62 @@ Frontier 位置移动不足 0.75 m 时继续执行原路线, 等累计移动达�
 - `负向延伸拒绝` 很高且经常无路, 说明 1.25 m 可能过严
 - `状态切换` 和状态原因用于确认回头前是否进入 `BACKTRACK`
 - `路径失效` 或 `无进展` 持续很高, 需要继续检查地图或路线质量
+- `安全节点回退` 增加说明 Frontier owner 暂不可达但仍有前向安全路径
+- `无路线周期` 持续增加说明当前分量没有可执行 Frontier 或安全前向节点
 
-## 17. 代码入口
+## 17. Planner 代码结构
+
+Planner 保留一份公共 `Planner` 状态, 实现按职责拆分为多个编译单元:
+
+| 文件 | 职责 |
+|---|---|
+| `graphnav_planner/include/graphnav_planner/planner.hpp` | Planner 公共接口、状态和参数 |
+| `graphnav_planner/src/planner.cpp` | 路径公共工具、图更新、已走边记忆和未探索距离图 |
+| `graphnav_planner/src/planner_exploration.cpp` | 活动路线生命周期、进展判断、失败冷却、分支关系和抢占恢复 |
+| `graphnav_planner/src/planner_planning.cpp` | Frontier 候选生成、Dijkstra、方向门控、死路恢复选择和最终路线输出 |
+| `graphnav_planner/src/planner_visualization.cpp` | Frontier 分数和活动分支 Marker |
+| `graphnav_planner/src/exploration_memory.cpp` | 岔路栈和未探索方向记忆 |
+| `graphnav_planner/src/planner_node.cpp` | ROS topic、TF、Goal Mux 状态适配、Path 发布和性能诊断 |
+| `graphnav_planner/src/planner_internal.hpp` | 仅供 Planner 编译单元共享的路径工具声明 |
+
+`plan_to_goal` 的处理顺序:
+
+```text
+当前图、目标和机器人位置
+  -> 生成移动的方向目标或保留真实目标
+  -> 收集 Frontier 分数和目标半径内节点
+  -> 在不含虚拟目标的持久图上运行一次 Dijkstra
+  -> 为每个可达 Frontier 补充路线、前进量、回退量和恢复信息
+  -> 更新活动路线进展并确认路径是否持续失效
+  -> 按当前探索状态选择普通延伸、死路回退或历史分支
+  -> 没有 Frontier 时选择可达的安全前向节点
+  -> 更新提交路线并返回机器人当前位置后的可执行后缀
+```
+
+关键边界:
+
+- Dijkstra 只计算当前节点到所有可达节点的最短路径
+- 探索状态机只决定使用哪个候选和何时允许回头
+- `ExplorationBranchMemory` 只维护岔路和方向顺序, 不读取实时图
+- Goal Mux 仍是目标搜索状态 owner, Planner 只暂停或恢复自己的探索事务
+- `PlannerNode` 只在路线变化、停止或观察姿态变化时发布 Path
+
+测试按行为拆分:
+
+| 文件 | 覆盖内容 |
+|---|---|
+| `test/planner_test_utils.hpp` | 共享节点、边、导航图和 Planner 构造工具 |
+| `test/test_exploration_preemption.cpp` | 目标抢占和探索恢复 |
+| `test/test_path_publication.cpp` | 相同路线不重复发布 |
+| `test/test_directional_selection.cpp` | 初始方向、前向阻塞和安全节点兜底 |
+| `test/test_committed_branch.cpp` | 路线进展、延伸、防抖、失效和失败冷却 |
+| `test/test_exploration_recovery.cpp` | 死路确认、回退、耗尽和显式重置 |
+| `test/test_direct_goal.cpp` | 真实目标半径内的直接路线 |
+| `test/test_exploration_memory.cpp` | 多方向岔路、Frontier 合并和嵌套恢复顺序 |
+
+其他入口:
 
 - `visual_navigation/visual_navigation/object_search_goal_mux.py`
 - `visual_navigation/configs/object_search_goal_mux.yaml`
-- `graphnav_planner/src/planner.cpp`
 - `graphnav_planner/config/planner.yaml`
 - `visual_navigation/visual_navigation/wildos/nav.py`

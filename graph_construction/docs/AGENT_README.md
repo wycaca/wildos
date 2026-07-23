@@ -1,447 +1,242 @@
 # Agent README
 
-本文帮助开发人员和 agent 快速确认 WildOS 的当前目标、有效主链路、参数边界和研究基线
+本文帮助开发人员和 agent 快速了解 WildOS 当前主线、启动方式、模块边界和高风险事项
 
-代码清理记录见 `docs/2026-07-15/2026-07-15-current-code-cleanup-audit.md`
+历史修改过程放在日期目录, 当前实现说明放在 `docs/details/`
 
-目标定位偏移修复见 `docs/2026-07-16/2026-07-16-object-target-localization-hardening.md`
+## 1. 文档入口
 
-目标搜索日志整理见 `docs/2026-07-16/2026-07-16-object-search-log-clarification.md`
+| 内容 | 文档 |
+|---|---|
+| 系统总览 | `docs/details/overview.md` |
+| 实现原则 | `docs/details/principles.md` |
+| 导航图更新 | `docs/details/graph_update.md` |
+| 目标搜索和探索路线 | `docs/details/target_exploration.md` |
+| 目标定位 | `docs/details/target_localization.md` |
+| Topic 契约 | `docs/details/topics.md` |
+| 当前 TODO | `docs/2026-07-23/2026-07-23-todo.md` |
 
-论文风格可视化和 RViz 性能优化见 `docs/2026-07-16/2026-07-16-paper-style-visualization-and-rviz-performance.md`
+## 2. 文档维护规则
 
-双架构 Docker 和 Compose 部署见 `docs/2026-07-16/2026-07-16-wildos-docker-deployment.md`
+- 当前架构和长期规则写入 `docs/details/`
+- 当天问题、方案、修改和测试写入日期目录
+- 同一个问题在同一天只维护一份文档
+- 同一天多次修改继续更新原文档, 不新建同主题文件
+- 跨天继续处理时新建当天记录并引用前一天文档
+- 历史日期文档保持当时状态, 不改写成当前实现
+- topic、参数、消息或模块职责变化后同步更新对应 details 文档
+- 综合 TODO 已覆盖的问题继续更新同一 TODO
 
-DLIO 仿真和真机接入方案见 `docs/2026-07-17/2026-07-17-dlio-integration-plan.md`
+## 3. 项目目标
 
-运行性能检测和首轮热点优化见 `docs/2026-07-21/2026-07-21-runtime-performance-diagnostics.md`
+WildOS 当前主线完成以下工作:
 
-长期维护的实现细节见 `docs/details/`，当前 topic 契约见 `docs/details/topics.md`
+1. 使用 LiDAR 和 IMU 或平台 odom 获取机器人位姿
+2. 从 elevation `GridMap` 构建持久稀疏导航图
+3. 使用三路相机给 Frontier 增加视觉分数
+4. 在未知环境中选择探索路线
+5. 使用多视角 Mask 和 LiDAR 估计目标三维位置
+6. 在探索、目标观察、目标接近和停止之间切换
+7. 通过 graph planner 输出 Path
 
-三个核心业务模块说明:
+当前不再支持:
 
-- 导航图更新见 `docs/details/graph_update.md`
-- 目标搜索和探索路线见 `docs/details/target_exploration.md`
-- 目标定位和视觉雷达融合见 `docs/details/target_localization.md`
+- 旧 2D `OccupancyGrid` 建图后端
+- 旧视觉射线粗目标 pose
+- 旧 batch triangulation 演示
+- 默认链路中的底盘 `cmd_vel` 控制
 
-## 文档维护规则
-
-- 一次性计划、代码修改说明和验证记录放入按日期命名的目录
-- 同一个问题在同一天只建立一份专项文档, 后续分析、方案调整、代码实现和运行验证持续更新该文档
-- 不得按每次修改、每次测试或每个提交重复创建同主题文档, 例如同一天的导航图性能优化或探索路线优化分别维护各自唯一的主题文档
-- 同一任务已经用一份 TODO 覆盖多个明确关联的问题时, 当天的进展继续更新该 TODO, 不再为其中每轮修改重复建文档
-- 不同问题即使发生在同一天也应分开记录, 跨天继续处理时在新日期文档中引用上一份记录
-- 需要随代码长期更新的实现细节放入 `docs/details/`
-- `docs/details/` 中的文件名和标题不带日期，例如 `topics.md` 和“WildOS Topic 梳理”
-- topic、参数、消息契约或模块职责变化时，必须同步更新对应 details 文档
-- 清理文档只记录对应清理任务，不作为所有后续修改的通用 changelog
-
-## 项目定位
-
-本仓库按研究仓库维护，包含当前 WildOS 主线、可复现实验基线和少量独立调试工具
-
-当前主线能力:
-
-- 从 elevation/2.5D GridMap 构建带高度的稀疏 `NavigationGraph`
-- 持久化 graph 节点、边、探索覆盖、frontier 和机器人锚点
-- 使用三相机 ExploRFM 结果给 graph frontier 评分
-- 使用多视角粒子滤波融合目标位置，可选使用 LiDAR 近距离细化
-- 由 `ObjectSearchGoalMux` 统一选择探索目标、融合目标和停止目标
-- 由 `graphnav_planner` 输出可执行路径
-
-当前主线不包含:
-
-- 自研 2D `OccupancyGrid` 建图 fallback
-- 旧视觉射线粗定位和 `/spot1/object_search_target_pose`
-- 旧 batch triangulation 演示实现
-- 底盘 `cmd_vel` 控制
-
-## 唯一集成主链路
+## 4. 当前主链路
 
 ```text
-PointCloud2
-  -> pointcloud_axis_adapter
-  -> elevation_mapping_cupy
-  -> GridMap
+LiDAR + IMU
+  -> DLIO 或平台定位
+  -> elevation GridMap
   -> graph_construction
-  -> /spot1/nav_graph
-  -> WildOS visual scoring
-     -> /spot1/scored_nav_graph -> graphnav_planner -> path
-     -> /spot1/object_mask -> object_target_fusion
-        -> /spot1/object_target_estimate -> object_search_goal_mux
-  -> goal_pose
+  -> NavigationGraph
+  -> WildOS 三相机评分
+  -> Scored NavigationGraph
+  -> graphnav_planner
+  -> Path
+
+三路相机
+  -> ObjectMaskWithTf
+  -> object_target_fusion
+  -> TargetEstimate
+  -> ObjectSearchGoalMux
+  -> graphnav goal
 ```
 
 职责边界:
 
-- `graph_construction` 只消费 GridMap，不再支持 `OccupancyGrid`
-- `wildos` 负责视觉评分、目标 mask 和到达证据，不发布独立粗目标 pose
+- `graph_construction` 只消费 GridMap
+- WildOS 负责视觉评分、目标 Mask 和近距离视觉证据
 - `object_target_fusion` 是唯一目标位置融合 ROS 节点
-- `TargetParticleFilter` 是唯一保留的纯目标融合算法
-- `ObjectSearchGoalMux` 是最终完成状态的唯一 owner
-- `path_follower_node` 保留为可选实验组件，不在默认集成 launch 中启动
+- `TargetParticleFilter` 是唯一目标粒子算法
+- `ObjectSearchGoalMux` 是高层 goal 和最终完成状态的唯一 owner
+- `graphnav_planner` 负责图路径, 不负责底盘控制
+- `path_follower_node` 只作为可选实验组件
 
-## 启动入口
-
-默认入口:
+## 5. 默认启动
 
 ```bash
 ./scripts/start_wildos_elevation.sh
 ```
 
-未显式指定时默认使用 `unity` profile
-
-常用方式:
+目标搜索:
 
 ```bash
-./scripts/start_wildos_elevation.sh
-WILDOS_TOPIC_PROFILE=unity ./scripts/start_wildos_elevation.sh do_object_search:=true
-WILDOS_TOPIC_PROFILE=robot ./scripts/start_wildos_elevation.sh do_object_search:=true
+WILDOS_TOPIC_PROFILE=unity \
+  ./scripts/start_wildos_elevation.sh do_object_search:=true
 ```
 
-脚本最终启动:
+可用 profile:
+
+- `unity`
+- `isaac`
+- `robot`, 当前仍是实机占位配置
+
+统一集成 launch:
 
 ```text
 graph_construction/launch/elevation_visual_navigation_sim.launch.py
 ```
 
-启动脚本会拒绝创建第二套同名 elevation launch, 避免旧 DLIO, TF 和 WildOS publisher 同时残留
+启动脚本会阻止重复启动第二套同名主链路, 避免旧 DLIO、TF 或 WildOS publisher 残留
 
-单组件调试入口:
+## 6. 当前模块状态
+
+| 模块 | 当前结果 | 仍需完成 |
+|---|---|---|
+| 导航图 | 精确增量边更新完成, 移动 anchor 已删除 | Unity 10 分钟性能回归 |
+| 启动观察 | 4.0 m 初始化阶段保守修补和条件扫描完成 | Unity 验证修补安全性和扫描执行 |
+| 探索路线 | 能持续探索和死路恢复 | 减少普通路线回头和频繁切换 |
+| 视觉检测 | 0.120/0.110 双门槛完成 | 无目标 10 分钟误检测试 |
+| 目标定位 | 重复帧过滤和视角软权重完成 | 排查 Mask 延迟和 LiDAR 精修率 |
+| 最终完成 | 最终观察、换位和 `REACHED` 门控代码完成 | Unity 完整闭环验收 |
+| DLIO | 仿真主链路已接通 | 排查相对参考 odom 的累计方向差 |
+
+文档记录的最新分模块测试:
+
+- graph 116 项通过
+- 粒子滤波 9 项通过
+- 目标链路 54 项通过, 1 项环境相关测试跳过
+- Goal Mux 29 项通过
+- Planner 路线策略 28 项和分支记忆 3 项通过
+- DLIO 相关 37 项通过
+
+这些结果是自动化和构建验证, 不能替代本轮修改后的 Unity 完整运行
+
+## 7. 导航图关键约束
+
+- 唯一几何输入是 elevation `GridMap`
+- unknown 不能直接删除历史安全路线
+- 新障碍必须删除冲突节点和边
+- 新节点只在机器人可达的新 free 区域生成
+- 当前节点使用附近安全普通节点
+- unknown 或 obstacle 中不能创建兜底节点
+- 旧的移动 anchor 和 breadcrumb 逻辑不得恢复
+- 脚下 unknown 修补半径当前为 4.0 m, 只在第一帧有效地图初始化时执行
+- 节点 UUID 必须稳定
+- 内部增量更新, 对外仍发布完整 `NavigationGraph`
+
+## 8. 目标搜索关键约束
+
+- 启动时先等待地图和评分图, 不默认旋转 360 度
+- 单视角 `PENDING` 不能接管导航
+- 粗目标先引导机器人到安全观察位置
+- 目标丢失时只做小角度重捕获
+- 定位不稳定时通过横向移动获得新视差
+- 0.3 m 横向基线和 3 度夹角是满质量参考, 不是双重硬门槛
+- 单帧 LiDAR 不能覆盖已有视觉目标
+- 到达目标坐标附近不等于完成
+- `REACHED` 必须经过 Goal Mux 的稳定目标、距离和视觉证据门控
+
+## 9. DLIO 和时间同步
+
+- 真机默认使用 DLIO 或经过同等验证的 6DoF LiDAR-inertial odometry
+- Unity 和 Isaac Sim 可以使用 DLIO
+- Unity 真值 odom 只用于启动锚定和评测
+- Unity DLIO 输入为 `/livox/lidar` 和 `/livox/imu`
+- DLIO 直接订阅原始传感器, 不使用 Python 高频转发节点
+- Unity 发布端已经修复重复时间戳并提供逐点 `timestamp`
+- `/livox/imu` 目标频率为 200 Hz, 启动后仍需用 topic 实测确认
+- 点云 header 时间用于帧同步, 逐点时间用于运动去畸变
+- DLIO 输出频率可以降低, 不能降低 IMU 输入和内部传播频率
+- Unity 真值 TF 和 DLIO TF 必须隔离
+- canonical odom、TF 和点云必须来自同一 DLIO 位姿源
+- DLIO 健康失败时暂停下游输出
+- 错误位姿污染高程图后必须重启地图
+
+当前仍需排查 DLIO 与 Unity 参考 odom 约 10 至 16.6 度的累计方向差
+
+## 10. Sim-to-Real 风险
+
+论文实机使用 Spot、Ouster OS0-128、VectorNav VN-100 和三台 RealSense D455
+
+论文计算分工:
+
+- Intel NUC i7 运行 DLIO 和 Nav2
+- Jetson AGX Orin 运行高程图和 WildOS
+- 论文没有注明 NUC 具体型号和 Orin 显存版本
+
+真机部署必须重点验证:
+
+- 三相机、LiDAR 和 IMU 使用统一硬件时间
+- LiDAR 每个点有真实采样时间
+- LiDAR、IMU 和三相机外参完成现场标定
+- 三路图像同步不会长期等待最慢相机
+- USB、网口和 DDS 不产生持续积压
+- CPU、GPU、显存、温度和功耗满足持续运行
+- DLIO 转向、快速行走和震动场景不发散
+- 最终目标搜索可以进入 `REACHED`
+
+`robot` profile 在完成时间同步、外参、动态定位和完整任务验收前不能视为可部署状态
+
+## 11. 参数来源
+
+| 配置范围 | 文件 |
+|---|---|
+| topic、frame、ROS domain | `graph_construction/configs/topic_profiles.yaml` |
+| 高程图解码和 graph ROS 参数 | `graph_construction/configs/graph_construction_elevation.yaml` |
+| graph 算法 | `GraphBuilderConfig` |
+| WildOS 模型和视觉阈值 | `visual_navigation/configs/wildos_nav_*.yaml` |
+| Goal Mux | `visual_navigation/configs/object_search_goal_mux.yaml` |
+| Planner | `graphnav_planner/config/planner.yaml` |
+
+不要把平台差异复制到新的 launch
+
+## 12. 构建和测试
+
+必须从 ROS workspace 根目录构建, 不要在仓库目录内生成 `build/`、`install/` 和 `log/`
+
+当前 checkout:
 
 ```bash
-ros2 launch visual_navigation wildos_component.launch.py do_object_search:=true
-ros2 launch graphnav_planner graphnav_planner.launch.py
-ros2 launch graphnav_planner path_follower.launch.py
+cd /mnt/hhd/han/wildos_ws
+source /opt/ros/humble/setup.bash
+colcon build --packages-up-to \
+  object_search_msgs triangulation3d visual_navigation \
+  graph_construction graphnav_planner --symlink-install
 ```
 
-`path_follower.launch.py` 只能在明确需要 `path -> goal_pose` 适配时单独启动，默认集成链路不使用它
+修改后按影响范围执行:
 
-## 容器部署
+1. 对应单元测试
+2. flake8 和 pydocstyle 项目兼容检查
+3. ROS 包构建
+4. Unity 场景测试
+5. 性能修改运行至少 10 分钟
+6. 退出流程检查残留进程
 
-- x86_64 使用 `compose.x86_64.yaml` 和 `docker/Dockerfile.x86_64`
-- AGX Orin 使用 `compose.orin.yaml` 和 `docker/Dockerfile.orin`
-- Orin 默认基线是 JetPack 6.2 和 L4T 36.4，不得跨 JetPack 复用 iGPU 基础镜像
-- Compose 必须使用 host network，跨容器或跨主机 ROS2 通信不得改成普通 Docker bridge
-- 完整镜像必须包含 RADIO、Frontier、Traversability 和 SigLIP2 权重
-- Unity、Isaac Sim、传感器驱动和底盘控制不属于 WildOS 容器，由外部 ROS2 系统提供 topic
+## 13. 研究基线
 
-## 实机计算与 Sim-to-Real 风险
-
-论文实机使用 Boston Dynamics Spot、Ouster OS0-128、VectorNav VN-100 和三台 RealSense D455。Intel NUC i7 运行 DLIO 和 Nav2，Jetson AGX Orin 运行高程图和 WildOS，论文未注明 NUC 具体型号及 Orin 显存版本
-
-三路 `540x960` 图像同步后组成一个 FP16 batch，由同一个 ExploRFM 模型约以 1.4Hz 处理，点云独立进入 DLIO 和高程图，不与三路图像共同输入视觉模型
-
-实机部署风险:
-
-- 三相机、LiDAR 和 IMU 必须使用统一时钟和真实采样时间，不能用消息到达时间代替
-- LiDAR 与 IMU 不同步会破坏 DLIO，LiDAR 与相机不同步会让目标 Mask 和点云投影错位
-- 三相机、LiDAR、IMU 到 `base_link` 的外参必须完成实机标定，不能直接复用仿真值
-- 点云必须提供有效逐点时间，运动场景启用 deskew 前必须完成转向和快速行走验证
-- 三路图像、点云和 ROS2 通信可能受 USB、网口和 DDS 带宽限制，必须检查掉帧、延迟和队列积压
-- 单机部署会同时竞争 CPU、GPU 和显存，优先复现论文的 NUC 与 Orin 分工，并验证持续负载下的温度和降频
-- 当前 `robot` profile 仍是占位配置，完成时间同步、外参、频率、动态定位和完整目标搜索闭环前不得视为可部署状态
-
-## DLIO 定位
-
-- 真机默认必须接入 DLIO, 或提供经过同等验证的 6DoF LiDAR-inertial odometry
-- Unity 和 Isaac Sim 可以接入 DLIO, Unity 真值 odom 只用于启动时的全局 frame 锚定和后续评测
-- Unity DLIO 输入固定为 `/livox/lidar` 和 `/livox/imu`, 原始点云直接进入 DLIO
-- 当前 Unity 点云没有逐点时间字段, DLIO deskew 必须保持关闭, 发布端补充有效 `timestamp` 后才能启用
-- Unity DLIO 必须保持 `adaptive: false`, 当前点云包含约一半无效零点, 官方 adaptive GICP 会在静止运行约 40 秒后发散
-- 2026-07-20 Unity 已完成 DLIO 到 elevation map, navigation graph 和 WildOS 首帧验证, 对齐点云相对 Unity 世界坐标最大误差约 6.1 mm
-- Unity 原地转向测试曾让 DLIO 单次产生约 4 m 假位移和错误俯仰, 动态闭环尚未通过
-- Unity 发布端补充有效逐点时间并完成转向测试前, DLIO 模式仅用于联调, 可用导航继续使用 platform backend
-- DLIO 异常位姿会污染不做 visibility cleanup 的历史高程, 修正输入后必须重启 elevation mapping 清图
-- WildOS 动态 TF 订阅使用 `RELIABLE`, 与 Unity 和 DLIO 的 `/tf` QoS 保持一致
-- Unity DLIO 模式使用 `/spot1/tf` 隔离平台真值 `/tf`, 禁止两个定位源进入同一运行链路
-- 官方 DLIO scan-rate TF 隔离到 `/spot1/dlio/odom_node/tf_raw`, canonical `/spot1/tf` 必须由 DLIO odom 重建
-- DLIO backend 的 `odom_frame_adapter` 必须使用 message pose, 禁止再用较旧 TF 覆盖高频 odom
-- DLIO 内部必须使用独立 `dlio_odom`, 禁止和 Unity 局部原点不同却同名为 `odom_3D`
-- Unity DLIO 启动时等待 IMU 标定稳定, 再由 `/unity/odom` 锁定一次 `odom_3D -> dlio_odom`
-- Unity LiDAR 和 IMU 外参必须匹配 `base_link -> livox_frame = [0.093, 0.0, 0.334]m`
-- Unity 已从发布端修复重复 timestamp, DLIO 必须直接订阅 `/livox/lidar` 和 `/livox/imu`, 禁止恢复 Python 传感器转发和去重
-- Unity 模式持续比较 DLIO 与 `/unity/odom`, 位置误差超过 0.5 m、姿态误差超过 10 deg 或速度超过 5 m/s 时暂停 odom、TF 和下游点云输出, 后续健康帧允许链路自动恢复
-- `dlio_output_guard` 只门控 DLIO 输出点云, 不得在 Python 单线程 executor 中转发原始高频 IMU 和大体积点云
-- 2026-07-20 删除输入中转后实测 `/livox/imu` 到达频率仍约 10.02 Hz, header stamp 间隔约 0.1 s, Unity 的 200 Hz 配置尚未作用到 ROS publisher
-- 低频 IMU 运行中曾让姿态误差达到 10.76 deg, 启动验收必须在原始 topic 和 DLIO 订阅端确认 IMU 接近 200 Hz
-- 当前固定版本 DLIO 已增加 `odom/publishRate`, Unity 配置为 20 Hz, 只降低 odom 和 pose topic 输出, 不得对原始 IMU 或内部状态传播降频
-- Unity 相机 header stamp 当前与 `/clock`、DLIO odom 相差超过 1000 s, `camera_stamp_mode=now` 和 `camera_stamp_adapter` 必须保留, 否则 WildOS 多路同步永远不会触发
-- planner Path 只在路线变化时发布, 每次实际发布必须保留 `已发布规划路径, poses=...` 日志, 禁止仅凭晚启动的 `topic echo` 判断未发布
-- 外部 RViz 检查 DLIO 局部 TF 时 remap 到 `/spot1/tf` 和 `/spot1/tf_static`
-- DLIO 作为 WildOS 外部组件运行, 不放入默认 WildOS 容器
-- Ouster 点云和 IMU 必须完成时间同步、外参和 IMU 内参标定
-- DLIO 必须提供连续 odom、`odom -> base_link` TF 和 deskewed point cloud
-- 当前 robot profile 仍是占位配置, 完成 DLIO 接入和真机 ROS graph 核对前不得视为可部署状态
-
-## Topic Profile
-
-平台差异统一维护在:
-
-```text
-graph_construction/configs/topic_profiles.yaml
-```
-
-内置 profile:
-
-- `isaac`, Isaac Sim 5.1 Go2，默认 domain 3
-- `unity`, Unity 仿真，默认 domain 89
-- `robot`, 真实机器人占位配置
-
-profile 只保存平台相关内容:
-
-- ROS domain 和 RMW
-- namespace、frame 和 TF 约定
-- 点云、odom、相机、graph、目标搜索和 planner topic
-- 平台相关的 object search 策略覆盖
-
-不要向 profile 重新加入 2D grid、旧粗目标 pose 或 planner 内部算法参数
-
-## 参数单一来源
-
-| 范围 | 单一来源 |
-|---|---|
-| 平台 topic、frame、通信环境 | `graph_construction/configs/topic_profiles.yaml` |
-| GridMap 解码和 graph ROS 适配 | `graph_construction/configs/graph_construction_elevation.yaml` |
-| 稀疏图算法默认值 | `GraphBuilderConfig` |
-| WildOS 视觉算法 | `visual_navigation/configs/wildos_nav_*.yaml` |
-| Goal Mux 策略 | `visual_navigation/configs/object_search_goal_mux.yaml` |
-| Planner 算法 | `graphnav_planner/config/planner.yaml` |
-
-已固化、不再暴露的旧参数:
-
-- `grid_input_type`
-- `free_threshold` 和 `obstacle_threshold`
-- GridMap transpose 和 flip 开关
-- `initial_goal_mode`
-- `object_reached_require_target_distance`
-- `append_virtual_goal_to_path`
-- `trav_class`
-
-## Graph Construction 结构
-
-```text
-graph_construction/graph_construction/
-  node.py                 ROS 参数、订阅、发布和 timer
-  grid_adapter.py         GridMap 解码和后处理
-  grid_types.py           ClassifiedGrid 和空间查询
-  graph_builder.py        稀疏图纯算法入口
-  graph_memory.py         持久 graph 状态
-  frontier_detector.py    frontier 检测和 owner 分配
-  edge_builder.py         当前边生成和历史边校验
-  msg_utils.py            GraphState 到 ROS message
-  viz.py                  graph 和地图 marker
-  pointcloud_axis_adapter.py
-```
-
-实现原则:
-
-- 纯算法层不导入 `rclpy` 或 ROS message
-- ROS message 解码集中在 `grid_adapter.py`
-- ROS message 生成集中在 `msg_utils.py`
-- rolling GridMap 的坐标、层布局和 frame 约定必须有测试或运行证据
-- 纯算法层只返回轻量 `GraphUpdateStats`, ROS 节点负责汇总并限频输出性能日志
-
-## 当前 TODO
-
-### 改善目标探索和回头策略
-
-- 已使用实际路径弧长、下一路点接近和机器人真实位移判断进展
-- 已在输入不新鲜时冻结失败计时, 路径失效需要连续 3 帧确认
-- 已统一实时 Frontier 和 deferred branch 的候选代价
-- 已限制普通探索最多回退 2 m, 真实死路先观察再分级放宽
-- 待完成同一 Unity 场景长任务对比和目标搜索成功任务复测
-- 方案和最新运行证据见 `docs/details/target_exploration.md`
-
-## 重复问题：初始探索路线和脚下点云盲区
-
-这两个问题相互影响，是 Unity 目标搜索的长期高风险项。其中“初始时先向机器人后方探索，走一段后又回到前方”已多次修改，不得仅根据单次编译或短时仿真宣布彻底解决
-
-已确认的因果链:
-
-1. Livox 近场盲区会让初始 odom 投影点周围出现 unknown 空洞
-2. current node 若被近邻采样点代替，路径首段可能从侧后方开始
-3. 旧 planner 只用路径第一个超过 0.25m 的分段判定初始方向，会把“短暂绕行后整体向前”误判为后向分支
-4. 所有候选被误判后，旧逻辑会从 `initial_heading_blocked` 无条件落到 `global_best`，从而立即选择后方
-5. 分支创建后 12 秒就开始判定无进展，原地转向和初始建图时间会被误计为死路
-
-当前必须保持的修复不变量:
-
-- `elevation_mapping_cupy` 必须在第一帧点云融合前完成一次启动初始化，单 `base_link` 展开为 4 个地面锚点，Unity 高度偏移固定为 `-0.22m`
-- 启动初始化等待同一时刻的 base 和 initializer TF，TF 不可用时跳过点云，禁止先融合点云再调用会清图的 `initialize_map`
-- `SparseGraphBuilder` 只修补 `robot_blind_zone_radius` 内的 unknown，高程优先取与 odom 预期地面一致的最近地面中位数，无可信样本时才使用 odom 高度偏移，明确 obstacle 绝不得覆盖
-- 脚下修补区是孤立 free 小岛时，可跨越无明确障碍的 unknown 盲区引导采样外围 free 分量，但不得将整个盲区改成 free
-- `NavigationGraph.current_node_idx` 优先对应跟随机器人的 anchor，不得恢复为普通近邻采样点
-- 初始前向候选按整条路线的 frontier 前向进展和最大回退量判定，方向使用 frontier points 质心而不是 owner 节点，不得只看路径首段
-- 前向分支未确认阻塞时，不得无条件 fallback 到后方 `global_best`
-- 只有连续 `directional_block_confirm_timeout` 没有可用前向路线，或已提交的前向分支确认失效/无进展，才允许尝试其他方向
-- 新分支必须先经过 `frontier_progress_start_grace`，再使用 `frontier_progress_timeout` 判定无进展
-- 历史分支恢复必须使用当前位置重新计算前进量、回退量和路线代价，旧 `discovery_direction` 只能作为无实时方向时的补充，不能覆盖实时指标
-- 分支确认失效或无进展后必须写入多条失败走廊记录，同一位置附近且轴线一致的新 UUID 继承冷却，不得只记住最近一次失败
-- 活动分支延伸必须用当前节点到新 Frontier 的简单路径替换执行路线，不得向历史缓存路线继续追加并形成回头路径
-- 单帧 edge 消失不得立即释放活动分支，必须持续超过 `path_invalid_confirm_duration`
-
-相关参数:
-
-| 参数 | 默认值 | 语义 |
-|---|---:|---|
-| `initialize_tf_offset` | -0.22m | `base_link` 到启动地面锚点的高度偏移 |
-| `initialize_tf_grid_size` | 1.0m | 单初始化 TF 展开的方形地面区域边长 |
-| `dilation_size_initialize` | 5 cell | 启动地面插值后的膨胀尺寸 |
-| `robot_blind_zone_radius` | 0.8m | 只允许修补的机器人脚下半径 |
-| `robot_blind_zone_elevation_search_radius` | 6.0m | 周边地面高程搜索半径，只取最近边缘样本 |
-| `robot_ground_height_offset` | 0.22m | base odom 高度到预期脚下地面的偏移 |
-| `robot_ground_elevation_tolerance` | 0.5m | 周边高程相对预期地面的可信偏差 |
-| `directional_min_forward_progress` | 0.5m | 前向候选相对当前位置必须具有的最小进展 |
-| `directional_max_initial_backtrack` | 2.0m | 整条路线允许的短暂最大回退 |
-| `directional_block_confirm_timeout` | 5.0s | 没有前向候选时的持续确认时间 |
-| `frontier_progress_start_grace` | 20.0s | 转向和初始起步的宽限时间 |
-| `frontier_progress_timeout` | 12.0s | 宽限后路径弧长无增长的超时时间 |
-| `frontier_failure_cooldown` | 60.0s | 失败走廊首次冷却时间，重复失败按次数延长 |
-| `frontier_failure_merge_radius` | 2.5m | 新 UUID 继承附近失败走廊记录的空间半径 |
-| `path_invalid_confirm_duration` | 1.5s | 路径边持续缺失后才确认失效的时间 |
-
-回归测试不得删除:
-
-- `test_single_base_frame_expands_to_ground_square`
-- `test_four_foot_frames_keep_positions_and_apply_offsets`
-- `test_rejects_ambiguous_two_frame_configuration`
-- `test_graph_builder_repairs_robot_blind_zone_from_nearby_ground`
-- `test_graph_builder_uses_robot_anchor_as_current_node_on_known_ground`
-- `test_graph_builder_rejects_implausible_high_surface_near_blind_zone`
-- `test_graph_builder_samples_outer_free_component_after_blind_zone_repair`
-- `DirectionalSelection.UsesWholeRouteWhenFirstSegmentPointsBackward`
-- `DirectionalSelection.ConfirmsForwardBlockBeforeSelectingRearBranch`
-- `DirectionalSelection.UsesFrontierPointsWhenOwnerNodeIsBehind`
-- `CommittedBranch.StartGracePreventsPrematureNoProgressRecovery`
-- `CommittedBranch.ReleasesBranchWhenCommittedEdgeDisappears`
-- `CommittedBranch.FailedCorridorsSuppressNearbyUuidAliases`
-- `CommittedBranch.DeferredHandoffRebuildsPathWithoutReturningToOldTail`
-
-验收时必须在 Unity 完整跑行 `./scripts/start_wildos_elevation.sh do_object_search:=true`，至少检查首个 graph 的脚下修补统计和地面高度、首次分支选择为 `reason=initial_forward_route`，以及启动宽限期内不出现 `reason=no_path_progress`。2026-07-16 的 Unity 验证首帧为 34 节点、45 边、19 frontier，修补 49 个 cell，地面投影正常，首次规划直接进入 `initial_forward_route`。同日长时间运行又确认旧恢复逻辑会在 `(-3.50,-9.50)` 和 `(-3.50,-8.30)` 附近循环，实时 Path 出现先到 `-9.50` 再返回 `-8.30` 的回头路线，现已增加失败走廊继承、实时恢复门控、简单路径替换和路径失效去抖，但仍需重启后的长时间闭环验证，因此该问题继续按“未完全解决”管理
-
-## 目标搜索结构
-
-```text
-wildos/nav.py
-  -> ObjectMaskWithTf
-  -> object_target_fusion.py
-     -> triangulation3d/target_particle_filter.py
-     -> TargetEstimate
-  -> object_search_goal_mux.py
-     -> exploration goal or stable target goal
-     -> completion latch
-```
-
-`ObjectMaskWithTf` 只携带融合实际需要的数据:
-
-- mask image
-- measurement header
-- camera transform
-- camera intrinsics
-- per-camera score
-
-目标融合状态语义:
-
-- 单视角只建立粒子，不替换初始探索目标
-- 两个有效视角后可发布视觉跟踪目标
-- 稳定多视角结果可成为导航目标
-- Unity 粒子最大射线深度为 30m，避免近场任务扩散到无效远端
-- LiDAR mask 内优先选择最近有效前景簇，避免背景墙覆盖目标表面
-- 已有视觉轨迹时单帧 LiDAR 不改变位置、置信度或 source，连续两帧一致后才更新和锁定
-- Goal Mux 会拒绝 frame、距离、高度、协方差或置信度异常的粗目标
-- 稳定目标使用独立的 0.3m 门槛继续纠偏，不会冻结在首次稳定位置
-- LiDAR 只做可选细化，不是视觉链路成立的前提
-- 完成事件必须同时满足稳定目标和距离约束
-
-## 研究基线
-
-以下目录保留，但不属于默认部署主线:
+以下内容保留用于论文和算法对照, 不属于默认部署主线:
 
 - `visual_navigation/lrn/`
 - `visual_navigation/imgfrontier_nav/`
 - `visual_navigation/geofrontier_nav/`
 - `explorfm_trainer/`
-- `test_explorfm_folder.py`
 - GPS 记录和可视化工具
 
-维护要求:
-
-- 基线必须保持可导入、可构建
-- 基线不得依赖固定机器路径
-- 基线入口不得混入默认 elevation 集成 launch
-- 公共消息变更时必须同步基线调用方
-
-## 可视化和 RViz 性能
-
-- 论文风格显示配置统一维护在 `graph_construction/rviz/wildos_paper.rviz`
-- GridMap 使用固定浅灰色显示, `elevation` 仍负责真实表面高度
-- `/spot1/graph_construction_viz` 的红线是导航图边, 默认保留
-- `free_radius` 和 `explored_radius` 圆只用于专项调试, 默认关闭
-- `/spot1/object_target_estimate_viz` 同时显示目标球和绿色观测射线, 不增加重复作用的目标可视化话题
-- 论文风格 RViz 默认不显示 LiDAR PointCloud2, 也不发布专用降采样点云 topic
-- `/livox/lidar` 和 `/livox/lidar_aligned` 继续供算法使用, 不得为了显示性能降低建图输入质量
-- 临时排查原始点云时可以手动添加 PointCloud2 Display, 排查完成后应关闭
-
-## 构建和验证
-
-`colcon` 默认在当前工作目录生成 `build/`、`install/` 和 `log/`。不得在 `src/nebula2-wildos` 仓库目录内直接运行 `colcon build`，否则会错误生成 `src/nebula2-wildos/build`、`src/nebula2-wildos/install` 和 `src/nebula2-wildos/log`，且这些产物不得用于启动或部署
-
-构建前必须先切换到 ROS workspace 根目录并检查当前路径。`/home/ks-server3/han` checkout 使用:
-
-```bash
-cd /home/ks-server3/han/wildos_ws
-test -d src/nebula2-wildos
-pwd
-source /opt/ros/humble/setup.bash
-colcon build --packages-up-to \
-  object_search_msgs triangulation3d visual_navigation \
-  graph_construction graphnav_planner --symlink-install
-```
-
-`/mnt/hhd/han` checkout 使用:
-
-```bash
-cd /mnt/hhd/han/wildos_ws
-test -d src/nebula2-wildos
-pwd
-source /opt/ros/humble/setup.bash
-colcon build --packages-up-to \
-  object_search_msgs triangulation3d visual_navigation \
-  graph_construction graphnav_planner --symlink-install
-```
-
-正确产物只能位于对应 workspace 根目录:
-
-```text
-wildos_ws/build
-wildos_ws/install
-wildos_ws/log
-```
-
-如果仓库目录下已经出现错误的 `build/install/log`，先确认当前运行进程没有引用这些目录，再单独清理。禁止为了省事 source 仓库目录内的错误 `install/setup.bash`
-
-核心单元测试覆盖:
-
-- GridMap adapter
-- sparse graph、persistent graph 和 frontier
-- target particle filter
-- object detection filter 和 reached evidence
-- goal mux
-- object target fusion
-
-## 文档规则
-
-- 当前代码是实现行为的最终依据, 本文件维护当前架构、有效主链路和长期约束
-- `docs/details/overview.md` 和 `docs/details/principles.md` 维护当前核心原理, 实现变化或内容错误时必须同步修改
-- `docs/details/topics.md` 维护当前 topic 契约, 发布者、消费者、类型或保留结论变化时必须同步修改
-- 所有日期目录文档都是对应修改当时的专项记录, 清理审计与其他日期文档地位相同
-- 每个独立问题都必须在当天日期目录下建立主题文档, 记录问题、原因、修改文件、行为边界和验证结果
-- 同一问题在同一天只能有一份主题文档, 从方案分析到多轮代码实现、测试和结果复盘都持续更新该文档
-- 不得因为方案变化、再次修改、测试失败、重新验证或拆分提交而新建同主题文档
-- 文档按问题划分而不是按提交次数划分, 同一天的导航图性能问题或探索路线问题各自只保留一份对应文档
-- 已有综合 TODO 明确覆盖多个关联问题时, 当天优先持续更新该 TODO, 不为其中的每个修改阶段重复创建说明文档
-- 后续无关问题不得追加到已有专项文档, 即使涉及同一模块也应建立新的主题文档
-- 同一问题跨天继续时, 在新日期目录建立当天记录并引用前一天文档, 长期有效结论同步到 `docs/details/`
-- 历史文档允许描述已经删除的 2D 或旧 triangulation 方案, 不要为了匹配当前代码回写历史记录
-- 修改形成新的长期架构约束、排障规则或高风险不变量时, 同步更新本文件
+公共消息变化时仍需检查这些调用方能否构建

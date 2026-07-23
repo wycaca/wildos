@@ -175,13 +175,17 @@ launch_dlio:=true
 
 | Topic | 类型 | 用途 |
 |---|---|---|
-| `/spot1/graphnav_planner/path` | `nav_msgs/msg/Path` | 当前执行路径 |
+| profile 中的 `planner_path_topic` | `nav_msgs/msg/Path` | Planner 原始 graph 路径 |
 | `/spot1/graphnav_planner/unexplored_space_map` | `grid_map_msgs/msg/GridMap` | Planner 调试 |
 | `/spot1/graphnav_planner/frontier_scores` | `visualization_msgs/msg/MarkerArray` | 最终候选分数调试 |
 
+Planner 在所有 profile 中发布 `/spot1/graphnav_planner/path`, Unity 自研导航消费该路径并输出 `/corrected_path` 给底层控制
+
+Planner、性能监控和 RViz 必须读取同一个 profile 配置, 不能在 launch 中根据 namespace 推导另一个 Path topic
+
 两个 Planner 调试 topic 只在存在订阅者时构造
 
-Path 只在路线实际变化时发布, 晚启动的 `topic echo` 没看到消息不能直接说明 Planner 从未发布
+Planner Path 只在路线实际变化时发布, 晚启动的 `topic echo` 没看到消息不能直接说明 Planner 从未发布
 
 ## 10. 三相机同步
 
