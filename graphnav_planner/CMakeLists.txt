@@ -126,6 +126,11 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_exploration_memory test/test_exploration_memory.cpp)
   target_link_libraries(test_exploration_memory graphnav_planner_component)
+
+  ament_add_gtest(test_frontier_score_visualization
+    test/test_frontier_score_visualization.cpp
+  )
+  target_link_libraries(test_frontier_score_visualization graphnav_planner_component)
 endif()
 
 ament_package()

@@ -48,7 +48,7 @@ Planner::PlanningResult Planner::plan_to_goal(
     planning_goal.z() = goal.z();
   }
   unexplored_space_map_->compute_distance_from(planning_goal.x(), planning_goal.y());
-  frontier_scores_.clear();
+  frontier_score_nodes_.clear();
 
   std::vector<std::tuple<graaf::vertex_id_t, double>> goal_radius_edges;
   std::unordered_map<graaf::vertex_id_t, double> frontier_costs;
@@ -110,7 +110,7 @@ Planner::PlanningResult Planner::plan_to_goal(
       {
         frontier_cost = frontier_path_distance * frontier_dist_cost_factor;
       }
-      frontier_scores_[id] = std::make_pair(node, std::make_pair(frontier_score, frontier_cost));
+      frontier_score_nodes_[id] = node;
       if (std::isfinite(frontier_cost))
       {
         frontier_costs[id] = frontier_cost;

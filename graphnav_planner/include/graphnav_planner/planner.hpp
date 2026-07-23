@@ -13,7 +13,6 @@
 #include <cstdint>
 #include <graaflib/graph.h>
 
-#include <std_msgs/msg/color_rgba.hpp>
 #include "graphnav_msgs/msg/navigation_graph.hpp"
 #include "graphnav_msgs/msg/uuid.hpp"
 #include <grid_map_msgs/msg/grid_map.hpp>
@@ -39,21 +38,6 @@ inline std::string uuid_to_string(const graphnav_msgs::msg::UUID& uuid)
     oss << std::setw(2) << static_cast<int>(uuid.id[i]);
   }
   return oss.str();
-}
-
-inline std_msgs::msg::ColorRGBA colormapJet(double value) 
-{
-    std_msgs::msg::ColorRGBA color;
-    color.a = 1.0;
-
-    double r = std::min(1.0, std::max(0.0, 1.5 - std::fabs(4.0 * value - 3.0)));
-    double g = std::min(1.0, std::max(0.0, 1.5 - std::fabs(4.0 * value - 2.0)));
-    double b = std::min(1.0, std::max(0.0, 1.5 - std::fabs(4.0 * value - 1.0)));
-
-    color.r = r;
-    color.g = g;
-    color.b = b;
-    return color;
 }
 
 class UnexploredSpaceMap
@@ -403,7 +387,7 @@ private:
   std::optional<SuspendedExploration> suspended_exploration_;
   ExplorationDiagnostics exploration_diagnostics_;
 
-  std::unordered_map<graaf::vertex_id_t, std::pair<graphnav_msgs::msg::Node, std::pair<double, double>>> frontier_scores_;
+  std::unordered_map<graaf::vertex_id_t, graphnav_msgs::msg::Node> frontier_score_nodes_;
 
   void update_traversal_memory(const graphnav_msgs::msg::NavigationGraph& graph);
   void reset_frontier_branch();
@@ -474,7 +458,9 @@ public:
   double branch_recovery_cost_penalty_ = 3.0;
   double revisit_cost_factor_ = 1.0;
 
-  visualization_msgs::msg::MarkerArray get_score_visualization(const rclcpp::Time& stamp, std::string frame_id, bool with_id_text = false) const;
+  visualization_msgs::msg::MarkerArray get_score_visualization(
+    const rclcpp::Time& stamp,
+    std::string frame_id) const;
 
 };
 

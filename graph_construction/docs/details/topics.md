@@ -177,7 +177,7 @@ launch_dlio:=true
 |---|---|---|
 | profile 中的 `planner_path_topic` | `nav_msgs/msg/Path` | Planner 原始 graph 路径 |
 | `/spot1/graphnav_planner/unexplored_space_map` | `grid_map_msgs/msg/GridMap` | Planner 调试 |
-| `/spot1/graphnav_planner/frontier_scores` | `visualization_msgs/msg/MarkerArray` | 最终候选分数调试 |
+| `/spot1/graphnav_planner/frontier_scores` | `visualization_msgs/msg/MarkerArray` | 视觉边界节点的方向分数色环 |
 
 Planner 在所有 profile 中发布 `/spot1/graphnav_planner/path`, Unity 自研导航消费该路径并输出 `/corrected_path` 给底层控制
 
@@ -186,6 +186,27 @@ Planner、性能监控和 RViz 必须读取同一个 profile 配置, 不能在 l
 两个 Planner 调试 topic 只在存在订阅者时构造
 
 Planner Path 只在路线实际变化时发布, 晚启动的 `topic echo` 没看到消息不能直接说明 Planner 从未发布
+
+### 9.1 导航图 Marker 含义
+
+`/spot1/graph_construction_viz` 中与机器人位置相关的 Marker:
+
+- 白色 `robot_position` 是机器人 XY 在 GridMap elevation 上的地面投影
+- 灰色 `robot_odom_position` 是原始 odom 或 base 位置
+- 红色 `robot_odom_position` 表示当前机器人 XY 无法投影到 GridMap elevation, 用于暴露地图覆盖或时序问题
+- 不再显示黄色 `current_node`, Planner 使用的当前图节点仍保留在 `NavigationGraph.current_node_idx` 中
+
+### 9.2 Frontier 方向分数色环
+
+`/spot1/graphnav_planner/frontier_scores` 直接读取每个视觉边界节点的完整 `frontier_scores` 数组, 在节点周围绘制半径 1 m 的方向色环:
+
+- 一个分数对应一个角度扇区, `0 rad` 朝向 odom 坐标系正 X
+- 扇区中心与 Planner 选择 `frontier_scores[best_bin]` 的方向完全一致
+- 分数 `0` 显示为蓝色, `0.5` 显示为黄色, `1` 显示为红色
+- 中间分数按论文式冷暖色带连续插值, 越红表示该方向的视觉边界分数越高
+- 所有节点和扇区合并到一个 `LINE_LIST` Marker, 避免按扇区创建大量 Marker
+
+该 topic 只表达视觉方向分数, 不再混入路径代价 cube、数值文本或 committed branch 连续性标记
 
 ## 10. 三相机同步
 

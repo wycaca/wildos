@@ -561,7 +561,7 @@ private:
       if (scores_debug_pub_->get_subscription_count() > 0)
       {
         visualization_msgs::msg::MarkerArray marker_array = planner_.get_score_visualization(
-          this->get_clock()->now(), latest_graph_header_->frame_id, true);
+          this->get_clock()->now(), latest_graph_header_->frame_id);
         scores_debug_pub_->publish(marker_array);
       }
       if (odom_)

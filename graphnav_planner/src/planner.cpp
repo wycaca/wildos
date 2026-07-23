@@ -254,7 +254,7 @@ void Planner::update_graph(graphnav_msgs::msg::NavigationGraph::ConstSharedPtr g
   update_traversal_memory(*graph);
   graph_ = graaf::undirected_graph<graphnav_msgs::msg::Node, double>();
   unexplored_space_map_.reset();
-  frontier_scores_.clear();
+  frontier_score_nodes_.clear();
   for (size_t i = 0; i < graph->nodes.size(); i++)
   {
     graphnav_msgs::msg::Node node = graph->nodes[i];
