@@ -23,6 +23,14 @@
 namespace graphnav_planner
 {
 
+namespace
+{
+
+constexpr double kDiagnosticsLogPeriodSec = 30.0;
+constexpr double kSlowPlanningWarningMs = 200.0;
+
+}  // namespace
+
 class PlannerNode : public rclcpp::Node
 {
 public:
@@ -56,8 +64,6 @@ public:
     this->declare_parameter("max_odom_age_sec", 1.0);
     this->declare_parameter("odom_reset_distance", 3.0);
     this->declare_parameter("odom_reset_speed", 12.0);
-    this->declare_parameter("diagnostics_log_period_sec", 30.0);
-    this->declare_parameter("slow_planning_warning_ms", 200.0);
 
     const auto nonnegative_parameter = [this](const std::string& name) {
       const double value = this->get_parameter(name).as_double();
@@ -125,11 +131,6 @@ public:
     this->declare_parameter("pending_reposition_goal_radius", 0.3);
     pending_reposition_goal_radius_ =
       this->get_parameter("pending_reposition_goal_radius").as_double();
-    diagnostics_log_period_sec_ = std::max(
-      this->get_parameter("diagnostics_log_period_sec").as_double(), 5.0);
-    slow_planning_warning_ms_ = std::max(
-      this->get_parameter("slow_planning_warning_ms").as_double(), 1.0);
-
     graph_sub_ = this->create_subscription<graphnav_msgs::msg::NavigationGraph>(
         "~/nav_graph", 10, [this](const graphnav_msgs::msg::NavigationGraph::ConstSharedPtr msg) {
           this->planner_.update_graph(msg);
@@ -170,7 +171,7 @@ public:
     grid_map_debug_pub_ = this->create_publisher<grid_map_msgs::msg::GridMap>("~/unexplored_space_map", 10);
     scores_debug_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("~/frontier_scores", 10);
     diagnostics_timer_ = this->create_wall_timer(
-      std::chrono::duration<double>(diagnostics_log_period_sec_),
+      std::chrono::duration<double>(kDiagnosticsLogPeriodSec),
       [this]() { this->report_diagnostics(); });
   }
 
@@ -254,6 +255,7 @@ private:
 
   void on_object_search_status(const std_msgs::msg::String& msg)
   {
+    // Convert Goal Mux ownership changes into exploration suspend or resume operations
     const bool target_evidence_pending =
       msg.data.find("pending_protection=true") != std::string::npos;
     if (target_evidence_pending != target_evidence_pending_)
@@ -384,6 +386,7 @@ private:
 
   void plan_to_goal()
   {
+    // Resolve state-specific radius and hold behavior before delegating graph route selection
     if (goal_pose_ && latest_graph_header_)
     {
       geometry_msgs::msg::PoseStamped goal = *goal_pose_;
@@ -635,7 +638,7 @@ private:
     planning_calls_++;
     const auto now = std::chrono::steady_clock::now();
     if (
-      elapsed_ms >= slow_planning_warning_ms_ &&
+      elapsed_ms >= kSlowPlanningWarningMs &&
       now - last_slow_warning_ >= std::chrono::seconds(30))
     {
       last_slow_warning_ = now;
@@ -643,7 +646,7 @@ private:
         this->get_logger(),
         "路径规划耗时偏高, planning=%.1fms, threshold=%.1fms",
         elapsed_ms,
-        slow_planning_warning_ms_);
+        kSlowPlanningWarningMs);
     }
   }
 
@@ -659,7 +662,7 @@ private:
       static_cast<size_t>(std::ceil(samples.size() * 0.95)) - 1,
       samples.size() - 1);
     const double average = std::accumulate(samples.begin(), samples.end(), 0.0) / samples.size();
-    const double rate = planning_calls_ / diagnostics_log_period_sec_;
+    const double rate = planning_calls_ / kDiagnosticsLogPeriodSec;
     const auto exploration = planner_.take_exploration_diagnostics();
     RCLCPP_INFO(
       this->get_logger(),
@@ -676,7 +679,8 @@ private:
       this->get_logger(),
       "探索路线统计, 分支变化=%zu, 正常延伸=%zu, 小变化保持=%zu, "
       "负向延伸拒绝=%zu, 恢复=历史%zu/方向%zu/死路%zu, "
-      "释放=路径失效%zu/无进展%zu, 状态切换=%zu",
+      "释放=路径失效%zu/无进展%zu, 状态切换=%zu, "
+      "安全节点回退=%zu, 无路线周期=%zu",
       exploration.route_changes,
       exploration.continuation_updates,
       exploration.held_updates,
@@ -686,7 +690,9 @@ private:
       exploration.dead_end_recoveries,
       exploration.invalid_path_releases,
       exploration.stalled_releases,
-      exploration.state_transitions);
+      exploration.state_transitions,
+      exploration.safe_node_fallbacks,
+      exploration.no_route_cycles);
     planning_timings_ms_.clear();
     planning_calls_ = 0;
     path_changes_ = 0;
@@ -720,8 +726,6 @@ private:
   double metric_goal_radius_;
   double final_reposition_goal_radius_;
   double pending_reposition_goal_radius_;
-  double diagnostics_log_period_sec_;
-  double slow_planning_warning_ms_;
   double max_graph_age_sec_;
   double max_odom_age_sec_;
   double odom_reset_distance_;

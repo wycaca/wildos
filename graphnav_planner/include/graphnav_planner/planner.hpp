@@ -253,6 +253,8 @@ public:
     size_t invalid_path_releases = 0;
     size_t stalled_releases = 0;
     size_t state_transitions = 0;
+    size_t safe_node_fallbacks = 0;
+    size_t no_route_cycles = 0;
   };
 
   Planner(rclcpp::Logger logger);
@@ -287,6 +289,7 @@ public:
   }
 
 private:
+  // Preserve the initial exploration axis while the virtual goal moves forward
   struct DirectionalExploration
   {
     Eigen::Vector3d origin;
@@ -294,6 +297,7 @@ private:
     double lookahead_distance;
   };
 
+  // Track one committed corridor across rolling graph and Frontier updates
   struct ActiveBranch
   {
     Eigen::Vector3d frontier_position;
@@ -315,6 +319,7 @@ private:
 
   using BranchRecord = ExplorationBranchMemory::BranchRecord;
 
+  // Suppress a failed corridor even when its Frontier UUID changes
   struct FailedBranch
   {
     std::string frontier_uuid;
@@ -324,6 +329,7 @@ private:
     rclcpp::Time retry_after;
   };
 
+  // Preserve exploration state while target observation temporarily owns navigation
   struct SuspendedExploration
   {
     std::optional<DirectionalExploration> directional_exploration;
@@ -340,6 +346,7 @@ private:
     std::vector<Eigen::Vector3d> direct_path_points;
   };
 
+  // Combine graph path metadata with directional and recovery ranking metrics
   struct FrontierCandidate
   {
     graaf::vertex_id_t id;
@@ -358,6 +365,7 @@ private:
     bool is_recovery_branch;
   };
 
+  // Describe how a live candidate relates to the committed corridor
   enum class BranchRelation
   {
     none,

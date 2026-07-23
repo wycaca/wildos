@@ -29,6 +29,9 @@ find_package(graaf_vendor REQUIRED)
 add_library(graphnav_planner_component SHARED
   src/exploration_memory.cpp
   src/planner.cpp
+  src/planner_exploration.cpp
+  src/planner_planning.cpp
+  src/planner_visualization.cpp
   src/planner_node.cpp
 )
 target_include_directories(graphnav_planner_component PUBLIC
@@ -111,7 +114,14 @@ if(BUILD_TESTING)
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
 
-  ament_add_gtest(test_exploration_state test/test_exploration_state.cpp)
+  ament_add_gtest(test_exploration_state
+    test/test_exploration_preemption.cpp
+    test/test_path_publication.cpp
+    test/test_directional_selection.cpp
+    test/test_committed_branch.cpp
+    test/test_exploration_recovery.cpp
+    test/test_direct_goal.cpp
+  )
   target_link_libraries(test_exploration_state graphnav_planner_component)
 
   ament_add_gtest(test_exploration_memory test/test_exploration_memory.cpp)
