@@ -39,6 +39,8 @@ _LIDAR_BUFFER_SIZE = 40
 _MAX_TARGET_MARKER_SCALE = 1.5
 _MIN_TARGET_HEIGHT_ABOVE_GROUND = 0.12
 _TARGET_CLUSTER_RADIUS = 0.75
+_DIAGNOSTICS_LOG_PERIOD_SEC = 60.0
+_SLOW_CALLBACK_WARNING_MS = 500.0
 
 
 class ObjectTargetFusion(Node):
@@ -67,8 +69,6 @@ class ObjectTargetFusion(Node):
         self.declare_parameter("lidar_min_points", 18)
         self.declare_parameter("lidar_mask_dilation_pixels", 3)
         self.declare_parameter("max_lidar_age_sec", 0.25)
-        self.declare_parameter("diagnostics_log_period_sec", 60.0)
-        self.declare_parameter("slow_callback_warning_ms", 500.0)
 
         self.max_depth = max(float(self.get_parameter("max_depth").value), 2.0)
         particle_config = ParticleFilterConfig(
@@ -180,11 +180,7 @@ class ObjectTargetFusion(Node):
             self._on_completed,
             10,
         )
-        diagnostics_period = max(
-            float(self.get_parameter("diagnostics_log_period_sec").value),
-            10.0,
-        )
-        self.create_timer(diagnostics_period, self._log_health)
+        self.create_timer(_DIAGNOSTICS_LOG_PERIOD_SEC, self._log_health)
 
         self.get_logger().info(
             "目标融合已启动, "
@@ -341,14 +337,16 @@ class ObjectTargetFusion(Node):
 
     def _warn_if_slow(self, elapsed_seconds: float, stage: str) -> None:
         """Report sustained-risk callbacks without logging every slow frame"""
-        threshold_ms = float(self.get_parameter("slow_callback_warning_ms").value)
         now = time.monotonic()
-        if elapsed_seconds * 1000.0 < threshold_ms or now - self._last_slow_warning < 30.0:
+        if (
+            elapsed_seconds * 1000.0 < _SLOW_CALLBACK_WARNING_MS
+            or now - self._last_slow_warning < 30.0
+        ):
             return
         self._last_slow_warning = now
         self.get_logger().warn(
             f"目标融合处理耗时偏高, total={elapsed_seconds * 1000.0:.1f}ms, "
-            f"threshold={threshold_ms:.1f}ms, stage={stage}"
+            f"threshold={_SLOW_CALLBACK_WARNING_MS:.1f}ms, stage={stage}"
         )
 
     def _log_health(self) -> None:

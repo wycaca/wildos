@@ -49,6 +49,9 @@ CAMERA_LOG_NAMES = {
     1: "左相机",
     2: "右相机",
 }
+_CALLBACK_LOG_INTERVAL = 100
+_DIAGNOSTICS_LOG_PERIOD_SEC = 30.0
+_SLOW_PROCESSING_WARNING_MS = 1500.0
 
 
 class WildOS_Nav(TFLookupSubscriber):
@@ -153,10 +156,6 @@ class WildOS_Nav(TFLookupSubscriber):
             "spin_thread": False,     # 是否单独线程 spin TF listener
         },
 
-        # 日志配置
-        "callback_log_interval": 100,
-        "diagnostics_log_period_sec": 30.0,
-        "slow_processing_warning_ms": 1500.0,
     }
 
     def __init__(self, config: OmegaConf=OmegaConf.create(), do_object_search=False):
@@ -306,15 +305,6 @@ class WildOS_Nav(TFLookupSubscriber):
         self._visualization_gate = PeriodicPublishGate(
             config.get("visualization_publish_period_sec", 2.0)
         )
-        self.callback_log_interval = max(int(config.get("callback_log_interval", 100)), 1)
-        self.diagnostics_log_period_sec = max(
-            float(config.get("diagnostics_log_period_sec", 30.0)),
-            10.0,
-        )
-        self.slow_processing_warning_ms = max(
-            float(config.get("slow_processing_warning_ms", 1500.0)),
-            1.0,
-        )
         self._last_slow_warning = 0.0
         self._processing_rate = EventRate()
         self._processing_timings = {
@@ -399,9 +389,9 @@ class WildOS_Nav(TFLookupSubscriber):
         self.init_publishers(config)
         self.init_subscribers(config)
         self.start_timer()
-        self.create_timer(self.diagnostics_log_period_sec, self._log_performance)
+        self.create_timer(_DIAGNOSTICS_LOG_PERIOD_SEC, self._log_performance)
         self.create_timer(
-            self.diagnostics_log_period_sec,
+            _DIAGNOSTICS_LOG_PERIOD_SEC,
             self._log_input_diagnostics,
         )
 
@@ -598,7 +588,7 @@ class WildOS_Nav(TFLookupSubscriber):
             self.get_logger().info(
                 "WildOS 已匹配第一组相机、里程计和导航图输入"
             )
-        elif self.clbk_cntr % self.callback_log_interval == 0:
+        elif self.clbk_cntr % _CALLBACK_LOG_INTERVAL == 0:
             self.get_logger().debug(
                 f"WildOS 已处理完整输入次数={self.clbk_cntr}"
             )
@@ -902,13 +892,13 @@ class WildOS_Nav(TFLookupSubscriber):
         self._processing_rate.tick()
         now = time.monotonic()
         if (
-            elapsed * 1000.0 >= self.slow_processing_warning_ms
+            elapsed * 1000.0 >= _SLOW_PROCESSING_WARNING_MS
             and now - self._last_slow_warning >= 30.0
         ):
             self._last_slow_warning = now
             self.get_logger().warn(
                 f"WildOS 视觉处理耗时偏高, total={elapsed * 1000.0:.1f}ms, "
-                f"threshold={self.slow_processing_warning_ms:.1f}ms"
+                f"threshold={_SLOW_PROCESSING_WARNING_MS:.1f}ms"
             )
 
     def _log_performance(self) -> None:
