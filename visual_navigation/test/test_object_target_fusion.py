@@ -6,13 +6,14 @@ from std_msgs.msg import Header, MultiArrayDimension
 from visualization_msgs.msg import Marker
 
 from object_search_msgs.msg import ObjectMaskWithTf
-from triangulation3d.target_particle_filter import TargetEstimate
+from triangulation3d.target_particle_filter import CameraObservation, TargetEstimate
 from visual_navigation.object_target_fusion import (
     ObjectTargetFusion,
     _mask_array,
     _target_ray_marker,
     _target_surface_measurement,
     _target_surface_measurement_with_reason,
+    _projected_mask_support,
     _target_marker,
     _xyz_points,
 )
@@ -201,6 +202,52 @@ def test_reference_image_stamp_uses_middle_camera_time():
 
     assert stamp.sec == 11
     assert stamp.nanosec == 100
+
+
+def test_lidar_projection_counts_same_point_once_across_cameras():
+    mask = np.zeros((7, 7), dtype=bool)
+    mask[2, 2] = True
+    observation = CameraObservation(
+        mask=mask,
+        intrinsic=np.eye(3),
+        rotation_world_from_camera=np.eye(3),
+        translation_world_from_camera=np.zeros(3),
+    )
+
+    visible, supported = _projected_mask_support(
+        np.array([[2.0, 2.0, 1.0]]),
+        [observation, observation],
+        dilation_pixels=0,
+    )
+
+    assert np.count_nonzero(visible) == 1
+    assert np.count_nonzero(supported) == 1
+
+
+def test_lidar_projection_uses_small_mask_dilation():
+    mask = np.zeros((7, 7), dtype=bool)
+    mask[2, 2] = True
+    observation = CameraObservation(
+        mask=mask,
+        intrinsic=np.eye(3),
+        rotation_world_from_camera=np.eye(3),
+        translation_world_from_camera=np.zeros(3),
+    )
+    points = np.array([[4.0, 2.0, 1.0]])
+
+    _, without_dilation = _projected_mask_support(
+        points,
+        [observation],
+        dilation_pixels=0,
+    )
+    _, with_dilation = _projected_mask_support(
+        points,
+        [observation],
+        dilation_pixels=2,
+    )
+
+    assert not without_dilation[0]
+    assert with_dilation[0]
 
 
 def test_lidar_measurement_rejects_ground_points_inside_mask():

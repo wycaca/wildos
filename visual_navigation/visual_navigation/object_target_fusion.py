@@ -14,6 +14,7 @@ from rclpy.duration import Duration
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
+from scipy.ndimage import binary_dilation
 from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation
 from geometry_msgs.msg import Point
@@ -60,8 +61,9 @@ class ObjectTargetFusion(Node):
         self.declare_parameter("duplicate_view_angle_deg", 0.5)
         self.declare_parameter("full_quality_translation", 0.3)
         self.declare_parameter("full_quality_angle_deg", 3.0)
-        self.declare_parameter("lidar_min_points", 30)
-        self.declare_parameter("max_lidar_age_sec", 3.0)
+        self.declare_parameter("lidar_min_points", 18)
+        self.declare_parameter("lidar_mask_dilation_pixels", 3)
+        self.declare_parameter("max_lidar_age_sec", 0.25)
         self.declare_parameter("diagnostics_log_period_sec", 60.0)
         self.declare_parameter("slow_callback_warning_ms", 500.0)
 
@@ -94,6 +96,10 @@ class ObjectTargetFusion(Node):
         self.particle_filter = TargetParticleFilter(particle_config)
         self.global_frame = str(self.get_parameter("global_frame").value)
         self.lidar_min_points = max(int(self.get_parameter("lidar_min_points").value), 1)
+        self.lidar_mask_dilation_pixels = max(
+            int(self.get_parameter("lidar_mask_dilation_pixels").value),
+            0,
+        )
         self.max_lidar_age_sec = max(float(self.get_parameter("max_lidar_age_sec").value), 0.0)
         self.lidar_buffer: deque[tuple[float, PointCloud2]] = deque(
             maxlen=_LIDAR_BUFFER_SIZE
@@ -109,6 +115,10 @@ class ObjectTargetFusion(Node):
         self._lidar_matched = 0
         self._lidar_refined = 0
         self._lidar_failures: Counter[str] = Counter()
+        self._lidar_point_counts = {
+            name: deque(maxlen=256)
+            for name in ("cloud", "visible", "mask", "elevated", "cluster")
+        }
         self._first_event_stamps: dict[str, float] = {}
         self._last_slow_warning = 0.0
         self._mask_rate = EventRate()
@@ -144,7 +154,7 @@ class ObjectTargetFusion(Node):
             ObjectMaskWithTf,
             str(self.get_parameter("object_mask_topic").value),
             self._on_object_mask,
-            10,
+            1,
         )
         self.create_subscription(
             PointCloud2,
@@ -173,6 +183,9 @@ class ObjectTargetFusion(Node):
             f"独立视角横向基线={particle_config.independent_view_translation:.2f}m, "
             f"重复帧门槛={particle_config.duplicate_view_translation:.2f}m/"
             f"{particle_config.duplicate_view_angle_deg:.1f}deg, "
+            f"雷达匹配时间差上限={self.max_lidar_age_sec:.2f}s, "
+            f"Mask扩张={self.lidar_mask_dilation_pixels}px, "
+            f"最少投影点={self.lidar_min_points}, "
             f"python={sys.executable}, numpy={np.__version__}, scipy={scipy.__version__}"
         )
 
@@ -346,6 +359,12 @@ class ObjectTargetFusion(Node):
             f"雷达精修={self._lidar_refined}/{self._lidar_matched}"
             f"({refine_ratio:.1f}%), "
             f"精修失败={_counter_summary(self._lidar_failures)}, "
+            "雷达点数平均值="
+            f"原始{self._lidar_count_average('cloud'):.0f}/"
+            f"相机内{self._lidar_count_average('visible'):.0f}/"
+            f"Mask内{self._lidar_count_average('mask'):.0f}/"
+            f"去地面{self._lidar_count_average('elevated'):.0f}/"
+            f"最终簇{self._lidar_count_average('cluster'):.0f}, "
             f"视角=独立{self.particle_filter.accepted_views}/"
             f"有效权重{self.particle_filter.view_support:.2f}/"
             f"弱更新{self.particle_filter.weak_view_updates}/"
@@ -440,44 +459,38 @@ class ObjectTargetFusion(Node):
         observations: list[CameraObservation],
         lidar_msg: PointCloud2,
     ) -> tuple[tuple[np.ndarray, int] | None, str | None]:
-        """把点云转到目标全局坐标系, 仅保留投影落入任一目标 Mask 的点"""
+        """联合三相机投影, 去地面后选择最近的连续前景簇"""
         points = _xyz_points(lidar_msg)
         if points.size == 0:
+            self._record_lidar_counts()
             return None, "empty_cloud"
         world_points = self._points_in_global_frame(points, lidar_msg)
         if world_points is None:
+            self._record_lidar_counts(cloud=points.shape[0])
             return None, "tf_unavailable"
 
-        mask_points = []
-        for observation in observations:
-            camera_points = (
-                observation.rotation_world_from_camera.T
-                @ (world_points - observation.translation_world_from_camera).T
-            ).T
-            positive_depth = camera_points[:, 2] > 0.1
-            projected = observation.intrinsic @ camera_points.T
-            safe_depth = np.where(positive_depth, projected[2], 1.0)
-            cols = np.rint(projected[0] / safe_depth).astype(np.int64)
-            rows = np.rint(projected[1] / safe_depth).astype(np.int64)
-            inside_image = (
-                positive_depth
-                & (rows >= 0)
-                & (rows < observation.mask.shape[0])
-                & (cols >= 0)
-                & (cols < observation.mask.shape[1])
-            )
-            inside_mask = np.zeros(world_points.shape[0], dtype=bool)
-            inside_mask[inside_image] = observation.mask[rows[inside_image], cols[inside_image]]
-            mask_points.append(world_points[inside_mask])
+        visible_union, mask_union = _projected_mask_support(
+            world_points,
+            observations,
+            self.lidar_mask_dilation_pixels,
+        )
 
-        supported = [points for points in mask_points if points.size > 0]
-        if not supported:
+        supported_points = world_points[mask_union]
+        if supported_points.size == 0:
+            self._record_lidar_counts(
+                cloud=world_points.shape[0],
+                visible=np.count_nonzero(visible_union),
+            )
             return None, "no_points_in_mask"
-        supported_points = np.vstack(supported)
         if supported_points.shape[0] < self.lidar_min_points:
+            self._record_lidar_counts(
+                cloud=world_points.shape[0],
+                visible=np.count_nonzero(visible_union),
+                mask=supported_points.shape[0],
+            )
             return None, "mask_points_insufficient"
 
-        measurement, failure_reason = _target_surface_measurement_with_reason(
+        measurement, failure_reason, details = _target_surface_measurement_details(
             supported_points,
             self.lidar_min_points,
             reference_position=np.mean(
@@ -485,9 +498,39 @@ class ObjectTargetFusion(Node):
                 axis=0,
             ),
         )
+        self._record_lidar_counts(
+            cloud=world_points.shape[0],
+            visible=np.count_nonzero(visible_union),
+            mask=supported_points.shape[0],
+            elevated=details["elevated"],
+            cluster=details["cluster"],
+        )
         if measurement is None:
             return None, failure_reason
         return measurement, None
+
+    def _record_lidar_counts(
+        self,
+        cloud: int = 0,
+        visible: int = 0,
+        mask: int = 0,
+        elevated: int = 0,
+        cluster: int = 0,
+    ) -> None:
+        """保存精修各阶段点数, 仅由周期日志汇总"""
+        values = {
+            "cloud": cloud,
+            "visible": visible,
+            "mask": mask,
+            "elevated": elevated,
+            "cluster": cluster,
+        }
+        for name, value in values.items():
+            self._lidar_point_counts[name].append(int(value))
+
+    def _lidar_count_average(self, name: str) -> float:
+        values = self._lidar_point_counts[name]
+        return float(np.mean(values)) if values else 0.0
 
     def _points_in_global_frame(
         self,
@@ -619,6 +662,47 @@ def _xyz_points(cloud: PointCloud2) -> np.ndarray:
     ).astype(np.float64, copy=False)
 
 
+def _projected_mask_support(
+    world_points: np.ndarray,
+    observations: list[CameraObservation],
+    dilation_pixels: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """把三相机投影合并为唯一点集合, 避免重复计算支持点"""
+    visible_union = np.zeros(world_points.shape[0], dtype=bool)
+    mask_union = np.zeros(world_points.shape[0], dtype=bool)
+    for observation in observations:
+        camera_points = (
+            observation.rotation_world_from_camera.T
+            @ (world_points - observation.translation_world_from_camera).T
+        ).T
+        positive_depth = camera_points[:, 2] > 0.1
+        projected = observation.intrinsic @ camera_points.T
+        safe_depth = np.where(positive_depth, projected[2], 1.0)
+        cols = np.rint(projected[0] / safe_depth).astype(np.int64)
+        rows = np.rint(projected[1] / safe_depth).astype(np.int64)
+        inside_image = (
+            positive_depth
+            & (rows >= 0)
+            & (rows < observation.mask.shape[0])
+            & (cols >= 0)
+            & (cols < observation.mask.shape[1])
+        )
+        visible_union |= inside_image
+        target_mask = observation.mask
+        if dilation_pixels:
+            target_mask = binary_dilation(
+                target_mask,
+                iterations=dilation_pixels,
+            )
+        inside_mask = np.zeros(world_points.shape[0], dtype=bool)
+        inside_mask[inside_image] = target_mask[
+            rows[inside_image],
+            cols[inside_image],
+        ]
+        mask_union |= inside_mask
+    return visible_union, mask_union
+
+
 def _target_surface_measurement(
     points: np.ndarray,
     minimum_support: int,
@@ -639,14 +723,30 @@ def _target_surface_measurement_with_reason(
     reference_position: np.ndarray | None = None,
 ) -> tuple[tuple[np.ndarray, int] | None, str | None]:
     """返回目标表面测量和失败阶段, 供周期诊断汇总"""
+    measurement, reason, _ = _target_surface_measurement_details(
+        points,
+        minimum_support,
+        reference_position,
+    )
+    return measurement, reason
+
+
+def _target_surface_measurement_details(
+    points: np.ndarray,
+    minimum_support: int,
+    reference_position: np.ndarray | None = None,
+) -> tuple[tuple[np.ndarray, int] | None, str | None, dict[str, int]]:
+    """提取连续前景簇并返回各过滤阶段点数"""
     points = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+    details = {"elevated": 0, "cluster": 0}
     if points.shape[0] < minimum_support:
-        return None, "mask_points_insufficient"
+        return None, "mask_points_insufficient", details
 
     ground_height = float(np.quantile(points[:, 2], 0.2))
     elevated = points[
         points[:, 2] >= ground_height + _MIN_TARGET_HEIGHT_ABOVE_GROUND
     ]
+    details["elevated"] = int(elevated.shape[0])
     elevated_minimum = max(6, minimum_support // 3)
     candidates = elevated if elevated.shape[0] >= elevated_minimum else points
     used_ground_fallback = elevated.shape[0] < elevated_minimum
@@ -666,7 +766,7 @@ def _target_surface_measurement_with_reason(
             if used_ground_fallback
             else "foreground_cluster_insufficient"
         )
-        return None, failure_reason
+        return None, failure_reason, details
     if reference_position is None:
         selected_indices = max(valid_neighborhoods, key=len)
     else:
@@ -678,7 +778,8 @@ def _target_surface_measurement_with_reason(
 
         selected_indices = min(valid_neighborhoods, key=median_range)
     cluster = candidates[np.asarray(selected_indices, dtype=np.int64)]
-    return (np.median(cluster, axis=0), int(cluster.shape[0])), None
+    details["cluster"] = int(cluster.shape[0])
+    return (np.median(cluster, axis=0), int(cluster.shape[0])), None, details
 
 
 def _counter_summary(counter: Counter[str]) -> str:
