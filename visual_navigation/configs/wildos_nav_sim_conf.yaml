@@ -54,8 +54,12 @@ visualization_require_subscribers: true
 
 # ROS2 subscriber params
 qos_history_depth: 1
-syncsub_queue_size: 120
-syncsub_slop: 5.0
+syncsub_queue_size: 5
+syncsub_slop: 0.2
+odometry_cache_size: 100
+odometry_match_max_delta_sec: 0.2
+navigation_graph_max_age_sec: 1.0
+navigation_graph_future_tolerance_sec: 0.1
 
 # Low-frequency performance diagnostics
 callback_log_interval: 100
@@ -80,9 +84,9 @@ object_search_config:
 
 # TFLookup Config
 tf_lookup_config:
-    buffer_size: 8
+    buffer_size: 1
     cache_time: 10
-    timer_duration: 0.1
+    timer_duration: 0.05
     lookup_timeout: 0
     qos_history_depth: 100
     wait_for_oldest: false

@@ -1,6 +1,7 @@
 import rclpy
 from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 
+from copy import deepcopy
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import CompressedImage, Image as ImageMsg, CameraInfo
 from message_filters import ApproximateTimeSynchronizer, Subscriber
@@ -11,6 +12,7 @@ from cv_bridge import CvBridge
 from object_search_msgs.msg import ObjectMaskWithTf
 
 from pathlib import Path
+from threading import Lock
 from omegaconf import OmegaConf
 import numpy as np
 import torch
@@ -34,6 +36,7 @@ from visual_navigation.object_reached_evidence import VisualReachedEvidence
 from visual_navigation.utils.paths import repository_root
 from visual_navigation.utils.performance_stats import EventRate, TimingWindow
 from visual_navigation.utils.publish_gate import PeriodicPublishGate
+from visual_navigation.utils.wildos_input_cache import WildOSInputCache
 
 HOME_DIR = repository_root()
 CAMERA_MAPPING = {
@@ -110,6 +113,10 @@ class WildOS_Nav(TFLookupSubscriber):
         "qos_history_depth": 1,
         "syncsub_queue_size": 1,
         "syncsub_slop": 0.2,
+        "odometry_cache_size": 100,
+        "odometry_match_max_delta_sec": 0.2,
+        "navigation_graph_max_age_sec": 1.0,
+        "navigation_graph_future_tolerance_sec": 0.1,
 
         # 目标搜索参数
         "object_search_config": {
@@ -138,10 +145,10 @@ class WildOS_Nav(TFLookupSubscriber):
         "tf_lookup_config": {
             "buffer_size": 1,       # 消息数量
             "cache_time": 10,       # 秒
-            "timer_duration": 0.5,  # 秒
+            "timer_duration": 0.05,  # 秒
             "lookup_timeout": 0,     # 秒
             "qos_history_depth": 1,  # QoS 队列深度
-            "wait_for_oldest": True,  # buffer 满时是否等待
+            "wait_for_oldest": False,  # buffer 满时是否等待
             "clear_buffer_on_process": True,  # 处理后是否清空 buffer
             "spin_thread": False,     # 是否单独线程 spin TF listener
         },
@@ -314,6 +321,51 @@ class WildOS_Nav(TFLookupSubscriber):
             name: TimingWindow()
             for name in ("decode", "project", "inference", "object", "score", "publish", "total")
         }
+        self._latency_timings = {
+            name: TimingWindow()
+            for name in ("sync_wait", "camera_spread", "source_age", "tf_wait", "mask_age")
+        }
+        self._input_delta_timings = {
+            name: TimingWindow()
+            for name in ("camera_spread", "odom_delta", "nav_graph_age")
+        }
+        self._input_rates = {
+            name: EventRate()
+            for name in (
+                "image_front",
+                "image_left",
+                "image_right",
+                "info_front",
+                "info_left",
+                "info_right",
+                "odom",
+                "nav_graph",
+                "camera_sync",
+                "matched",
+            )
+        }
+        self._input_cache = WildOSInputCache(
+            num_cameras=self.num_cameras,
+            odom_cache_size=int(config.get("odometry_cache_size", 100)),
+            odom_max_delta_seconds=float(
+                config.get("odometry_match_max_delta_sec", 0.2)
+            ),
+            nav_graph_max_age_seconds=float(
+                config.get("navigation_graph_max_age_sec", 1.0)
+            ),
+            nav_graph_future_tolerance_seconds=float(
+                config.get("navigation_graph_future_tolerance_sec", 0.1)
+            ),
+        )
+        self._input_rejections: dict[str, int] = {}
+        self._input_diagnostics_lock = Lock()
+        self._input_started_at = time.monotonic()
+        self._last_camera_sync_time = None
+        self._last_input_match_time = None
+        self._image_arrival_times = {
+            camera_idx: {}
+            for camera_idx in range(self.num_cameras)
+        }
 
         # 可视化
         self.geofrontier_viz_colors = np.array([
@@ -348,6 +400,10 @@ class WildOS_Nav(TFLookupSubscriber):
         self.init_subscribers(config)
         self.start_timer()
         self.create_timer(self.diagnostics_log_period_sec, self._log_performance)
+        self.create_timer(
+            self.diagnostics_log_period_sec,
+            self._log_input_diagnostics,
+        )
 
     def init_model(self, config, do_object_search):
         # VLM 初始化
@@ -450,7 +506,7 @@ class WildOS_Nav(TFLookupSubscriber):
             self.object_mask_publisher = self.create_publisher(
                 ObjectMaskWithTf,
                 config.object_mask_topic,
-                10
+                1
             )
             self.object_reached_publisher = self.create_publisher(
                 Bool,
@@ -459,19 +515,47 @@ class WildOS_Nav(TFLookupSubscriber):
             )
 
     def init_subscribers(self, config):
-
+        """只同步相机图像, 其他输入使用独立缓存匹配"""
         cameraimg_topic_str = config.camera_img_topic
         camerainfo_topic_str = config.camera_info_topic
         img_msg_type = CompressedImage if self.using_compressed_imgs else ImageMsg
 
         self.camera_subs = {}
         for i in range(self.num_cameras):
-            self.camera_subs[i] = {
-                "image": Subscriber(self, img_msg_type, cameraimg_topic_str.format(CAMERA_MAPPING[i]), qos_profile=config.qos_history_depth),
-                "info": Subscriber(self, CameraInfo, camerainfo_topic_str.format(CAMERA_MAPPING[i]), qos_profile=config.qos_history_depth)
-            }
-        self.odom_sub = Subscriber(self, Odometry, config.odometry_topic, qos_profile=config.qos_history_depth)
-        self.navgraph_sub = Subscriber(self, NavigationGraph, config.navigation_graph_topic, qos_profile=config.qos_history_depth)
+            self.camera_subs[i] = Subscriber(
+                self,
+                img_msg_type,
+                cameraimg_topic_str.format(CAMERA_MAPPING[i]),
+                qos_profile=config.qos_history_depth,
+            )
+            self.camera_subs[i].registerCallback(
+                self._record_image_arrival,
+                i,
+            )
+        self.camera_info_subs = [
+            self.create_subscription(
+                CameraInfo,
+                camerainfo_topic_str.format(CAMERA_MAPPING[i]),
+                lambda msg, camera_idx=i: self._cache_camera_info(
+                    msg,
+                    camera_idx,
+                ),
+                config.qos_history_depth,
+            )
+            for i in range(self.num_cameras)
+        ]
+        self.odom_sub = self.create_subscription(
+            Odometry,
+            config.odometry_topic,
+            self._cache_odom,
+            config.qos_history_depth,
+        )
+        self.navgraph_sub = self.create_subscription(
+            NavigationGraph,
+            config.navigation_graph_topic,
+            self._cache_nav_graph,
+            config.qos_history_depth,
+        )
         if self.object_search_mode:
             self.object_completed_sub = self.create_subscription(
                 Bool,
@@ -480,34 +564,73 @@ class WildOS_Nav(TFLookupSubscriber):
                 10,
             )
 
-        ts_subs = [self.odom_sub, self.navgraph_sub]
-        for i in range(self.num_cameras):
-            ts_subs.append(self.camera_subs[i]["image"])
-            ts_subs.append(self.camera_subs[i]["info"])
-
         self.ts = ApproximateTimeSynchronizer(
-            ts_subs, queue_size=config.syncsub_queue_size, slop=config.syncsub_slop
+            list(self.camera_subs.values()),
+            queue_size=config.syncsub_queue_size,
+            slop=config.syncsub_slop,
         )
         self.ts.registerCallback(self.listener_callback)
 
-    def listener_callback(self, odom_msg, navgraph_msg, *msgs):
-        """以图像时间查询相机 TF, 防止运动中目标射线被当前 odom 位姿平移"""
+    def listener_callback(self, *image_msgs):
+        """为三相机同步组匹配内参、最近 odom 和最新导航图"""
+        synchronized_at = time.perf_counter()
+        self._input_rates["camera_sync"].tick()
+        self._last_camera_sync_time = time.monotonic()
+        measurement_stamp = reference_image_stamp(image_msgs)
+        matched_inputs, rejection_reason = self._input_cache.match(
+            measurement_stamp
+        )
+        if matched_inputs is None:
+            self._record_input_rejection(rejection_reason)
+            return
+
+        odom_msg = matched_inputs.odom
+        navgraph_msg = matched_inputs.nav_graph
+        cam_info_msgs = matched_inputs.camera_infos
+        if odom_msg.header.frame_id != self.global_frame:
+            self._record_input_rejection("odom_frame_mismatch")
+            return
+
+        self._input_rates["matched"].tick()
+        self._last_input_match_time = time.monotonic()
         self.clbk_cntr += 1
         if self.clbk_cntr == 1:
-            self.get_logger().info("WildOS 已收到第一帧同步输入")
+            self.get_logger().info(
+                "WildOS 已匹配第一组相机、里程计和导航图输入"
+            )
         elif self.clbk_cntr % self.callback_log_interval == 0:
-            self.get_logger().debug(f"WildOS 已处理同步输入次数={self.clbk_cntr}")
+            self.get_logger().debug(
+                f"WildOS 已处理完整输入次数={self.clbk_cntr}"
+            )
 
-        assert odom_msg.header.frame_id == self.global_frame, \
-            f"Odom frame {odom_msg.header.frame_id} does not match global frame {self.global_frame}"
-        # assert navgraph_msg.header.frame_id == self.global_frame, \
-        #     f"Navgraph frame {navgraph_msg.header.frame_id} does not match global frame {self.global_frame}"
-
-        image_msgs = [
-            msgs[camera_idx * 2]
-            for camera_idx in range(self.num_cameras)
+        image_stamp_seconds = [
+            msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+            for msg in image_msgs
         ]
-        measurement_stamp = reference_image_stamp(image_msgs)
+        camera_spread = max(image_stamp_seconds) - min(image_stamp_seconds)
+        self._latency_timings["camera_spread"].add_seconds(camera_spread)
+        self._input_delta_timings["camera_spread"].add_seconds(camera_spread)
+        self._input_delta_timings["odom_delta"].add_seconds(
+            matched_inputs.odom_delta_seconds
+        )
+        self._input_delta_timings["nav_graph_age"].add_seconds(
+            matched_inputs.nav_graph_age_seconds
+        )
+        arrival_times = [
+            self._image_arrival_times[camera_idx].pop(
+                self._stamp_nanoseconds(image_msg.header.stamp),
+                None,
+            )
+            for camera_idx, image_msg in enumerate(image_msgs)
+        ]
+        available_arrivals = [arrival for arrival in arrival_times if arrival is not None]
+        if available_arrivals:
+            self._latency_timings["sync_wait"].add_seconds(
+                synchronized_at - min(available_arrivals)
+            )
+        source_age = self._stamp_age_seconds(measurement_stamp)
+        if source_age is not None:
+            self._latency_timings["source_age"].add_seconds(source_age)
         measurement_header = Header(
             stamp=measurement_stamp,
             frame_id=self.global_frame,
@@ -516,8 +639,10 @@ class WildOS_Nav(TFLookupSubscriber):
             msg={
                 "odom": odom_msg,
                 "navgraph": navgraph_msg,
-                "cam_msgs": msgs,
+                "image_msgs": tuple(image_msgs),
+                "camera_info_msgs": cam_info_msgs,
                 "measurement_header": measurement_header,
+                "queued_at": synchronized_at,
             },
             stamp=measurement_stamp,
         )
@@ -525,16 +650,22 @@ class WildOS_Nav(TFLookupSubscriber):
     def do_processing(self, msg, tf_data):
         self.get_logger().debug("WildOS 开始执行视觉评分")
         processing_started = time.perf_counter()
+        queued_at = msg.get("queued_at")
+        if queued_at is not None:
+            self._latency_timings["tf_wait"].add_seconds(
+                processing_started - queued_at
+            )
 
         # 提取消息
         odom_msg = msg["odom"]
         navgraph_msg = msg["navgraph"]
-        msgs = msg["cam_msgs"]
+        image_msgs = msg["image_msgs"]
+        cam_info_msgs = msg["camera_info_msgs"]
         measurement_header = msg["measurement_header"]
 
         # 提取相机图像和内参
         stage_started = time.perf_counter()
-        rgb_imgs, cam_info_msgs = [], []
+        rgb_imgs = []
         for i in range(self.num_cameras):
             if self.using_compressed_imgs:
                 convert_func = self.br.compressed_imgmsg_to_cv2
@@ -543,13 +674,18 @@ class WildOS_Nav(TFLookupSubscriber):
 
             if self.cam_inverted:
                 rgb_imgs.append(
-                    np.rot90(convert_func(msgs[i * 2], desired_encoding='rgb8'), k=2)
+                    np.rot90(
+                        convert_func(
+                            image_msgs[i],
+                            desired_encoding='rgb8',
+                        ),
+                        k=2,
+                    )
                 )
             else:
                 rgb_imgs.append(
-                    convert_func(msgs[i * 2], desired_encoding='rgb8')
+                    convert_func(image_msgs[i], desired_encoding='rgb8')
                 )
-            cam_info_msgs.append(msgs[i * 2 + 1])
         self._processing_timings["decode"].add_seconds(time.perf_counter() - stage_started)
 
         # 从 navgraph_msg 提取 geofrontier
@@ -646,6 +782,9 @@ class WildOS_Nav(TFLookupSubscriber):
                             measurement_header=measurement_header,
                         )
                     )
+                    mask_age = self._stamp_age_seconds(measurement_header.stamp)
+                    if mask_age is not None:
+                        self._latency_timings["mask_age"].add_seconds(mask_age)
                     batch_img_frontiers = np.maximum(
                         batch_img_frontiers,
                         self.obj_frontier_score * binary_mask,
@@ -723,7 +862,7 @@ class WildOS_Nav(TFLookupSubscriber):
                     self.viz.visualize_model_det(nav_data, all_cam_data),
                     encoding="rgb8",
                 )
-                model_viz_msg.header = msgs[0].header
+                model_viz_msg.header = image_msgs[0].header
                 self.model_viz_pub.publish(model_viz_msg)
             if self._visualization_publisher_enabled(self.score_rings_pub):
                 self.score_rings_pub.publish(
@@ -781,6 +920,10 @@ class WildOS_Nav(TFLookupSubscriber):
         if not summaries["total"].count:
             return
         total = summaries["total"]
+        latency = {
+            name: timing.summary(reset=True)
+            for name, timing in self._latency_timings.items()
+        }
         self.get_logger().info(
             "WildOS 视觉性能, "
             f"频率={self._processing_rate.sample(reset=True):.2f}Hz, "
@@ -792,8 +935,103 @@ class WildOS_Nav(TFLookupSubscriber):
             f"模型推理{summaries['inference'].average_ms:.0f}ms/"
             f"目标检测{summaries['object'].average_ms:.0f}ms/"
             f"边界评分{summaries['score'].average_ms:.0f}ms/"
-            f"结果发布{summaries['publish'].average_ms:.0f}ms"
+            f"结果发布{summaries['publish'].average_ms:.0f}ms, "
+            "链路延迟平均值="
+            f"图像同步等待{latency['sync_wait'].average_ms:.0f}ms/"
+            f"三相机时间差{latency['camera_spread'].average_ms:.0f}ms/"
+            f"同步时图像年龄{latency['source_age'].average_ms:.0f}ms/"
+            f"TF等待{latency['tf_wait'].average_ms:.0f}ms/"
+            f"Mask发布年龄{latency['mask_age'].average_ms:.0f}ms"
         )
+
+    def _record_image_arrival(self, msg, camera_idx: int) -> None:
+        """记录图像进入同步器的时间, 仅保留最近少量帧"""
+        self._input_rates[f"image_{CAMERA_MAPPING[camera_idx]}"].tick()
+        arrivals = self._image_arrival_times[camera_idx]
+        arrivals[self._stamp_nanoseconds(msg.header.stamp)] = time.perf_counter()
+        while len(arrivals) > 16:
+            arrivals.pop(next(iter(arrivals)))
+
+    def _cache_camera_info(self, msg: CameraInfo, camera_idx: int) -> None:
+        """独立缓存 CameraInfo, 不参与逐帧同步"""
+        self._input_rates[f"info_{CAMERA_MAPPING[camera_idx]}"].tick()
+        self._input_cache.add_camera_info(camera_idx, msg)
+
+    def _cache_odom(self, msg: Odometry) -> None:
+        """缓存 odom, 供相机测量按时间选择最近帧"""
+        self._input_rates["odom"].tick()
+        self._input_cache.add_odom(msg)
+
+    def _cache_nav_graph(self, msg: NavigationGraph) -> None:
+        """缓存时间最新且 current node 有效的导航图"""
+        self._input_rates["nav_graph"].tick()
+        if not self._input_cache.update_nav_graph(msg):
+            self._record_input_rejection("nav_graph_invalid")
+
+    def _record_input_rejection(self, reason: str) -> None:
+        """线程安全累计输入匹配拒绝原因"""
+        with self._input_diagnostics_lock:
+            self._input_rejections[reason] = (
+                self._input_rejections.get(reason, 0) + 1
+            )
+
+    def _log_input_diagnostics(self) -> None:
+        """低频输出输入频率、时间差和同步停滞原因"""
+        now = time.monotonic()
+        cache = self._input_cache.snapshot()
+        rates = {
+            name: rate.sample(reset=True)
+            for name, rate in self._input_rates.items()
+        }
+        deltas = {
+            name: timing.summary(reset=True)
+            for name, timing in self._input_delta_timings.items()
+        }
+        camera_sync_idle = now - (
+            self._last_camera_sync_time or self._input_started_at
+        )
+        matched_idle = now - (
+            self._last_input_match_time or self._input_started_at
+        )
+        with self._input_diagnostics_lock:
+            rejection_summary = "/".join(
+                f"{name}:{count}"
+                for name, count in sorted(self._input_rejections.items())
+                if count > 0
+            ) or "无"
+            self._input_rejections.clear()
+        self.get_logger().debug(
+            "WildOS 输入诊断, 频率="
+            f"图像前/左/右={rates['image_front']:.1f}/"
+            f"{rates['image_left']:.1f}/{rates['image_right']:.1f}Hz, "
+            f"内参前/左/右={rates['info_front']:.1f}/"
+            f"{rates['info_left']:.1f}/{rates['info_right']:.1f}Hz, "
+            f"odom={rates['odom']:.1f}Hz, 导航图={rates['nav_graph']:.1f}Hz, "
+            f"相机同步={rates['camera_sync']:.1f}Hz, "
+            f"完整匹配={rates['matched']:.1f}Hz, "
+            "时间差95%上限="
+            f"三相机{deltas['camera_spread'].p95_ms:.0f}ms/"
+            f"odom{deltas['odom_delta'].p95_ms:.0f}ms/"
+            f"导航图年龄{deltas['nav_graph_age'].p95_ms:.0f}ms, "
+            f"距上次相机同步={camera_sync_idle:.1f}s, "
+            f"距上次完整匹配={matched_idle:.1f}s, "
+            f"缓存=odom:{cache.odom_count}/内参:{cache.camera_info_count}/"
+            f"导航图:{'有' if cache.has_nav_graph else '无'}, "
+            f"拒绝={rejection_summary}"
+        )
+
+    @staticmethod
+    def _stamp_nanoseconds(stamp) -> int:
+        return int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
+
+    def _stamp_age_seconds(self, stamp) -> float | None:
+        """返回当前 ROS 时间相对消息时间的非负年龄"""
+        stamp_seconds = stamp.sec + stamp.nanosec * 1e-9
+        now_seconds = self.get_clock().now().nanoseconds * 1e-9
+        age = now_seconds - stamp_seconds
+        if not np.isfinite(age) or age < 0.0:
+            return None
+        return age
 
     def _log_object_missing(self, detection_rejections, confirmation_ready: bool) -> None:
         """记录当前帧的真实拒绝门槛, 并区分窗口和融合目标状态"""
@@ -905,7 +1143,8 @@ class WildOS_Nav(TFLookupSubscriber):
         """只发布当前活动 Frontier 的本帧评分, 不沿用历史视角结果"""
         current_scores = CurrentFrontierScores(self.frontier_uuid_to_scores)
         trav_class_idx = navgraph_msg.trav_classes.index(self.traversability_class)
-        scored_navgraph = navgraph_msg
+        # 最新原始图会被多组相机复用, 评分只能修改消息副本
+        scored_navgraph = deepcopy(navgraph_msg)
         
         for i in range(self.num_cameras):
             if not geofrontiers[i]:

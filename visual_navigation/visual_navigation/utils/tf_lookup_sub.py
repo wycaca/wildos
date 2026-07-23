@@ -147,9 +147,12 @@ class TFLookupSubscriber(Node, ABC):
             if self.oldest_time_processed is None or self.oldest_time_processed < valid_ts:
                 self.oldest_time_processed = valid_ts
                 self._log_tf_found(valid_ts)
-                self.do_processing(valid_msg, valid_tfs)
+                # Remove the selected batch before processing so new arrivals are preserved
                 if self.clear_buffer_on_process:
                     self.msg_buffer.clear()
+                else:
+                    self.msg_buffer.pop_oldest_msg()
+                self.do_processing(valid_msg, valid_tfs)
             else:
                 self.get_logger().debug(
                     f"Already processed TF for time {valid_ts}, skipping processing"
