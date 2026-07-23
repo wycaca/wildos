@@ -24,6 +24,7 @@ def test_graph_viz_hides_radius_markers_by_default():
     assert "free_radius" not in namespaces
     assert "explored_radius" not in namespaces
     assert "grid_footprint" not in namespaces
+    assert "current_node" not in namespaces
     assert "edges" in namespaces
     edge_marker = next(marker for marker in markers.markers if marker.ns == "edges")
     assert edge_marker.scale.x == 0.03

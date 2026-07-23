@@ -92,9 +92,6 @@ class GraphVisualizer:
         if self.show_radius_markers:
             self._append_radius_markers(markers, header, current_nodes)
 
-        if graph.current_node_id in graph.nodes:
-            markers.markers.append(self._current_node_marker(header, graph.nodes[graph.current_node_id]))
-
         return markers
 
     def _append_radius_markers(
@@ -243,22 +240,6 @@ class GraphVisualizer:
         marker.scale.z = 0.18
         marker.color = ColorRGBA(r=1.0, g=0.9, b=0.0, a=0.65)
         marker.points = [self._graph_point(point) for point in graph.trajectory_points]
-        return marker
-
-    def _current_node_marker(self, header: Header, node: InternalNode) -> Marker:
-        """突出显示当前机器人所在或最近的 graph node"""
-        marker = Marker()
-        marker.header = header
-        marker.ns = "current_node"
-        marker.id = 7
-        marker.action = Marker.ADD
-        marker.type = Marker.SPHERE
-        marker.pose.position = self._graph_point(node.position)
-        marker.pose.orientation.w = 1.0
-        marker.scale.x = 0.6
-        marker.scale.y = 0.6
-        marker.scale.z = 0.6
-        marker.color = ColorRGBA(r=1.0, g=0.55, b=0.0, a=1.0)
         return marker
 
     def _robot_position_marker(self, header: Header, position: Tuple[float, float, float]) -> Marker:

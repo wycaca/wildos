@@ -20,7 +20,6 @@ Visualization Manager:
       Enabled: true
       Name: 导航图
       Namespaces:
-        current_node: true
         edges: true
         free_nodes: true
         frontier_nodes: true
