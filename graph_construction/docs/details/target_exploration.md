@@ -35,6 +35,9 @@ stateDiagram-v2
     [*] --> WAIT_FOR_ODOM
     WAIT_FOR_ODOM --> STARTUP_OBSERVATION
     STARTUP_OBSERVATION --> SEARCHING_WITH_INITIAL_GOAL
+    SEARCHING_WITH_INITIAL_GOAL --> TARGET_PENDING_OBSERVATION: 单视角候选
+    TARGET_PENDING_OBSERVATION --> SEARCHING_WITH_INITIAL_GOAL: 短时观察结束
+    TARGET_PENDING_OBSERVATION --> TARGET_APPROACH_COARSE: 形成两视角粗目标
     SEARCHING_WITH_INITIAL_GOAL --> TARGET_APPROACH_COARSE: 粗目标通过门控
     TARGET_APPROACH_COARSE --> TARGET_OBSERVATION: 到达观察位置
     TARGET_OBSERVATION --> TARGET_APPROACH_COARSE: 更换观察点
@@ -49,6 +52,7 @@ stateDiagram-v2
 | `WAIT_FOR_ODOM` | 等待机器人位置 |
 | `STARTUP_OBSERVATION` | 等地图和视觉评分稳定 |
 | `SEARCHING_WITH_INITIAL_GOAL` | 按初始方向探索 |
+| `TARGET_PENDING_OBSERVATION` | 保持位置并面向单视角候选 |
 | `TARGET_APPROACH_COARSE` | 接近粗目标的安全观察位置 |
 | `TARGET_OBSERVATION` | 面向粗目标观察或换位 |
 | `TARGET_APPROACH_METRIC` | 接近稳定三维目标 |
@@ -228,9 +232,13 @@ Frontier 位置移动不足 0.75 m 时继续执行原路线, 等累计移动达�
 
 系统短暂保护这份证据, 保持当前路线并冻结失败计时, 但不会让单视角目标接管导航
 
+融合节点发布 Mask 质心射线方向, Goal Mux 丢弃不可靠的距离, 在当前位置面向目标约 1.5 s
+
+观察后仍未形成两视角粗目标时恢复原探索分支
+
 ### 粗目标
 
-粗目标至少需要 2 个独立视角和 0.5 置信度, 同时通过 frame、距离、高度和误差范围检查
+粗目标至少需要 2 个独立视角和 0.45 置信度, 同时通过 frame、距离、高度和误差范围检查
 
 机器人先到目标外约 2.75 m 的观察位置:
 
@@ -238,6 +246,10 @@ Frontier 位置移动不足 0.75 m 时继续执行原路线, 等累计移动达�
 2. 目标丢失时左右约 20 度重捕获
 3. 仍不稳定时横向移动约 0.75 m
 4. 到新位置后继续面向目标观察
+
+目标抢占前, Planner 会暂存当前方向、活动分支、岔路栈和失败冷却记录
+
+粗目标 3 s 没有更新时恢复这些探索记录, 不把目标观察误记成死路或已完成分支
 
 ### 稳定目标
 
@@ -285,6 +297,7 @@ Frontier 位置移动不足 0.75 m 时继续执行原路线, 等累计移动达�
 - 只有 `BACKTRACK` 可以绕过普通回退限制
 - 短暂空图不会清空活动路线
 - 恢复新分支后使用岔路处的局部方向
+- 目标观察期间暂停探索状态, 候选失效后恢复原分支
 - 30 s 日志汇总路线变化、保持、负向拒绝、恢复和释放原因
 
 24 项 C++ 探索路线测试通过

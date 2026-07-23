@@ -32,6 +32,7 @@ from triangulation3d.target_particle_filter import (
     TargetParticleFilter,
 )
 from visual_navigation.utils.performance_stats import EventRate, TimingWindow
+from visual_navigation.object_search_types import coarse_target_evidence_ready
 
 
 _LIDAR_BUFFER_SIZE = 40
@@ -56,6 +57,8 @@ class ObjectTargetFusion(Node):
         self.declare_parameter("particle_count", 1500)
         self.declare_parameter("max_depth", 100.0)
         self.declare_parameter("stable_min_confidence", 0.6)
+        self.declare_parameter("coarse_target_min_views", 2)
+        self.declare_parameter("coarse_target_min_confidence", 0.45)
         self.declare_parameter("independent_view_translation", 0.12)
         self.declare_parameter("duplicate_view_translation", 0.03)
         self.declare_parameter("duplicate_view_angle_deg", 0.5)
@@ -95,6 +98,14 @@ class ObjectTargetFusion(Node):
         )
         self.particle_filter = TargetParticleFilter(particle_config)
         self.global_frame = str(self.get_parameter("global_frame").value)
+        self.coarse_target_min_views = max(
+            int(self.get_parameter("coarse_target_min_views").value),
+            2,
+        )
+        self.coarse_target_min_confidence = max(
+            float(self.get_parameter("coarse_target_min_confidence").value),
+            0.0,
+        )
         self.lidar_min_points = max(int(self.get_parameter("lidar_min_points").value), 1)
         self.lidar_mask_dilation_pixels = max(
             int(self.get_parameter("lidar_mask_dilation_pixels").value),
@@ -106,6 +117,7 @@ class ObjectTargetFusion(Node):
         )
         self._last_logged_state = ""
         self._latest_camera_origins: list[np.ndarray] = []
+        self._latest_bearing_world: np.ndarray | None = None
         self._mask_stage = "idle"
         self._mask_received = 0
         self._mask_processed = 0
@@ -253,6 +265,7 @@ class ObjectTargetFusion(Node):
             observation.translation_world_from_camera.copy()
             for observation in observations
         ]
+        self._latest_bearing_world = _mean_observation_bearing(observations)
 
         self._set_mask_stage("update_vision", f"observations={len(observations)}")
         stage_started = time.perf_counter()
@@ -581,12 +594,23 @@ class ObjectTargetFusion(Node):
         msg.accepted_views = int(estimate.accepted_views)
         msg.lidar_support = int(estimate.lidar_support)
         msg.state = estimate.state
+        if self._latest_bearing_world is not None:
+            msg.bearing.x = float(self._latest_bearing_world[0])
+            msg.bearing.y = float(self._latest_bearing_world[1])
+            msg.bearing.z = float(self._latest_bearing_world[2])
+            msg.bearing_valid = True
         self.estimate_publisher.publish(msg)
 
     def _publish_markers(self, estimate: CoreTargetEstimate, stamp) -> None:
         """在同一 Marker 话题发布目标球和观测射线, 避免增加重复可视化话题"""
         self.marker_publisher.publish(
-            _target_marker(estimate, self.global_frame, stamp)
+            _target_marker(
+                estimate,
+                self.global_frame,
+                stamp,
+                self.coarse_target_min_views,
+                self.coarse_target_min_confidence,
+            )
         )
         self.marker_publisher.publish(
             _target_ray_marker(
@@ -594,6 +618,8 @@ class ObjectTargetFusion(Node):
                 self.global_frame,
                 stamp,
                 self._latest_camera_origins,
+                self.coarse_target_min_views,
+                self.coarse_target_min_confidence,
             )
         )
 
@@ -703,6 +729,20 @@ def _projected_mask_support(
     return visible_union, mask_union
 
 
+def _mean_observation_bearing(
+    observations: list[CameraObservation],
+) -> np.ndarray | None:
+    """按相机置信度合并当前 Mask 的世界坐标系方向"""
+    weighted_direction = np.zeros(3, dtype=np.float64)
+    for observation in observations:
+        _, direction, _ = observation.center_ray()
+        weighted_direction += max(observation.confidence, 1e-3) * direction
+    norm = np.linalg.norm(weighted_direction)
+    if norm < 1e-6:
+        return None
+    return weighted_direction / norm
+
+
 def _target_surface_measurement(
     points: np.ndarray,
     minimum_support: int,
@@ -800,7 +840,13 @@ def _counter_summary(counter: Counter[str]) -> str:
     )
 
 
-def _target_marker(estimate: CoreTargetEstimate, frame_id: str, stamp) -> Marker:
+def _target_marker(
+    estimate: CoreTargetEstimate,
+    frame_id: str,
+    stamp,
+    coarse_min_views: int = 2,
+    coarse_min_confidence: float = 0.45,
+) -> Marker:
     """显示两视角粗目标和稳定目标, 单视角深度不确定时删除标记"""
     marker = Marker()
     marker.header.frame_id = frame_id
@@ -808,7 +854,11 @@ def _target_marker(estimate: CoreTargetEstimate, frame_id: str, stamp) -> Marker
     marker.ns = "object_target_estimate"
     marker.id = 0
     marker.type = Marker.SPHERE
-    if not _target_marker_visible(estimate):
+    if not _target_marker_visible(
+        estimate,
+        coarse_min_views,
+        coarse_min_confidence,
+    ):
         marker.action = Marker.DELETE
         return marker
 
@@ -838,6 +888,8 @@ def _target_ray_marker(
     frame_id: str,
     stamp,
     camera_origins: list[np.ndarray],
+    coarse_min_views: int = 2,
+    coarse_min_confidence: float = 0.45,
 ) -> Marker:
     """用论文风格绿色射线连接有效相机和当前目标估计"""
     marker = Marker()
@@ -852,7 +904,14 @@ def _target_ray_marker(
     marker.color.g = 1.0
     marker.color.b = 0.0
     marker.color.a = 0.9
-    if not _target_marker_visible(estimate) or not camera_origins:
+    if (
+        not _target_marker_visible(
+            estimate,
+            coarse_min_views,
+            coarse_min_confidence,
+        )
+        or not camera_origins
+    ):
         marker.action = Marker.DELETE
         return marker
 
@@ -874,8 +933,19 @@ def _target_ray_marker(
     return marker
 
 
-def _target_marker_visible(estimate: CoreTargetEstimate) -> bool:
-    coarse_ready = estimate.state == "TRACKING" and estimate.accepted_views >= 2
+def _target_marker_visible(
+    estimate: CoreTargetEstimate,
+    coarse_min_views: int = 2,
+    coarse_min_confidence: float = 0.45,
+) -> bool:
+    """黄色标记和导航接管使用相同的粗目标证据规则"""
+    coarse_ready = coarse_target_evidence_ready(
+        estimate.state,
+        estimate.accepted_views,
+        estimate.confidence,
+        coarse_min_views,
+        coarse_min_confidence,
+    )
     return bool(estimate.stable or coarse_ready)
 
 

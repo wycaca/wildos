@@ -10,7 +10,10 @@ from rclpy.node import Node
 from std_msgs.msg import Bool, String
 from object_search_msgs.msg import TargetEstimate
 
-from visual_navigation.object_search_types import ObjectSearchState
+from visual_navigation.object_search_types import (
+    ObjectSearchState,
+    coarse_target_evidence_ready,
+)
 
 
 class ObjectSearchGoalMux(Node):
@@ -32,8 +35,9 @@ class ObjectSearchGoalMux(Node):
         self.declare_parameter("object_reached_timeout_sec", 2.0)
         self.declare_parameter("object_reached_max_target_distance", 2.0)
         self.declare_parameter("coarse_target_min_views", 2)
-        self.declare_parameter("coarse_target_min_confidence", 0.5)
+        self.declare_parameter("coarse_target_min_confidence", 0.45)
         self.declare_parameter("coarse_target_max_distance", 30.0)
+        self.declare_parameter("coarse_target_timeout_sec", 3.0)
         self.declare_parameter("target_max_vertical_offset", 1.5)
         self.declare_parameter("coarse_target_max_horizontal_std", 8.0)
         self.declare_parameter("target_update_min_distance", 0.75)
@@ -48,6 +52,7 @@ class ObjectSearchGoalMux(Node):
         self.declare_parameter("target_observation_scan_tolerance_deg", 5.0)
         self.declare_parameter("target_observation_scan_hold_sec", 0.5)
         self.declare_parameter("pending_evidence_protection_sec", 3.0)
+        self.declare_parameter("pending_observation_duration_sec", 1.5)
         self.declare_parameter("nav_graph_topic", "/spot1/nav_graph")
         self.declare_parameter("scored_nav_graph_topic", "/spot1/scored_nav_graph")
         self.declare_parameter("startup_observation_enabled", True)
@@ -90,6 +95,10 @@ class ObjectSearchGoalMux(Node):
         )
         self.coarse_target_max_distance = max(
             self._param_float("coarse_target_max_distance"),
+            0.1,
+        )
+        self.coarse_target_timeout_sec = max(
+            self._param_float("coarse_target_timeout_sec"),
             0.1,
         )
         self.target_max_vertical_offset = max(
@@ -148,6 +157,10 @@ class ObjectSearchGoalMux(Node):
         self.pending_evidence_protection_sec = max(
             self._param_float("pending_evidence_protection_sec"),
             0.0,
+        )
+        self.pending_observation_duration_sec = max(
+            self._param_float("pending_observation_duration_sec"),
+            0.1,
         )
         self.nav_graph_topic = self._param_str("nav_graph_topic")
         self.scored_nav_graph_topic = self._param_str("scored_nav_graph_topic")
@@ -233,6 +246,9 @@ class ObjectSearchGoalMux(Node):
         self.target_reposition_goal: PoseStamped | None = None
         self.target_reposition_attempts = 0
         self.pending_evidence_time = None
+        self.pending_observation_started_time = None
+        self.pending_observation_complete = False
+        self.pending_bearing_yaw: float | None = None
 
         self.goal_pub = self.create_publisher(PoseStamped, self.output_goal_topic, 10)
         self.status_pub = self.create_publisher(String, self.status_topic, 10)
@@ -363,36 +379,47 @@ class ObjectSearchGoalMux(Node):
         if self._reached_latch_is_active():
             return
         self.latest_target_estimate_time = self.get_clock().now()
-        coarse_ready = (
-            int(msg.accepted_views) >= self.coarse_target_min_views
-            and float(msg.confidence) >= self.coarse_target_min_confidence
-            and msg.state in {"TRACKING", "STABLE_VISION", "LIDAR_LOCKED"}
-        )
-        if (
-            not msg.stable
-            and not coarse_ready
-            and int(msg.accepted_views) >= 1
-            and msg.state in {"PENDING", "TRACKING"}
-        ):
-            protection_was_active = self._pending_evidence_protection_active(
-                self.latest_target_estimate_time
-            )
-            self.pending_evidence_time = self.latest_target_estimate_time
-            if not protection_was_active:
-                self.get_logger().info(
-                    "目标候选证据保护已启用, "
-                    f"duration={self.pending_evidence_protection_sec:.1f}s, "
-                    "保持当前探索分支并冻结失败计时"
-                )
-        if not msg.stable and not coarse_ready:
-            return
-        if self.metric_target_stable and not msg.stable:
-            return
         target = PoseStamped()
         target.header = copy.deepcopy(msg.header)
         target.pose = copy.deepcopy(msg.pose.pose)
         if not self._pose_is_finite(target):
             self.get_logger().warn("收到包含非有限数的融合目标, 已忽略")
+            return
+
+        coarse_ready = coarse_target_evidence_ready(
+            msg.state,
+            msg.accepted_views,
+            msg.confidence,
+            self.coarse_target_min_views,
+            self.coarse_target_min_confidence,
+        )
+        if (
+            not msg.stable
+            and not coarse_ready
+            and int(msg.accepted_views) == 1
+            and msg.state == "PENDING"
+        ):
+            protection_was_active = self._pending_evidence_protection_active(
+                self.latest_target_estimate_time
+            )
+            self.pending_evidence_time = self.latest_target_estimate_time
+            pending_bearing = self._pending_target_bearing(msg)
+            if pending_bearing is not None:
+                self.pending_bearing_yaw = pending_bearing
+            if not protection_was_active and self.pending_bearing_yaw is not None:
+                self.pending_observation_started_time = (
+                    self.latest_target_estimate_time
+                )
+                self.pending_observation_complete = False
+                self.get_logger().info(
+                    "单视角目标候选观察已启用, "
+                    f"观察={self.pending_observation_duration_sec:.1f}s, "
+                    f"保护={self.pending_evidence_protection_sec:.1f}s, "
+                    "只使用目标方向并保持当前位置"
+                )
+        if not msg.stable and not coarse_ready:
+            return
+        if self.metric_target_stable and not msg.stable:
             return
         rejection_reason = self._target_rejection_reason(msg, target)
         if rejection_reason:
@@ -429,7 +456,7 @@ class ObjectSearchGoalMux(Node):
         self.metric_target_confidence = float(msg.confidence)
         self.metric_target_source = int(msg.source)
         self.metric_target_stable = bool(msg.stable)
-        self.pending_evidence_time = None
+        self._clear_pending_observation()
         if msg.stable:
             self._reset_target_observation()
         elif target_moved and self.target_reposition_goal is not None:
@@ -489,15 +516,32 @@ class ObjectSearchGoalMux(Node):
             return ObjectSearchState.TARGET_REACHED_VIEWPOINT, self._build_hold_goal(now)
 
         if self.metric_target is not None:
-            if self.metric_target_stable:
+            target_age = self._age_seconds(now, self.latest_target_estimate_time)
+            if (
+                not self.metric_target_stable
+                and target_age > self.coarse_target_timeout_sec
+            ):
+                self.get_logger().info(
+                    "视觉粗目标已过期, 恢复原探索分支, "
+                    f"age={target_age:.2f}s"
+                )
+                self._clear_metric_target()
+            elif self.metric_target_stable:
                 return (
                     ObjectSearchState.TARGET_APPROACH_METRIC,
                     self._retime_pose(self.metric_target, now),
                 )
-            return self._select_coarse_target_goal(now)
+            else:
+                return self._select_coarse_target_goal(now)
 
         if self.latest_odom is None:
             return ObjectSearchState.WAIT_FOR_ODOM, None
+
+        if self._pending_observation_is_active(now):
+            return (
+                ObjectSearchState.TARGET_PENDING_OBSERVATION,
+                self._build_pending_observation_goal(now),
+            )
 
         if not self._startup_observation_is_complete(now):
             return (
@@ -506,6 +550,48 @@ class ObjectSearchGoalMux(Node):
             )
 
         return ObjectSearchState.SEARCHING_WITH_INITIAL_GOAL, self._build_initial_goal(now)
+
+    def _pending_target_bearing(self, msg: TargetEstimate) -> float | None:
+        """读取相机 Mask 质心射线方向, 不使用粒子距离"""
+        if not msg.bearing_valid:
+            return None
+        bearing_x = float(msg.bearing.x)
+        bearing_y = float(msg.bearing.y)
+        if not math.isfinite(bearing_x) or not math.isfinite(bearing_y):
+            return None
+        if math.hypot(bearing_x, bearing_y) < 1e-6:
+            return None
+        return math.atan2(bearing_y, bearing_x)
+
+    def _pending_observation_is_active(self, now) -> bool:
+        """单视角候选只触发一次短时原地观察"""
+        if (
+            self.pending_bearing_yaw is None
+            or self.pending_observation_started_time is None
+            or self.pending_observation_complete
+            or not self._pending_evidence_protection_active(now)
+        ):
+            return False
+        if self._age_seconds(now, self.pending_observation_started_time) < (
+            self.pending_observation_duration_sec
+        ):
+            return True
+        self.pending_observation_complete = True
+        self.get_logger().info(
+            "单视角目标候选观察结束, 未形成粗目标, 恢复原探索分支"
+        )
+        return False
+
+    def _build_pending_observation_goal(self, now) -> PoseStamped:
+        """保持当前位置并朝向单视角候选"""
+        assert self.latest_odom is not None
+        assert self.pending_bearing_yaw is not None
+        goal = PoseStamped()
+        goal.header.frame_id = self.frame_id or self.latest_odom.header.frame_id
+        goal.header.stamp = now.to_msg()
+        goal.pose.position = copy.deepcopy(self.latest_odom.pose.pose.position)
+        self._set_pose_yaw(goal, self.pending_bearing_yaw)
+        return goal
 
     def _startup_observation_is_complete(self, now) -> bool:
         """完成静止预热, 必要时依次执行左右小角度观察"""
@@ -857,12 +943,23 @@ class ObjectSearchGoalMux(Node):
         return goal
 
     def _clear_target_search_state(self) -> None:
+        self._clear_metric_target()
+        self._clear_pending_observation()
+
+    def _clear_metric_target(self) -> None:
+        """清除粗目标或稳定目标, 保留独立的单视角候选状态"""
         self.metric_target = None
         self.metric_target_confidence = 0.0
         self.metric_target_source = TargetEstimate.SOURCE_NONE
         self.metric_target_stable = False
         self.latest_target_estimate_time = None
         self._reset_target_observation()
+
+    def _clear_pending_observation(self) -> None:
+        self.pending_evidence_time = None
+        self.pending_observation_started_time = None
+        self.pending_observation_complete = False
+        self.pending_bearing_yaw = None
 
     def _build_hold_goal(self, now) -> PoseStamped:
         """到达目标观察点后发布当前位置, 让 planner 不再继续追远处点"""
@@ -1039,7 +1136,10 @@ class ObjectSearchGoalMux(Node):
             f"{goal.pose.position.z:.2f})",
         ]
         if (
-            state == ObjectSearchState.SEARCHING_WITH_INITIAL_GOAL
+            state in {
+                ObjectSearchState.SEARCHING_WITH_INITIAL_GOAL,
+                ObjectSearchState.TARGET_PENDING_OBSERVATION,
+            }
             and self._pending_evidence_protection_active(self.get_clock().now())
         ):
             parts.append("pending_protection=true")
@@ -1080,6 +1180,9 @@ def _object_search_state_name(state: str) -> str:
         ObjectSearchState.WAIT_FOR_ODOM: "等待里程计(WAIT_FOR_ODOM)",
         ObjectSearchState.STARTUP_OBSERVATION: (
             "启动静止预热或条件扫描(STARTUP_OBSERVATION)"
+        ),
+        ObjectSearchState.TARGET_PENDING_OBSERVATION: (
+            "单视角目标短时观察(TARGET_PENDING_OBSERVATION)"
         ),
         ObjectSearchState.SEARCHING_WITH_INITIAL_GOAL: (
             "按初始方向探索(SEARCHING_WITH_INITIAL_GOAL)"

@@ -36,8 +36,9 @@
     object_reached_timeout_sec: 2.0
     object_reached_max_target_distance: 2.0
     coarse_target_min_views: 2
-    coarse_target_min_confidence: 0.5
+    coarse_target_min_confidence: 0.45
     coarse_target_max_distance: 30.0
+    coarse_target_timeout_sec: 3.0
     target_max_vertical_offset: 1.5
     coarse_target_max_horizontal_std: 8.0
     target_update_min_distance: 0.75
@@ -54,3 +55,4 @@
     target_observation_scan_tolerance_deg: 5.0
     target_observation_scan_hold_sec: 0.5
     pending_evidence_protection_sec: 3.0
+    pending_observation_duration_sec: 1.5

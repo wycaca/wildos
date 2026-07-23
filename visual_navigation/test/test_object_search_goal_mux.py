@@ -60,6 +60,7 @@ def _target_estimate(
     state: str | None = None,
     z: float = 0.0,
     horizontal_std: float = 0.0,
+    bearing_yaw: float | None = None,
 ) -> TargetEstimate:
     """构造视觉粗目标或稳定融合目标估计"""
     msg = TargetEstimate()
@@ -75,6 +76,10 @@ def _target_estimate(
     msg.stable = stable
     msg.accepted_views = accepted_views
     msg.state = state or ("STABLE_VISION" if stable else "TRACKING")
+    if bearing_yaw is not None:
+        msg.bearing.x = math.cos(bearing_yaw)
+        msg.bearing.y = math.sin(bearing_yaw)
+        msg.bearing_valid = True
     return msg
 
 
@@ -255,26 +260,59 @@ def test_reached_gate_reports_stable_target_and_distance_reasons(mux_node):
     assert "5.00m" in reason_text
 
 
-def test_single_view_pending_estimate_keeps_initial_goal(mux_node):
-    """单视角深度不确定时不能替换初始探索 goal"""
-    mux_node._on_odom(_odom(0.0, 0.0, 0.0))
+def test_single_view_pending_estimate_holds_position_and_uses_bearing(mux_node):
+    """单视角候选只能短暂停留并使用方向, 不能导航到估计坐标"""
+    mux_node._on_odom(_odom(2.0, 1.0, 0.0))
 
     estimate = _target_estimate(
         12.0,
-        3.0,
+        6.0,
         stable=False,
         accepted_views=1,
         state="PENDING",
+        bearing_yaw=math.atan2(5.0, 10.0),
     )
     mux_node._on_target_estimate(estimate)
     state, goal = mux_node._select_goal()
 
-    assert state == ObjectSearchState.SEARCHING_WITH_INITIAL_GOAL
-    assert goal.pose.position.x == pytest.approx(20.0)
+    assert state == ObjectSearchState.TARGET_PENDING_OBSERVATION
+    assert goal.pose.position.x == pytest.approx(2.0)
+    assert goal.pose.position.y == pytest.approx(1.0)
+    assert _yaw(goal) == pytest.approx(math.atan2(5.0, 10.0))
     assert "pending_protection=true" in mux_node._status_text(state, goal)
 
     mux_node.pending_evidence_protection_sec = -1.0
     assert "pending_protection=true" not in mux_node._status_text(state, goal)
+
+
+def test_pending_observation_timeout_resumes_original_exploration_goal(mux_node):
+    """单视角短时观察结束后恢复原探索方向"""
+    mux_node._on_odom(_odom(0.0, 0.0, 0.0))
+    initial_state, initial_goal = mux_node._select_goal()
+    mux_node._on_target_estimate(
+        _target_estimate(
+            12.0,
+            3.0,
+            stable=False,
+            accepted_views=1,
+            state="PENDING",
+            bearing_yaw=math.atan2(3.0, 12.0),
+        )
+    )
+    pending_state, _ = mux_node._select_goal()
+    mux_node.pending_observation_duration_sec = -1.0
+
+    resumed_state, resumed_goal = mux_node._select_goal()
+
+    assert initial_state == ObjectSearchState.SEARCHING_WITH_INITIAL_GOAL
+    assert pending_state == ObjectSearchState.TARGET_PENDING_OBSERVATION
+    assert resumed_state == ObjectSearchState.SEARCHING_WITH_INITIAL_GOAL
+    assert resumed_goal.pose.position.x == pytest.approx(
+        initial_goal.pose.position.x
+    )
+    assert resumed_goal.pose.position.y == pytest.approx(
+        initial_goal.pose.position.y
+    )
 
 
 def test_two_view_tracking_estimate_replaces_initial_goal(mux_node):
@@ -284,7 +322,7 @@ def test_two_view_tracking_estimate_replaces_initial_goal(mux_node):
         12.0,
         3.0,
         stable=False,
-        confidence=0.51,
+        confidence=0.46,
         accepted_views=2,
         state="TRACKING",
     )
@@ -299,6 +337,54 @@ def test_two_view_tracking_estimate_replaces_initial_goal(mux_node):
     )
     assert target_distance == pytest.approx(2.75)
     assert _yaw(coarse_goal) == pytest.approx(math.atan2(3.0, 12.0))
+
+
+def test_tracking_below_coarse_confidence_does_not_take_over(mux_node):
+    """两视角置信度低于 0.45 时继续原探索"""
+    mux_node._on_odom(_odom(0.0, 0.0, 0.0))
+    mux_node._on_target_estimate(
+        _target_estimate(
+            12.0,
+            3.0,
+            stable=False,
+            confidence=0.44,
+            accepted_views=2,
+            state="TRACKING",
+        )
+    )
+
+    state, _ = mux_node._select_goal()
+
+    assert state == ObjectSearchState.SEARCHING_WITH_INITIAL_GOAL
+
+
+def test_stale_coarse_target_restores_initial_exploration_goal(mux_node):
+    """粗目标失效后恢复被抢占前的初始探索方向"""
+    mux_node._on_odom(_odom(0.0, 0.0, 0.0))
+    _, initial_goal = mux_node._select_goal()
+    mux_node._on_target_estimate(
+        _target_estimate(
+            12.0,
+            3.0,
+            stable=False,
+            confidence=0.46,
+            accepted_views=2,
+            state="TRACKING",
+        )
+    )
+    takeover_state, _ = mux_node._select_goal()
+    mux_node.latest_target_estimate_time = None
+
+    resumed_state, resumed_goal = mux_node._select_goal()
+
+    assert takeover_state == ObjectSearchState.TARGET_APPROACH_COARSE
+    assert resumed_state == ObjectSearchState.SEARCHING_WITH_INITIAL_GOAL
+    assert resumed_goal.pose.position.x == pytest.approx(
+        initial_goal.pose.position.x
+    )
+    assert resumed_goal.pose.position.y == pytest.approx(
+        initial_goal.pose.position.y
+    )
 
 
 def test_near_coarse_target_enters_facing_observation(mux_node):
@@ -360,7 +446,7 @@ def test_lost_target_uses_small_scan_around_predicted_bearing(mux_node):
     mux_node._on_target_estimate(
         _target_estimate(2.8, 0.0, stable=False, confidence=0.51)
     )
-    mux_node.latest_target_estimate_time = None
+    mux_node.target_observation_lost_timeout_sec = -1.0
 
     state, scan_goal = mux_node._select_goal()
 

@@ -142,7 +142,7 @@ public:
             this->goal_pose_ = msg;
             return;
           }
-          if (this->goal_pose_)
+          if (this->goal_pose_ && !this->target_override_active_)
           {
             this->planner_.reset_exploration_state();
           }
@@ -197,6 +197,10 @@ private:
     {
       return "启动观察";
     }
+    if (state == "TARGET_PENDING_OBSERVATION")
+    {
+      return "单视角目标短时观察";
+    }
     if (state == "TARGET_APPROACH_COARSE")
     {
       return "接近视觉粗目标";
@@ -214,6 +218,15 @@ private:
       return "目标到达观察点";
     }
     return "未知状态";
+  }
+
+  static bool target_override_state(const std::string& state)
+  {
+    return state == "TARGET_PENDING_OBSERVATION" ||
+      state == "TARGET_APPROACH_COARSE" ||
+      state == "TARGET_OBSERVATION" ||
+      state == "TARGET_APPROACH_METRIC" ||
+      state == "TARGET_REACHED_VIEWPOINT";
   }
 
   void on_object_search_status(const std_msgs::msg::String& msg)
@@ -235,15 +248,30 @@ private:
       return;
     }
 
+    const bool was_target_override = target_override_active_;
+    const bool next_target_override = target_override_state(state);
+    if (!was_target_override && next_target_override)
+    {
+      planner_.suspend_exploration_state();
+    }
+    else if (
+      was_target_override && !next_target_override &&
+      state == "SEARCHING_WITH_INITIAL_GOAL")
+    {
+      planner_.resume_exploration_state();
+    }
+
     object_search_state_ = state;
+    target_override_active_ = next_target_override;
     directional_exploration_mode_ = state == "SEARCHING_WITH_INITIAL_GOAL";
     observation_mode_ =
-      state == "STARTUP_OBSERVATION" || state == "TARGET_OBSERVATION";
+      state == "STARTUP_OBSERVATION" ||
+      state == "TARGET_PENDING_OBSERVATION" ||
+      state == "TARGET_OBSERVATION";
     // 状态切换先丢弃旧 goal, 等同一周期的新 goal 到达后再规划
     // 这样目标出现时不会用旧探索 goal 短暂发布错误路径
     goal_pose_.reset();
     last_hold_goal_.reset();
-    planner_.reset_exploration_state();
     RCLCPP_INFO(
       this->get_logger(),
       "目标搜索规划模式切换, 状态=%s(%s), 路线类型=%s",
@@ -646,6 +674,7 @@ private:
   std::string object_search_state_;
   bool directional_exploration_mode_ = false;
   bool observation_mode_ = false;
+  bool target_override_active_ = false;
   bool target_evidence_pending_ = false;
   double goal_radius_;
   double coarse_goal_radius_;

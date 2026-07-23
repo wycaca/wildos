@@ -932,8 +932,71 @@ Planner::ExplorationDiagnostics Planner::take_exploration_diagnostics()
   return diagnostics;
 }
 
+// 暂存完整探索上下文, 让目标观察使用普通寻路而不污染分支记忆
+bool Planner::suspend_exploration_state()
+{
+  if (suspended_exploration_ || !directional_exploration_)
+  {
+    return false;
+  }
+  suspended_exploration_ = SuspendedExploration{
+    directional_exploration_,
+    directional_blocked_since_,
+    directional_alternatives_allowed_,
+    exploration_state_,
+    exploration_state_since_,
+    active_branch_,
+    exploration_memory_,
+    next_branch_order_,
+    failed_branches_,
+    path_invalid_since_,
+    path_invalid_frames_,
+    direct_path_node_uuids_,
+    direct_path_points_,
+  };
+  reset_frontier_branch();
+  clear_untried_branches();
+  directional_exploration_.reset();
+  directional_blocked_since_.reset();
+  directional_alternatives_allowed_ = false;
+  failed_branches_.clear();
+  exploration_state_ = ExplorationState::follow_branch;
+  exploration_state_since_.reset();
+  direct_path_node_uuids_.clear();
+  direct_path_points_.clear();
+  return true;
+}
+
+// 恢复目标抢占前的方向、活动分支、岔路栈和失败冷却记录
+bool Planner::resume_exploration_state()
+{
+  if (!suspended_exploration_)
+  {
+    return false;
+  }
+  directional_exploration_ = suspended_exploration_->directional_exploration;
+  directional_blocked_since_ =
+    suspended_exploration_->directional_blocked_since;
+  directional_alternatives_allowed_ =
+    suspended_exploration_->directional_alternatives_allowed;
+  exploration_state_ = suspended_exploration_->exploration_state;
+  exploration_state_since_ = suspended_exploration_->exploration_state_since;
+  active_branch_ = suspended_exploration_->active_branch;
+  exploration_memory_ = suspended_exploration_->exploration_memory;
+  next_branch_order_ = suspended_exploration_->next_branch_order;
+  failed_branches_ = suspended_exploration_->failed_branches;
+  path_invalid_since_ = suspended_exploration_->path_invalid_since;
+  path_invalid_frames_ = suspended_exploration_->path_invalid_frames;
+  direct_path_node_uuids_ =
+    suspended_exploration_->direct_path_node_uuids;
+  direct_path_points_ = suspended_exploration_->direct_path_points;
+  suspended_exploration_.reset();
+  return true;
+}
+
 void Planner::reset_exploration_state()
 {
+  suspended_exploration_.reset();
   reset_frontier_branch();
   clear_untried_branches();
   directional_exploration_.reset();

@@ -11,3 +11,5 @@ bool stable
 uint32 accepted_views
 uint32 lidar_support
 string state
+geometry_msgs/Vector3 bearing
+bool bearing_valid

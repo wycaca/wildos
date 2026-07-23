@@ -13,6 +13,7 @@ from visual_navigation.object_target_fusion import (
     _target_ray_marker,
     _target_surface_measurement,
     _target_surface_measurement_with_reason,
+    _mean_observation_bearing,
     _projected_mask_support,
     _target_marker,
     _xyz_points,
@@ -118,11 +119,12 @@ def _estimate(
     stable: bool,
     covariance: np.ndarray,
     state: str | None = None,
+    confidence: float = 0.8,
 ) -> TargetEstimate:
     return TargetEstimate(
         position=np.array([8.0, 2.0, 1.0]),
         covariance=covariance,
-        confidence=0.8,
+        confidence=confidence,
         source=1,
         stable=stable,
         accepted_views=2,
@@ -161,6 +163,32 @@ def test_two_view_tracking_estimate_publishes_coarse_marker():
     assert marker.action == Marker.ADD
     assert marker.color.r == 1.0
     assert marker.color.g == 0.75
+
+
+def test_coarse_marker_uses_same_confidence_gate_as_navigation():
+    accepted = _target_marker(
+        _estimate(
+            False,
+            np.eye(3) * 16.0,
+            state="TRACKING",
+            confidence=0.46,
+        ),
+        "odom",
+        Time(),
+    )
+    rejected = _target_marker(
+        _estimate(
+            False,
+            np.eye(3) * 16.0,
+            state="TRACKING",
+            confidence=0.44,
+        ),
+        "odom",
+        Time(),
+    )
+
+    assert accepted.action == Marker.ADD
+    assert rejected.action == Marker.DELETE
 
 
 def test_visible_target_publishes_green_camera_rays():
@@ -248,6 +276,22 @@ def test_lidar_projection_uses_small_mask_dilation():
 
     assert not without_dilation[0]
     assert with_dilation[0]
+
+
+def test_pending_bearing_uses_camera_mask_center_ray():
+    mask = np.zeros((5, 5), dtype=bool)
+    mask[2, 4] = True
+    observation = CameraObservation(
+        mask=mask,
+        intrinsic=np.eye(3),
+        rotation_world_from_camera=np.eye(3),
+        translation_world_from_camera=np.zeros(3),
+    )
+
+    bearing = _mean_observation_bearing([observation])
+
+    assert bearing is not None
+    assert np.allclose(bearing, np.array([4.0, 2.0, 1.0]) / np.sqrt(21.0))
 
 
 def test_lidar_measurement_rejects_ground_points_inside_mask():

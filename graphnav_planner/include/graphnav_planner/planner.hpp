@@ -261,6 +261,8 @@ public:
     double lookahead_distance);
   bool has_directional_exploration() const;
   ExplorationState exploration_state() const;
+  bool suspend_exploration_state();
+  bool resume_exploration_state();
   void reset_exploration_state();
   ExplorationDiagnostics take_exploration_diagnostics();
 
@@ -343,6 +345,23 @@ private:
     rclcpp::Time retry_after;
   };
 
+  struct SuspendedExploration
+  {
+    std::optional<DirectionalExploration> directional_exploration;
+    std::optional<rclcpp::Time> directional_blocked_since;
+    bool directional_alternatives_allowed;
+    ExplorationState exploration_state;
+    std::optional<rclcpp::Time> exploration_state_since;
+    std::optional<ActiveBranch> active_branch;
+    ExplorationMemory exploration_memory;
+    std::uint64_t next_branch_order;
+    std::vector<FailedBranch> failed_branches;
+    std::optional<rclcpp::Time> path_invalid_since;
+    size_t path_invalid_frames;
+    std::vector<std::string> direct_path_node_uuids;
+    std::vector<Eigen::Vector3d> direct_path_points;
+  };
+
   struct FrontierCandidate
   {
     graaf::vertex_id_t id;
@@ -396,6 +415,7 @@ private:
   std::unordered_set<std::string> traversed_edges_;
   std::vector<std::string> direct_path_node_uuids_;
   std::vector<Eigen::Vector3d> direct_path_points_;
+  std::optional<SuspendedExploration> suspended_exploration_;
   ExplorationDiagnostics exploration_diagnostics_;
 
   std::unordered_map<graaf::vertex_id_t, std::pair<graphnav_msgs::msg::Node, std::pair<double, double>>> frontier_scores_;

@@ -273,6 +273,37 @@ Planner make_planner()
   return planner;
 }
 
+TEST(ExplorationPreemption, RestoresDirectionalBranchAfterTargetOverride)
+{
+  Planner planner = make_planner();
+  Eigen::Vector3d goal(30.0, 0.0, 0.0);
+  planner.update_graph(make_opposite_branch_graph(true));
+  const auto initial = planner.plan_to_goal(
+    goal,
+    3.0,
+    rclcpp::Time(0, 0, RCL_ROS_TIME),
+    Eigen::Vector3d::Zero());
+  ASSERT_TRUE(initial.path_changed);
+  ASSERT_FALSE(initial.path.empty());
+
+  EXPECT_TRUE(planner.suspend_exploration_state());
+  EXPECT_FALSE(planner.has_directional_exploration());
+  EXPECT_FALSE(planner.suspend_exploration_state());
+
+  EXPECT_TRUE(planner.resume_exploration_state());
+  EXPECT_TRUE(planner.has_directional_exploration());
+  EXPECT_FALSE(planner.resume_exploration_state());
+
+  const auto resumed = planner.plan_to_goal(
+    goal,
+    3.0,
+    rclcpp::Time(1, 0, RCL_ROS_TIME),
+    Eigen::Vector3d::Zero());
+  EXPECT_FALSE(resumed.path_changed);
+  ASSERT_FALSE(resumed.path.empty());
+  EXPECT_GT(resumed.path.back().x(), 0.0);
+}
+
 TEST(CommittedBranch, SuppressesRepeatedPublicationForSameFrontier)
 {
   Planner planner = make_planner();
