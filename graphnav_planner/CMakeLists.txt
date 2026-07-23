@@ -27,6 +27,7 @@ find_package(graaf_vendor REQUIRED)
 
 
 add_library(graphnav_planner_component SHARED
+  src/exploration_memory.cpp
   src/planner.cpp
   src/planner_node.cpp
 )
@@ -112,6 +113,9 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_exploration_state test/test_exploration_state.cpp)
   target_link_libraries(test_exploration_state graphnav_planner_component)
+
+  ament_add_gtest(test_exploration_memory test/test_exploration_memory.cpp)
+  target_link_libraries(test_exploration_memory graphnav_planner_component)
 endif()
 
 ament_package()

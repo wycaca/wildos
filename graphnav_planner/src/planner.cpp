@@ -145,35 +145,6 @@ bool route_has_repeated_nodes(const std::vector<std::string>& route)
   return false;
 }
 
-int direction_sector(const Eigen::Vector3d& direction, int sector_count = 8)
-{
-  Eigen::Vector3d planar(direction.x(), direction.y(), 0.0);
-  if (planar.norm() < 1e-6)
-  {
-    return -1;
-  }
-  double angle = std::atan2(planar.y(), planar.x());
-  if (angle < 0.0)
-  {
-    angle += 2.0 * M_PI;
-  }
-  const double sector_width = 2.0 * M_PI / sector_count;
-  return static_cast<int>(std::floor(
-    (angle + 0.5 * sector_width) / sector_width)) % sector_count;
-}
-
-std::string branch_memory_key(
-  const std::string& junction_uuid,
-  int sector,
-  const std::string& node_uuid)
-{
-  if (sector < 0)
-  {
-    return junction_uuid + "|node|" + node_uuid;
-  }
-  return junction_uuid + "|sector|" + std::to_string(sector);
-}
-
 const char* selection_reason_name(const std::string& reason)
 {
   if (reason == "continuation")
@@ -391,8 +362,7 @@ void Planner::reset_frontier_branch()
 
 void Planner::clear_untried_branches()
 {
-  exploration_memory_ = ExplorationMemory{};
-  next_branch_order_ = 0;
+  exploration_memory_.clear();
 }
 
 void Planner::remember_untried_branch(
@@ -402,100 +372,31 @@ void Planner::remember_untried_branch(
   const Eigen::Vector3d& position,
   const Eigen::Vector3d& direction)
 {
-  for (auto& [key, branch] : exploration_memory_.untried_branches)
-  {
-    if (branch.node_uuid == node_uuid)
-    {
-      branch.position = position;
-      branch.discovery_direction = direction;
-      return;
-    }
-  }
-
-  const int sector = direction_sector(direction);
-  const std::string key = branch_memory_key(
+  exploration_memory_.remember(
     junction_uuid,
-    sector,
-    node_uuid);
-  auto junction_it = exploration_memory_.junctions.find(junction_uuid);
-  if (junction_it == exploration_memory_.junctions.end())
-  {
-    exploration_memory_.junction_stack.push_back(junction_uuid);
-    junction_it = exploration_memory_.junctions.emplace(
-      junction_uuid,
-      JunctionRecord{junction_uuid, junction_position, {}}).first;
-  }
-
-  auto existing = exploration_memory_.untried_branches.find(key);
-  if (existing != exploration_memory_.untried_branches.end())
-  {
-    existing->second.node_uuid = node_uuid;
-    existing->second.position = position;
-    existing->second.discovery_direction = direction;
-    return;
-  }
-
-  exploration_memory_.untried_branches.emplace(
-    key,
-    BranchRecord{
-      junction_uuid,
-      junction_position,
-      node_uuid,
-      position,
-      direction,
-      sector,
-      next_branch_order_++,
-    });
-  junction_it->second.branch_keys.push_back(key);
+    junction_position,
+    node_uuid,
+    position,
+    direction);
 }
 
 std::optional<Planner::BranchRecord> Planner::untried_branch_for_candidate(
   const FrontierCandidate& candidate) const
 {
-  for (const auto& [key, branch] : exploration_memory_.untried_branches)
-  {
-    if (branch.node_uuid == candidate.uuid)
-    {
-      return branch;
-    }
-    Eigen::Vector3d delta = branch.position - candidate.position;
-    delta.z() = 0.0;
-    if (delta.norm() > frontier_failure_merge_radius_)
-    {
-      continue;
-    }
-    const auto direction = terminal_direction(candidate.path_points);
-    if (!direction || branch.discovery_direction.norm() < 1e-6 ||
-        direction->dot(branch.discovery_direction.normalized()) >= 0.5)
-    {
-      return branch;
-    }
-  }
-  return std::nullopt;
+  return exploration_memory_.find(
+    candidate.uuid,
+    candidate.position,
+    terminal_direction(candidate.path_points),
+    frontier_failure_merge_radius_);
 }
 
 void Planner::erase_untried_branch(const FrontierCandidate& candidate)
 {
-  const auto matched = untried_branch_for_candidate(candidate);
-  if (!matched)
-  {
-    return;
-  }
-  const std::string key = branch_memory_key(
-    matched->junction_uuid,
-    matched->direction_sector,
-    matched->node_uuid);
-  exploration_memory_.untried_branches.erase(key);
-  auto junction_it = exploration_memory_.junctions.find(
-    matched->junction_uuid);
-  if (junction_it == exploration_memory_.junctions.end())
-  {
-    return;
-  }
-  auto& branch_keys = junction_it->second.branch_keys;
-  branch_keys.erase(
-    std::remove(branch_keys.begin(), branch_keys.end(), key),
-    branch_keys.end());
+  exploration_memory_.erase(
+    candidate.uuid,
+    candidate.position,
+    terminal_direction(candidate.path_points),
+    frontier_failure_merge_radius_);
 }
 
 void Planner::set_exploration_state(
@@ -947,7 +848,6 @@ bool Planner::suspend_exploration_state()
     exploration_state_since_,
     active_branch_,
     exploration_memory_,
-    next_branch_order_,
     failed_branches_,
     path_invalid_since_,
     path_invalid_frames_,
@@ -983,7 +883,6 @@ bool Planner::resume_exploration_state()
   exploration_state_since_ = suspended_exploration_->exploration_state_since;
   active_branch_ = suspended_exploration_->active_branch;
   exploration_memory_ = suspended_exploration_->exploration_memory;
-  next_branch_order_ = suspended_exploration_->next_branch_order;
   failed_branches_ = suspended_exploration_->failed_branches;
   path_invalid_since_ = suspended_exploration_->path_invalid_since;
   path_invalid_frames_ = suspended_exploration_->path_invalid_frames;
@@ -1324,18 +1223,31 @@ Planner::PlanningResult Planner::plan_to_goal(
     });
   }
 
-  auto& untried_branches = exploration_memory_.untried_branches;
-  for (auto it = untried_branches.begin(); it != untried_branches.end();)
+  std::unordered_set<std::string> live_node_uuids;
+  live_node_uuids.reserve(node_ids_by_uuid.size());
+  for (const auto& [node_uuid, node_id] : node_ids_by_uuid)
   {
-    if (node_ids_by_uuid.find(it->second.node_uuid) == node_ids_by_uuid.end())
-    {
-      it = untried_branches.erase(it);
-    }
-    else
-    {
-      ++it;
-    }
+    (void)node_id;
+    live_node_uuids.insert(node_uuid);
   }
+  exploration_memory_.prune_missing_nodes(live_node_uuids);
+  const auto& untried_branches = exploration_memory_.untried_branches();
+  const auto ordered_recovery_branches = exploration_memory_.recovery_order();
+  std::unordered_map<std::string, std::uint64_t> recovery_priority_by_node;
+  recovery_priority_by_node.reserve(ordered_recovery_branches.size());
+  for (std::size_t index = 0; index < ordered_recovery_branches.size(); ++index)
+  {
+    recovery_priority_by_node.emplace(
+      ordered_recovery_branches[index].node_uuid,
+      ordered_recovery_branches.size() - index);
+  }
+  const auto recovery_priority = [&recovery_priority_by_node](
+      const BranchRecord& branch) {
+      const auto priority_it = recovery_priority_by_node.find(branch.node_uuid);
+      return priority_it == recovery_priority_by_node.end()
+        ? std::uint64_t{0}
+        : priority_it->second;
+    };
 
   const bool had_active_branch = active_branch_.has_value();
   bool branch_released = false;
@@ -1437,7 +1349,7 @@ Planner::PlanningResult Planner::plan_to_goal(
       if (branch)
       {
         candidate.is_recovery_branch = true;
-        candidate.recovery_order = branch->discovery_order;
+        candidate.recovery_order = recovery_priority(*branch);
       }
       live_frontier_uuids.insert(candidate.uuid);
     }
@@ -1501,7 +1413,7 @@ Planner::PlanningResult Planner::plan_to_goal(
         metrics.alignment,
         branch_recovery_cost_penalty_,
         path_it->second.total_weight + branch_recovery_cost_penalty_,
-        branch.discovery_order,
+        recovery_priority(branch),
         true,
       };
       if (branch_is_suppressed(

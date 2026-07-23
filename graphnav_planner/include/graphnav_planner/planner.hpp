@@ -20,6 +20,8 @@
 #include <queue>
 #include <visualization_msgs/msg/marker_array.hpp>
 
+#include "graphnav_planner/exploration_memory.hpp"
+
 namespace graphnav_planner
 {
 
@@ -311,30 +313,7 @@ private:
     rclcpp::Time route_change_time;
   };
 
-  struct BranchRecord
-  {
-    std::string junction_uuid;
-    Eigen::Vector3d junction_position;
-    std::string node_uuid;
-    Eigen::Vector3d position;
-    Eigen::Vector3d discovery_direction;
-    int direction_sector;
-    std::uint64_t discovery_order;
-  };
-
-  struct JunctionRecord
-  {
-    std::string node_uuid;
-    Eigen::Vector3d position;
-    std::vector<std::string> branch_keys;
-  };
-
-  struct ExplorationMemory
-  {
-    std::vector<std::string> junction_stack;
-    std::unordered_map<std::string, JunctionRecord> junctions;
-    std::unordered_map<std::string, BranchRecord> untried_branches;
-  };
+  using BranchRecord = ExplorationBranchMemory::BranchRecord;
 
   struct FailedBranch
   {
@@ -353,8 +332,7 @@ private:
     ExplorationState exploration_state;
     std::optional<rclcpp::Time> exploration_state_since;
     std::optional<ActiveBranch> active_branch;
-    ExplorationMemory exploration_memory;
-    std::uint64_t next_branch_order;
+    ExplorationBranchMemory exploration_memory;
     std::vector<FailedBranch> failed_branches;
     std::optional<rclcpp::Time> path_invalid_since;
     size_t path_invalid_frames;
@@ -406,8 +384,7 @@ private:
   ExplorationState exploration_state_ = ExplorationState::follow_branch;
   std::optional<rclcpp::Time> exploration_state_since_;
   std::optional<ActiveBranch> active_branch_;
-  ExplorationMemory exploration_memory_;
-  std::uint64_t next_branch_order_ = 0;
+  ExplorationBranchMemory exploration_memory_;
   std::vector<FailedBranch> failed_branches_;
   std::optional<rclcpp::Time> path_invalid_since_;
   size_t path_invalid_frames_ = 0;
