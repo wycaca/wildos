@@ -128,7 +128,7 @@ class WildOS_Nav(TFLookupSubscriber):
             "pixel_level_seg": False,
             "mask_threshold": 0.09,
             "detection_min_peak_score": 0.12,
-            "detection_confirm_min_peak_score": 0.115,
+            "detection_confirm_min_peak_score": 0.110,
             "detection_min_component_pixels": 300,
             "detection_min_component_fraction": 0.0005,
             "detection_confirm_frames": 2,
