@@ -42,3 +42,51 @@ def test_graph_message_cache_keeps_edges_when_nodes_append():
     appended = graph_to_msg(graph, Header(), "default", cache=cache)
 
     assert appended.edges[0] is initial.edges[0]
+
+
+def test_graph_message_generation_does_not_mutate_internal_state():
+    """完整消息转换只能读取内部图, 不能修改图状态和索引"""
+    graph = GraphState()
+    first = graph.create_node((0.0, 0.0, 0.0), stamp_seconds=1.0)
+    second = graph.create_node((1.0, 0.0, 0.0), stamp_seconds=1.0)
+    first.free_radius = 0.8
+    second.frontier_points = [(1.5, 0.0, 0.0)]
+    second.is_frontier = True
+    graph.set_edges([InternalEdge(first.node_id, second.node_id, 1.0)])
+    graph.current_node_id = first.node_id
+    graph.update_robot_position((0.2, 0.0, 0.3), (0.2, 0.0, 0.0))
+    graph.append_trajectory_point((0.2, 0.0, 0.0), 0.1)
+    before = _graph_state_snapshot(graph)
+
+    graph_to_msg(graph, Header(), "default", cache=GraphMessageCache())
+
+    assert _graph_state_snapshot(graph) == before
+
+
+def _graph_state_snapshot(graph):
+    return {
+        "nodes": {
+            node_id: (
+                node.position,
+                node.free_radius,
+                node.explored_radius,
+                tuple(node.frontier_points),
+                node.is_frontier,
+                node.last_seen_time,
+            )
+            for node_id, node in graph.nodes.items()
+        },
+        "edges": {
+            edge_key: (edge.from_id, edge.to_id, edge.cost)
+            for edge_key, edge in graph.edges.items()
+        },
+        "adjacency": {
+            node_id: frozenset(edge_keys)
+            for node_id, edge_keys in graph.adjacency.items()
+        },
+        "current": graph.current_node_id,
+        "odom": graph.latest_robot_odom_position,
+        "ground": graph.latest_robot_position,
+        "trajectory": tuple(graph.trajectory_points),
+        "next_node_id": graph.next_node_id,
+    }

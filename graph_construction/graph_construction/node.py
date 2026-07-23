@@ -358,6 +358,9 @@ class GraphConstructionNode(Node):
             f"边候选{stats.edge_candidate_pair_count}, "
             f"边碰撞检查{stats.edge_clearance_check_count}, "
             f"历史边复查{stats.historical_edge_check_count}, "
+            f"unknown候选{stats.blocked_unknown_candidate_count}, "
+            f"unknown开放重试{stats.blocked_unknown_retry_count}, "
+            f"低连接节点重试{stats.low_degree_retry_node_count}, "
             f"Frontier候选{stats.frontier_candidate_count}, "
             f"活动Frontier owner{stats.active_frontier_owner_count}"
         )

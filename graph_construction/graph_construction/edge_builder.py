@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from math import hypot
 from typing import Dict, Iterable, List, Tuple
 
@@ -18,6 +18,8 @@ class EdgeBuildStats:
     clearance_check_count: int = 0
     historical_check_count: int = 0
     selected_edge_count: int = 0
+    evaluated_pairs: set[Tuple[int, int]] = field(default_factory=set)
+    unknown_blocked_pairs: set[Tuple[int, int]] = field(default_factory=set)
 
 
 class EdgeBuilder:
@@ -114,6 +116,8 @@ class EdgeBuilder:
         self.last_stats.candidate_pair_count = len(nearby_pairs)
 
         for node_id_a, node_id_b in sorted(nearby_pairs):
+            edge_key = _edge_key(node_id_a, node_id_b)
+            self.last_stats.evaluated_pairs.add(edge_key)
             node_a = graph.nodes[node_id_a]
             node_b = graph.nodes[node_id_b]
             dx = node_a.position[0] - node_b.position[0]
@@ -122,14 +126,17 @@ class EdgeBuilder:
 
             # 只有整条走廊都远离 obstacle 和 unknown, 才允许 planner 使用这条边
             self.last_stats.clearance_check_count += 1
-            if not _edge_has_clearance(
+            block_reason = _edge_block_reason(
                 grid,
                 (node_a.position[0], node_a.position[1]),
                 (node_b.position[0], node_b.position[1]),
                 sdf_obstacle,
                 sdf_unknown,
                 min_clearance,
-            ):
+            )
+            if block_reason is not None:
+                if block_reason == "unknown":
+                    self.last_stats.unknown_blocked_pairs.add(edge_key)
                 continue
 
             edge = InternalEdge(
@@ -235,21 +242,42 @@ def _edge_has_clearance(
     min_clearance: float,
 ) -> bool:
     """检查 edge 中心线和走廊 clearance, 避免贴墙切角"""
+    return _edge_block_reason(
+        grid,
+        start_xy,
+        end_xy,
+        sdf_obstacle,
+        sdf_unknown,
+        min_clearance,
+    ) is None
+
+
+def _edge_block_reason(
+    grid: ClassifiedGrid,
+    start_xy: Tuple[float, float],
+    end_xy: Tuple[float, float],
+    sdf_obstacle: np.ndarray | None,
+    sdf_unknown: np.ndarray | None,
+    min_clearance: float,
+) -> str | None:
+    """区分 obstacle 和 unknown 阻挡, 便于只重试可能开放的候选边"""
     line_cells = list(grid.world_line_cells(start_xy, end_xy))
     if not line_cells:
-        return False
+        return "outside"
     cell_array = np.asarray(line_cells, dtype=np.int64)
     index_x = cell_array[:, 0]
     index_y = cell_array[:, 1]
-    if np.any(grid.obstacle[index_y, index_x] | grid.unknown[index_y, index_x]):
-        return False
+    if np.any(grid.obstacle[index_y, index_x]):
+        return "obstacle"
+    if np.any(grid.unknown[index_y, index_x]):
+        return "unknown"
     if min_clearance <= 0.0 or sdf_obstacle is None or sdf_unknown is None:
-        return True
-    clearance = np.minimum(
-        sdf_obstacle[index_y, index_x],
-        sdf_unknown[index_y, index_x],
-    )
-    return bool(np.all(clearance >= min_clearance))
+        return None
+    if np.any(sdf_obstacle[index_y, index_x] < min_clearance):
+        return "obstacle"
+    if np.any(sdf_unknown[index_y, index_x] < min_clearance):
+        return "unknown"
+    return None
 
 
 def _historical_edge_has_no_local_contradiction(

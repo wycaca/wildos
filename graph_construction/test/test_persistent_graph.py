@@ -403,6 +403,7 @@ def test_newly_free_cells_locally_reconnect_existing_nodes():
         stamp_seconds=1.0,
     )
     assert blocked_key not in first.graph.edges
+    assert first.stats.blocked_unknown_candidate_count >= 1
     assert remote_key in first.graph.edges
     remote_edge = first.graph.edges[remote_key]
 
@@ -414,8 +415,48 @@ def test_newly_free_cells_locally_reconnect_existing_nodes():
 
     assert changed.stats.newly_free_cell_count == 3
     assert changed.stats.newly_free_rebuild_node_count == 2
+    assert changed.stats.blocked_unknown_retry_count == 1
+    assert changed.stats.blocked_unknown_candidate_count == 0
     assert blocked_key in changed.graph.edges
     assert changed.graph.edges[remote_key] is remote_edge
+
+
+def test_low_degree_retry_is_bounded_and_requires_topology_event():
+    """低连接旧节点不会稳定帧重复重建, 新拓扑出现时才受限重试"""
+    builder = SparseGraphBuilder(
+        GraphBuilderConfig(
+            sample_stride=2,
+            min_node_separation=0.1,
+            min_obstacle_clearance=0.0,
+            edge_radius=3.0,
+            max_edge_neighbors=1,
+            low_degree_retry_threshold=10,
+            max_low_degree_retries_per_update=2,
+            max_low_degree_retry_attempts=3,
+        )
+    )
+    grid = _grid(width=16, height=6)
+    first = builder.update(
+        grid,
+        robot_position=(1.5, 1.5, 0.0),
+        stamp_seconds=1.0,
+    )
+    assert first.stats.edge_rebuild_node_count > 2
+
+    stable = builder.update(
+        _grid(width=16, height=6),
+        robot_position=(1.5, 1.5, 0.0),
+        stamp_seconds=2.0,
+    )
+    assert stable.stats.edge_rebuild_node_count == 0
+    assert stable.stats.low_degree_retry_node_count == 0
+
+    moved = builder.update(
+        _grid(width=16, height=6),
+        robot_position=(13.5, 1.5, 0.0),
+        stamp_seconds=3.0,
+    )
+    assert 0 < moved.stats.low_degree_retry_node_count <= 2
 
 
 def test_rolling_grid_marks_only_entering_cells_dirty():

@@ -12,7 +12,7 @@ from scipy.spatial import cKDTree
 
 from graph_construction.edge_builder import EdgeBuilder
 from graph_construction.frontier_detector import FrontierDetector
-from graph_construction.graph_memory import GraphState
+from graph_construction.graph_memory import EdgeSpatialIndex, GraphState
 from graph_construction.grid_types import ClassifiedGrid, distance_to_mask
 
 
@@ -41,6 +41,9 @@ class GraphBuilderConfig:
     max_edge_neighbors: int = 6
     current_node_max_edge_neighbors: int = 10
     max_edge_candidates_per_node: int = 24
+    low_degree_retry_threshold: int = 2
+    max_low_degree_retries_per_update: int = 12
+    max_low_degree_retry_attempts: int = 3
     frontier_assign_radius: float = 5.0
     frontier_min_points: int = 4
     frontier_min_span: float = 0.6
@@ -75,6 +78,9 @@ class GraphUpdateStats:
     edge_candidate_pair_count: int = 0
     edge_clearance_check_count: int = 0
     historical_edge_check_count: int = 0
+    blocked_unknown_candidate_count: int = 0
+    blocked_unknown_retry_count: int = 0
+    low_degree_retry_node_count: int = 0
     frontier_candidate_count: int = 0
     active_frontier_owner_count: int = 0
     stage_seconds: dict[str, float] = field(default_factory=dict)
@@ -141,6 +147,10 @@ class SparseGraphBuilder:
         )
         self._previous_grid_state: _GridStateSnapshot | None = None
         self._blind_zone_initialization_complete = False
+        self._unknown_blocked_pairs: set[tuple[int, int]] = set()
+        self._unknown_blocked_index = EdgeSpatialIndex()
+        self._low_degree_retry_pending: set[int] = set()
+        self._low_degree_retry_attempts: dict[int, int] = {}
 
     def update(
         self,
@@ -315,12 +325,11 @@ class SparseGraphBuilder:
             for node_id in range(first_new_node_id, self.graph.next_node_id)
             if node_id in self.graph.nodes
         )
-        edge_rebuild_node_ids.update(
-            self._current_node_edge_neighborhood(
-                previous_current_id,
-                previous_current_position,
-            )
+        current_node_rebuild_ids = self._current_node_edge_neighborhood(
+            previous_current_id,
+            previous_current_position,
         )
+        edge_rebuild_node_ids.update(current_node_rebuild_ids)
         newly_free_rebuild_node_ids = self._node_ids_near_newly_free(
             grid,
             newly_free_cells,
@@ -328,6 +337,30 @@ class SparseGraphBuilder:
             local_node_ids,
         )
         edge_rebuild_node_ids.update(newly_free_rebuild_node_ids)
+        blocked_unknown_retry_ids, blocked_unknown_retry_count = (
+            self._blocked_unknown_retry_nodes(
+                grid,
+                newly_free_cells,
+                local_node_ids,
+            )
+        )
+        edge_rebuild_node_ids.update(blocked_unknown_retry_ids)
+        for node_id in newly_free_rebuild_node_ids | blocked_unknown_retry_ids:
+            self._low_degree_retry_attempts.pop(node_id, None)
+            self._low_degree_retry_pending.discard(node_id)
+        retry_trigger_node_ids = (
+            set(topology_dirty_node_ids)
+            | set(new_node_ids)
+            | set(current_node_rebuild_ids)
+            | set(newly_free_rebuild_node_ids)
+            | set(blocked_unknown_retry_ids)
+        )
+        low_degree_retry_ids = self._take_low_degree_retry_nodes(
+            local_node_ids,
+            edge_rebuild_node_ids,
+            retry_trigger_node_ids,
+        )
+        edge_rebuild_node_ids.update(low_degree_retry_ids)
         obstacle_affected_edge_keys = self._edge_keys_near_obstacles(
             grid,
             grid_changes.newly_obstacle,
@@ -349,6 +382,10 @@ class SparseGraphBuilder:
         else:
             self.edge_builder.reset_stats()
             next_edges = []
+        self._sync_unknown_blocked_candidates(
+            self.edge_builder.last_stats.evaluated_pairs,
+            self.edge_builder.last_stats.unknown_blocked_pairs,
+        )
         next_edges = self.edge_builder.merge_historical_edges(
             self.graph,
             next_edges,
@@ -358,6 +395,7 @@ class SparseGraphBuilder:
             historical_edge_keys=affected_edge_keys,
         )
         self.graph.replace_edges(affected_edge_keys, next_edges)
+        self._refresh_low_degree_retry_queue(edge_rebuild_node_ids)
         stage_seconds["edges"] = perf_counter() - stage_started
         self._previous_grid_state = _snapshot_grid_state(grid)
 
@@ -388,6 +426,11 @@ class SparseGraphBuilder:
                 historical_edge_check_count=(
                     self.edge_builder.last_stats.historical_check_count
                 ),
+                blocked_unknown_candidate_count=len(
+                    self._unknown_blocked_pairs
+                ),
+                blocked_unknown_retry_count=blocked_unknown_retry_count,
+                low_degree_retry_node_count=len(low_degree_retry_ids),
                 frontier_candidate_count=(
                     self.frontier_detector.last_candidate_count
                 ),
@@ -540,6 +583,143 @@ class SparseGraphBuilder:
             if math.isfinite(float(distance)):
                 affected_node_ids.add(node_id)
         return affected_node_ids
+
+    def _blocked_unknown_retry_nodes(
+        self,
+        grid: ClassifiedGrid,
+        newly_free: np.ndarray,
+        local_node_ids: set[int],
+    ) -> tuple[set[int], int]:
+        """查找真正经过新 free 附近的 unknown 阻挡候选"""
+        if not np.any(newly_free) or not self._unknown_blocked_pairs:
+            return set(), 0
+        world_x, world_y = _grid_world_coordinates(grid)
+        points = np.column_stack(
+            (world_x[newly_free], world_y[newly_free])
+        )
+        query_radius = (
+            self.config.min_obstacle_clearance
+            + math.sqrt(2.0) * grid.resolution
+        )
+        candidate_pairs = self._unknown_blocked_index.query_points(
+            points,
+            query_radius,
+        )
+        retry_pairs = set()
+        retry_node_ids = set()
+        for edge_key in candidate_pairs:
+            if (
+                edge_key[0] not in self.graph.nodes
+                or edge_key[1] not in self.graph.nodes
+            ):
+                self._remove_unknown_blocked_candidate(edge_key)
+                continue
+            if edge_key[0] not in local_node_ids or edge_key[1] not in local_node_ids:
+                continue
+            retry_pairs.add(edge_key)
+            retry_node_ids.update(edge_key)
+        return retry_node_ids, len(retry_pairs)
+
+    def _sync_unknown_blocked_candidates(
+        self,
+        evaluated_pairs: set[tuple[int, int]],
+        blocked_pairs: set[tuple[int, int]],
+    ) -> None:
+        """用本帧检查结果更新 unknown 阻挡候选空间索引"""
+        for edge_key in evaluated_pairs:
+            self._remove_unknown_blocked_candidate(edge_key)
+        for edge_key in blocked_pairs:
+            first = self.graph.nodes.get(edge_key[0])
+            second = self.graph.nodes.get(edge_key[1])
+            if first is None or second is None:
+                continue
+            self._unknown_blocked_pairs.add(edge_key)
+            self._unknown_blocked_index.insert(
+                edge_key,
+                first.position,
+                second.position,
+            )
+
+    def _remove_unknown_blocked_candidate(
+        self,
+        edge_key: tuple[int, int],
+    ) -> None:
+        self._unknown_blocked_pairs.discard(edge_key)
+        self._unknown_blocked_index.remove(edge_key)
+
+    def _take_low_degree_retry_nodes(
+        self,
+        local_node_ids: set[int],
+        already_rebuilding: set[int],
+        trigger_node_ids: set[int],
+    ) -> set[int]:
+        """只重试拓扑变化附近的少量低连接节点"""
+        if not trigger_node_ids:
+            return set()
+        retry_limit = max(
+            0,
+            int(self.config.max_low_degree_retries_per_update),
+        )
+        max_attempts = max(
+            0,
+            int(self.config.max_low_degree_retry_attempts),
+        )
+        nearby_pending = set()
+        for trigger_id in trigger_node_ids:
+            trigger = self.graph.nodes.get(trigger_id)
+            if trigger is None:
+                continue
+            nearby_pending.update(
+                self.graph.node_ids_within(
+                    trigger.position,
+                    self.config.edge_radius,
+                )
+            )
+        nearby_pending &= self._low_degree_retry_pending
+        selected = set()
+        for node_id in sorted(nearby_pending):
+            if len(selected) >= retry_limit:
+                break
+            if node_id not in self.graph.nodes:
+                self._low_degree_retry_pending.discard(node_id)
+                self._low_degree_retry_attempts.pop(node_id, None)
+                continue
+            if node_id not in local_node_ids or node_id in already_rebuilding:
+                continue
+            attempts = self._low_degree_retry_attempts.get(node_id, 0)
+            if attempts >= max_attempts:
+                self._low_degree_retry_pending.discard(node_id)
+                continue
+            self._low_degree_retry_pending.discard(node_id)
+            self._low_degree_retry_attempts[node_id] = attempts + 1
+            selected.add(node_id)
+        return selected
+
+    def _refresh_low_degree_retry_queue(
+        self,
+        rebuilt_node_ids: set[int],
+    ) -> None:
+        """重建后只把仍然低连接的节点放回受限重试队列"""
+        degree_threshold = max(
+            0,
+            int(self.config.low_degree_retry_threshold),
+        )
+        max_attempts = max(
+            0,
+            int(self.config.max_low_degree_retry_attempts),
+        )
+        for node_id in rebuilt_node_ids:
+            if node_id not in self.graph.nodes:
+                self._low_degree_retry_pending.discard(node_id)
+                self._low_degree_retry_attempts.pop(node_id, None)
+                continue
+            degree = len(self.graph.adjacency.get(node_id, ()))
+            attempts = self._low_degree_retry_attempts.get(node_id, 0)
+            if degree < degree_threshold and attempts < max_attempts:
+                self._low_degree_retry_pending.add(node_id)
+            else:
+                self._low_degree_retry_pending.discard(node_id)
+                self._low_degree_retry_attempts.pop(node_id, None)
 
     def _edge_keys_near_obstacles(
         self,
