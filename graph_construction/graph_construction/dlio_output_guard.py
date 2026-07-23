@@ -12,6 +12,9 @@ from std_msgs.msg import Bool
 from graph_construction.performance_stats import EventRate, TimingWindow
 
 
+_DIAGNOSTICS_LOG_PERIOD_SEC = 30.0
+
+
 class DlioOutputGuard(Node):
     """Forward DLIO point clouds only while aligned odometry is healthy"""
 
@@ -29,8 +32,6 @@ class DlioOutputGuard(Node):
             "health_topic",
             "/spot1/dlio/odom_node/healthy",
         )
-        self.declare_parameter("diagnostic_interval", 30.0)
-
         self.input_pointcloud_topic = str(
             self.get_parameter("input_pointcloud_topic").value
         )
@@ -38,11 +39,6 @@ class DlioOutputGuard(Node):
             self.get_parameter("output_pointcloud_topic").value
         )
         self.health_topic = str(self.get_parameter("health_topic").value)
-        diagnostic_interval = max(
-            float(self.get_parameter("diagnostic_interval").value),
-            5.0,
-        )
-
         sensor_qos = QoSProfile(
             depth=10,
             reliability=ReliabilityPolicy.RELIABLE,
@@ -70,7 +66,7 @@ class DlioOutputGuard(Node):
             self._on_health,
             health_qos,
         )
-        self.create_timer(diagnostic_interval, self._report_diagnostics)
+        self.create_timer(_DIAGNOSTICS_LOG_PERIOD_SEC, self._report_diagnostics)
 
         self.forwarded = 0
         self.suppressed = 0

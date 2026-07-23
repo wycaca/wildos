@@ -34,25 +34,24 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "viz_publish_rate_hz": 1.0,
     "publish_rate_hz": 2.0,
     "max_grid_odom_time_delta_sec": 0.5,
-    "diagnostics_log_period_sec": 30.0,
-    "slow_cycle_warning_ms": 250.0,
-    "grid_map_traversability_layer": "traversability",
-    "grid_map_elevation_layer": "elevation",
     "grid_map_free_threshold": 0.2,
     "grid_map_obstacle_threshold": 0.05,
-    "grid_map_normalize_traversability": True,
-    "grid_map_normalize_low_quantile": 0.05,
-    "grid_map_normalize_high_quantile": 0.95,
-    "grid_map_z_offset": 0.08,
     "grid_map_min_free_component_cells": 25,
     "grid_map_fill_hole_max_cells": 90,
     "grid_map_fill_hole_min_free_neighbor_ratio": 0.65,
     "grid_map_fill_elevation_radius_cells": 5,
-    "grid_map_majority_fill_iterations": 1,
-    "grid_map_majority_fill_min_neighbors": 6,
 }
 
 TRAVERSABILITY_CLASS = "default"
+_DIAGNOSTICS_LOG_PERIOD_SEC = 30.0
+_SLOW_CYCLE_WARNING_MS = 250.0
+_GRID_MAP_TRAVERSABILITY_LAYER = "traversability"
+_GRID_MAP_ELEVATION_LAYER = "elevation"
+_GRID_MAP_NORMALIZE_LOW_QUANTILE = 0.05
+_GRID_MAP_NORMALIZE_HIGH_QUANTILE = 0.95
+_GRID_MAP_Z_OFFSET = 0.08
+_GRID_MAP_MAJORITY_FILL_ITERATIONS = 1
+_GRID_MAP_MAJORITY_FILL_MIN_NEIGHBORS = 6
 
 
 class InputFreshnessGate:
@@ -158,11 +157,7 @@ class GraphConstructionNode(Node):
 
         publish_rate = float(self.config["publish_rate_hz"])
         self.create_timer(1.0 / publish_rate, self._on_timer)
-        diagnostics_period = max(
-            float(self.config["diagnostics_log_period_sec"]),
-            5.0,
-        )
-        self.create_timer(diagnostics_period, self._report_diagnostics)
+        self.create_timer(_DIAGNOSTICS_LOG_PERIOD_SEC, self._report_diagnostics)
 
         self.get_logger().info(
             f"Graph construction 已启动, grid_map={self.config['grid_map_topic']}, "
@@ -295,14 +290,16 @@ class GraphConstructionNode(Node):
 
     def _warn_if_slow(self, elapsed_seconds: float) -> None:
         """Throttle slow-cycle warnings to avoid hiding normal diagnostics"""
-        threshold_ms = float(self.config["slow_cycle_warning_ms"])
         now = time.monotonic()
-        if elapsed_seconds * 1000.0 < threshold_ms or now - self._last_slow_warning < 30.0:
+        if (
+            elapsed_seconds * 1000.0 < _SLOW_CYCLE_WARNING_MS
+            or now - self._last_slow_warning < 30.0
+        ):
             return
         self._last_slow_warning = now
         self.get_logger().warn(
             f"导航图构建耗时偏高, total={elapsed_seconds * 1000.0:.1f}ms, "
-            f"threshold={threshold_ms:.1f}ms"
+            f"threshold={_SLOW_CYCLE_WARNING_MS:.1f}ms"
         )
 
     def _report_diagnostics(self) -> None:
@@ -411,21 +408,21 @@ class GraphConstructionNode(Node):
         """
         return classify_grid_map(
             grid_msg,
-            traversability_layer=self.config["grid_map_traversability_layer"],
-            elevation_layer=self.config["grid_map_elevation_layer"],
+            traversability_layer=_GRID_MAP_TRAVERSABILITY_LAYER,
+            elevation_layer=_GRID_MAP_ELEVATION_LAYER,
             free_threshold=self.config["grid_map_free_threshold"],
             obstacle_threshold=self.config["grid_map_obstacle_threshold"],
-            normalize_traversability=self.config["grid_map_normalize_traversability"],
-            normalize_low_quantile=self.config["grid_map_normalize_low_quantile"],
-            normalize_high_quantile=self.config["grid_map_normalize_high_quantile"],
-            z_offset=self.config["grid_map_z_offset"],
+            normalize_traversability=True,
+            normalize_low_quantile=_GRID_MAP_NORMALIZE_LOW_QUANTILE,
+            normalize_high_quantile=_GRID_MAP_NORMALIZE_HIGH_QUANTILE,
+            z_offset=_GRID_MAP_Z_OFFSET,
             min_free_component_cells=self.config["grid_map_min_free_component_cells"],
             fill_hole_max_cells=self.config["grid_map_fill_hole_max_cells"],
             fill_hole_min_free_neighbor_ratio=self.config[
                 "grid_map_fill_hole_min_free_neighbor_ratio"
             ],
-            majority_fill_iterations=self.config["grid_map_majority_fill_iterations"],
-            majority_fill_min_neighbors=self.config["grid_map_majority_fill_min_neighbors"],
+            majority_fill_iterations=_GRID_MAP_MAJORITY_FILL_ITERATIONS,
+            majority_fill_min_neighbors=_GRID_MAP_MAJORITY_FILL_MIN_NEIGHBORS,
             fill_elevation_radius_cells=self.config["grid_map_fill_elevation_radius_cells"],
         )
 
@@ -456,17 +453,8 @@ def _resolve_config(config: Mapping[str, Any]) -> Dict[str, Any]:
         raise ValueError("viz_publish_rate_hz must be greater than 0")
     if float(resolved["max_grid_odom_time_delta_sec"]) <= 0.0:
         raise ValueError("max_grid_odom_time_delta_sec must be greater than 0")
-    if float(resolved["diagnostics_log_period_sec"]) <= 0.0:
-        raise ValueError("diagnostics_log_period_sec must be greater than 0")
-    if float(resolved["slow_cycle_warning_ms"]) <= 0.0:
-        raise ValueError("slow_cycle_warning_ms must be greater than 0")
     if float(resolved["grid_map_obstacle_threshold"]) > float(resolved["grid_map_free_threshold"]):
         raise ValueError("grid_map_obstacle_threshold must not exceed grid_map_free_threshold")
-
-    low_quantile = float(resolved["grid_map_normalize_low_quantile"])
-    high_quantile = float(resolved["grid_map_normalize_high_quantile"])
-    if not 0.0 <= low_quantile < high_quantile <= 1.0:
-        raise ValueError("GridMap normalization quantiles must satisfy 0 <= low < high <= 1")
     return resolved
 
 

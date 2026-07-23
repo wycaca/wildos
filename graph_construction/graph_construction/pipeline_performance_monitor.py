@@ -16,6 +16,9 @@ from sensor_msgs.msg import Imu, PointCloud2
 from graph_construction.performance_stats import EventRate, TimingWindow
 
 
+_DIAGNOSTICS_LOG_PERIOD_SEC = 30.0
+
+
 @dataclass
 class TopicMetrics:
     rate: EventRate
@@ -55,7 +58,6 @@ class PipelinePerformanceMonitor(Node):
 
     def __init__(self) -> None:
         super().__init__("pipeline_performance_monitor")
-        self.declare_parameter("diagnostics_log_period_sec", 30.0)
         self._metrics = {
             name: TopicMetrics(EventRate(), TimingWindow())
             for name, _, _, _, _ in self.TOPICS
@@ -72,13 +74,9 @@ class PipelinePerformanceMonitor(Node):
                 lambda msg, metric_name=name: self._on_message(metric_name, msg),
                 qos,
             )
-        diagnostics_period = max(
-            float(self.get_parameter("diagnostics_log_period_sec").value),
-            10.0,
-        )
-        self.create_timer(diagnostics_period, self._report)
+        self.create_timer(_DIAGNOSTICS_LOG_PERIOD_SEC, self._report)
         self.get_logger().info(
-            f"链路性能监测已启动, period={diagnostics_period:.0f}s"
+            f"链路性能监测已启动, period={_DIAGNOSTICS_LOG_PERIOD_SEC:.0f}s"
         )
 
     def _on_message(self, name: str, msg) -> None:

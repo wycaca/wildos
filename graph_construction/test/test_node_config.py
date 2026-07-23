@@ -31,15 +31,32 @@ def test_resolve_config_rejects_removed_or_misspelled_keys():
         {"publish_rate_hz": 0.0},
         {"viz_publish_rate_hz": 0.0},
         {"max_grid_odom_time_delta_sec": 0.0},
-        {"diagnostics_log_period_sec": 0.0},
-        {"slow_cycle_warning_ms": 0.0},
         {"grid_map_free_threshold": 0.1, "grid_map_obstacle_threshold": 0.2},
-        {"grid_map_normalize_low_quantile": 0.9, "grid_map_normalize_high_quantile": 0.1},
     ],
 )
 def test_resolve_config_rejects_invalid_values(config):
     with pytest.raises(ValueError):
         _resolve_config(config)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "diagnostics_log_period_sec",
+        "slow_cycle_warning_ms",
+        "grid_map_traversability_layer",
+        "grid_map_elevation_layer",
+        "grid_map_normalize_traversability",
+        "grid_map_normalize_low_quantile",
+        "grid_map_normalize_high_quantile",
+        "grid_map_z_offset",
+        "grid_map_majority_fill_iterations",
+        "grid_map_majority_fill_min_neighbors",
+    ],
+)
+def test_resolve_config_rejects_internal_constants(name):
+    with pytest.raises(ValueError, match=name):
+        _resolve_config({name: 1})
 
 
 def test_load_config_rejects_missing_file(tmp_path: Path):

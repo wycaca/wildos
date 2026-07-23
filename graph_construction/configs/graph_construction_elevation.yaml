@@ -7,8 +7,6 @@ viz_topic: /spot1/graph_construction_viz
 viz_show_radius_markers: false
 viz_publish_rate_hz: 1.0
 max_grid_odom_time_delta_sec: 0.5
-diagnostics_log_period_sec: 30.0
-slow_cycle_warning_ms: 250.0
 
 # GridMap 分类和小洞修复
 grid_map_free_threshold: 0.2

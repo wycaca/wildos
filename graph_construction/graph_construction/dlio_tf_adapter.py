@@ -23,6 +23,9 @@ from tf2_msgs.msg import TFMessage
 from graph_construction.performance_stats import EventRate, TimingWindow
 
 
+_DIAGNOSTICS_LOG_PERIOD_SEC = 30.0
+
+
 @dataclass(frozen=True)
 class RigidTransform:
     translation: tuple[float, float, float]
@@ -612,8 +615,6 @@ class DlioTfAdapter(Node):
         self.declare_parameter("unhealthy_confirm_frames", 3)
         self.declare_parameter("healthy_confirm_frames", 5)
         self.declare_parameter("health_recovery_ratio", 0.8)
-        self.declare_parameter("diagnostic_interval", 30.0)
-
         self.input_odom_topic = str(
             self.get_parameter("input_odom_topic").value
         )
@@ -679,10 +680,6 @@ class DlioTfAdapter(Node):
             hard_max_orientation_error_deg=self.hard_max_orientation_error_deg,
             recovery_ratio=self.health_recovery_ratio,
             jump_reset_sec=self.health_jump_reset_sec,
-        )
-        diagnostic_interval = max(
-            float(self.get_parameter("diagnostic_interval").value),
-            5.0,
         )
         self.reference_messages: deque[Odometry] = deque(maxlen=500)
         self.alignment: RigidTransform | None = None
@@ -753,7 +750,7 @@ class DlioTfAdapter(Node):
                 translation=(0.0, 0.0, 0.0),
                 rotation=(0.0, 0.0, 0.0, 1.0),
             )
-        self.create_timer(diagnostic_interval, self._report_diagnostics)
+        self.create_timer(_DIAGNOSTICS_LOG_PERIOD_SEC, self._report_diagnostics)
         self.get_logger().info(
             f"DLIO TF adapter 已启动, odom={self.input_odom_topic}, "
             f"reference={self.reference_odom_topic or '<identity>'}, "
