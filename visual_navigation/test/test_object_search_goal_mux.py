@@ -436,7 +436,99 @@ def test_observation_switches_to_metric_approach_when_target_stabilizes(mux_node
 
     assert observation_state == ObjectSearchState.TARGET_OBSERVATION
     assert metric_state == ObjectSearchState.TARGET_APPROACH_METRIC
-    assert metric_goal.pose.position.x == pytest.approx(2.8)
+    assert metric_goal.pose.position.x == pytest.approx(2.8 - 1.75)
+    assert _yaw(metric_goal) == pytest.approx(0.0)
+
+
+def test_stable_target_enters_facing_final_observation(mux_node):
+    """到达稳定目标安全距离后保持位置并面向目标"""
+    mux_node.final_observation_duration_sec = 100.0
+    mux_node._on_odom(_odom(0.0, 0.0, math.pi))
+    mux_node._on_target_estimate(_target_estimate(1.8, 0.0, stable=True))
+
+    state, goal = mux_node._select_goal()
+
+    assert state == ObjectSearchState.TARGET_FINAL_OBSERVATION
+    assert goal.pose.position.x == pytest.approx(0.0)
+    assert goal.pose.position.y == pytest.approx(0.0)
+    assert _yaw(goal) == pytest.approx(0.0)
+    assert not mux_node.reached_latched
+
+
+def test_final_observation_repositions_when_evidence_stays_insufficient(mux_node):
+    """静止最终观察后仍无完成证据时横向更换观察点"""
+    mux_node.final_observation_duration_sec = 100.0
+    mux_node._on_odom(_odom(0.0, 0.0, 0.0))
+    mux_node._on_target_estimate(_target_estimate(1.8, 0.0, stable=True))
+    first_state, _ = mux_node._select_goal()
+    mux_node.final_observation_duration_sec = -1.0
+
+    next_state, reposition_goal = mux_node._select_goal()
+
+    assert first_state == ObjectSearchState.TARGET_FINAL_OBSERVATION
+    assert next_state == ObjectSearchState.TARGET_FINAL_REPOSITION
+    assert reposition_goal.pose.position.x == pytest.approx(0.0)
+    assert abs(reposition_goal.pose.position.y) == pytest.approx(0.9)
+
+
+def test_visible_stable_target_does_not_start_scan(mux_node):
+    """稳定目标持续更新时只对准目标, 不执行完整旋转"""
+    mux_node.final_observation_duration_sec = 100.0
+    mux_node._on_odom(_odom(0.0, 0.0, 0.0))
+    mux_node._on_target_estimate(_target_estimate(1.8, 0.0, stable=True))
+
+    state, goal = mux_node._select_goal()
+
+    assert state == ObjectSearchState.TARGET_FINAL_OBSERVATION
+    assert mux_node.final_observation_phase == "ALIGN"
+    assert _yaw(goal) == pytest.approx(0.0)
+
+
+def test_lost_stable_target_uses_small_final_scan(mux_node):
+    """最终观察失联时只围绕稳定目标方向小角度重捕获"""
+    mux_node.final_observation_duration_sec = 100.0
+    mux_node._on_odom(_odom(0.0, 0.0, 0.0))
+    mux_node._on_target_estimate(_target_estimate(1.8, 0.0, stable=True))
+    mux_node.final_observation_lost_timeout_sec = -1.0
+
+    state, goal = mux_node._select_goal()
+
+    assert state == ObjectSearchState.TARGET_FINAL_OBSERVATION
+    assert mux_node.final_observation_phase == "SCAN_LEFT"
+    assert _yaw(goal) == pytest.approx(math.radians(15.0))
+
+
+def test_lidar_locked_target_can_complete_without_visual_reached(mux_node):
+    """连续 LiDAR 锁定在近距离时可以完成最终门控"""
+    mux_node._on_odom(_odom(0.0, 0.0, 0.0))
+    mux_node._on_target_estimate(
+        _target_estimate(
+            1.5,
+            0.0,
+            stable=True,
+            state="LIDAR_LOCKED",
+        )
+    )
+
+    state, _ = mux_node._select_goal()
+
+    assert state == ObjectSearchState.TARGET_REACHED_VIEWPOINT
+    assert mux_node.reached_latched
+
+
+def test_stable_vision_final_observation_then_reached(mux_node):
+    """稳定视觉目标必须经过最终观察再由连续视觉证据完成"""
+    mux_node.final_observation_duration_sec = 100.0
+    mux_node._on_odom(_odom(0.0, 0.0, 0.0))
+    mux_node._on_target_estimate(_target_estimate(1.8, 0.0, stable=True))
+    observation_state, _ = mux_node._select_goal()
+
+    mux_node._on_object_reached(Bool(data=True))
+    reached_state, _ = mux_node._select_goal()
+
+    assert observation_state == ObjectSearchState.TARGET_FINAL_OBSERVATION
+    assert reached_state == ObjectSearchState.TARGET_REACHED_VIEWPOINT
+    assert mux_node.reached_latched
 
 
 def test_lost_target_uses_small_scan_around_predicted_bearing(mux_node):

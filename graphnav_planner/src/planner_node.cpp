@@ -117,6 +117,11 @@ public:
     goal_radius_ = this->get_parameter("goal_radius").as_double();
     this->declare_parameter("coarse_goal_radius", 0.75);
     coarse_goal_radius_ = this->get_parameter("coarse_goal_radius").as_double();
+    this->declare_parameter("metric_goal_radius", 0.5);
+    metric_goal_radius_ = this->get_parameter("metric_goal_radius").as_double();
+    this->declare_parameter("final_reposition_goal_radius", 0.35);
+    final_reposition_goal_radius_ =
+      this->get_parameter("final_reposition_goal_radius").as_double();
     diagnostics_log_period_sec_ = std::max(
       this->get_parameter("diagnostics_log_period_sec").as_double(), 5.0);
     slow_planning_warning_ms_ = std::max(
@@ -213,6 +218,14 @@ private:
     {
       return "接近稳定融合目标";
     }
+    if (state == "TARGET_FINAL_OBSERVATION")
+    {
+      return "稳定目标最终观察";
+    }
+    if (state == "TARGET_FINAL_REPOSITION")
+    {
+      return "更换最终观察点";
+    }
     if (state == "TARGET_REACHED_VIEWPOINT")
     {
       return "目标到达观察点";
@@ -226,6 +239,8 @@ private:
       state == "TARGET_APPROACH_COARSE" ||
       state == "TARGET_OBSERVATION" ||
       state == "TARGET_APPROACH_METRIC" ||
+      state == "TARGET_FINAL_OBSERVATION" ||
+      state == "TARGET_FINAL_REPOSITION" ||
       state == "TARGET_REACHED_VIEWPOINT";
   }
 
@@ -267,7 +282,8 @@ private:
     observation_mode_ =
       state == "STARTUP_OBSERVATION" ||
       state == "TARGET_PENDING_OBSERVATION" ||
-      state == "TARGET_OBSERVATION";
+      state == "TARGET_OBSERVATION" ||
+      state == "TARGET_FINAL_OBSERVATION";
     // 状态切换先丢弃旧 goal, 等同一周期的新 goal 到达后再规划
     // 这样目标出现时不会用旧探索 goal 短暂发布错误路径
     goal_pose_.reset();
@@ -376,8 +392,19 @@ private:
       }
       Eigen::Vector3d goal_vec(goal_in_graph_frame.pose.position.x, goal_in_graph_frame.pose.position.y,
                                goal_in_graph_frame.pose.position.z);
-      const double active_goal_radius = object_search_state_ == "TARGET_APPROACH_COARSE" ?
-        coarse_goal_radius_ : goal_radius_;
+      double active_goal_radius = goal_radius_;
+      if (object_search_state_ == "TARGET_APPROACH_COARSE")
+      {
+        active_goal_radius = coarse_goal_radius_;
+      }
+      else if (object_search_state_ == "TARGET_APPROACH_METRIC")
+      {
+        active_goal_radius = metric_goal_radius_;
+      }
+      else if (object_search_state_ == "TARGET_FINAL_REPOSITION")
+      {
+        active_goal_radius = final_reposition_goal_radius_;
+      }
       std::optional<Eigen::Vector3d> robot_position;
       std::optional<geometry_msgs::msg::PoseStamped> robot_pose_for_hold;
       if (odom_)
@@ -678,6 +705,8 @@ private:
   bool target_evidence_pending_ = false;
   double goal_radius_;
   double coarse_goal_radius_;
+  double metric_goal_radius_;
+  double final_reposition_goal_radius_;
   double diagnostics_log_period_sec_;
   double slow_planning_warning_ms_;
   double max_graph_age_sec_;

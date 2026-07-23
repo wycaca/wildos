@@ -34,6 +34,7 @@ class ObjectSearchGoalMux(Node):
         self.declare_parameter("publish_rate", 5.0)
         self.declare_parameter("object_reached_timeout_sec", 2.0)
         self.declare_parameter("object_reached_max_target_distance", 2.0)
+        self.declare_parameter("lidar_reached_timeout_sec", 2.0)
         self.declare_parameter("coarse_target_min_views", 2)
         self.declare_parameter("coarse_target_min_confidence", 0.45)
         self.declare_parameter("coarse_target_max_distance", 30.0)
@@ -53,6 +54,15 @@ class ObjectSearchGoalMux(Node):
         self.declare_parameter("target_observation_scan_hold_sec", 0.5)
         self.declare_parameter("pending_evidence_protection_sec", 3.0)
         self.declare_parameter("pending_observation_duration_sec", 1.5)
+        self.declare_parameter("final_observation_distance", 1.75)
+        self.declare_parameter("final_observation_entry_tolerance", 0.4)
+        self.declare_parameter("final_observation_duration_sec", 2.0)
+        self.declare_parameter("final_observation_lost_timeout_sec", 2.0)
+        self.declare_parameter("final_observation_scan_yaw_deg", 15.0)
+        self.declare_parameter("final_observation_scan_tolerance_deg", 5.0)
+        self.declare_parameter("final_observation_scan_hold_sec", 0.5)
+        self.declare_parameter("final_observation_reposition_distance", 0.9)
+        self.declare_parameter("final_observation_reposition_tolerance", 0.35)
         self.declare_parameter("nav_graph_topic", "/spot1/nav_graph")
         self.declare_parameter("scored_nav_graph_topic", "/spot1/scored_nav_graph")
         self.declare_parameter("startup_observation_enabled", True)
@@ -83,6 +93,10 @@ class ObjectSearchGoalMux(Node):
         self.object_reached_timeout_sec = max(self._param_float("object_reached_timeout_sec"), 0.0)
         self.object_reached_max_target_distance = max(
             self._param_float("object_reached_max_target_distance"),
+            0.1,
+        )
+        self.lidar_reached_timeout_sec = max(
+            self._param_float("lidar_reached_timeout_sec"),
             0.1,
         )
         self.coarse_target_min_views = max(
@@ -162,6 +176,51 @@ class ObjectSearchGoalMux(Node):
             self._param_float("pending_observation_duration_sec"),
             0.1,
         )
+        self.final_observation_distance = max(
+            self._param_float("final_observation_distance"),
+            0.5,
+        )
+        self.final_observation_entry_tolerance = max(
+            self._param_float("final_observation_entry_tolerance"),
+            0.0,
+        )
+        self.final_observation_duration_sec = max(
+            self._param_float("final_observation_duration_sec"),
+            0.1,
+        )
+        self.final_observation_lost_timeout_sec = max(
+            self._param_float("final_observation_lost_timeout_sec"),
+            0.1,
+        )
+        self.final_observation_scan_yaw = math.radians(
+            min(
+                max(self._param_float("final_observation_scan_yaw_deg"), 5.0),
+                30.0,
+            )
+        )
+        self.final_observation_scan_tolerance = math.radians(
+            min(
+                max(
+                    self._param_float(
+                        "final_observation_scan_tolerance_deg"
+                    ),
+                    1.0,
+                ),
+                15.0,
+            )
+        )
+        self.final_observation_scan_hold_sec = max(
+            self._param_float("final_observation_scan_hold_sec"),
+            0.0,
+        )
+        self.final_observation_reposition_distance = max(
+            self._param_float("final_observation_reposition_distance"),
+            0.3,
+        )
+        self.final_observation_reposition_tolerance = max(
+            self._param_float("final_observation_reposition_tolerance"),
+            0.1,
+        )
         self.nav_graph_topic = self._param_str("nav_graph_topic")
         self.scored_nav_graph_topic = self._param_str("scored_nav_graph_topic")
         self.startup_observation_enabled = bool(
@@ -218,6 +277,7 @@ class ObjectSearchGoalMux(Node):
         self.metric_target_confidence = 0.0
         self.metric_target_source = TargetEstimate.SOURCE_NONE
         self.metric_target_stable = False
+        self.metric_target_state = "EMPTY"
         self.initial_search_goal: PoseStamped | None = None
         self.exploration_heading_yaw: float | None = None
         self.latest_object_reached = False
@@ -249,6 +309,12 @@ class ObjectSearchGoalMux(Node):
         self.pending_observation_started_time = None
         self.pending_observation_complete = False
         self.pending_bearing_yaw: float | None = None
+        self.final_observation_started_time = None
+        self.final_observation_phase = "ALIGN"
+        self.final_observation_phase_time = None
+        self.final_approach_goal: PoseStamped | None = None
+        self.final_reposition_goal: PoseStamped | None = None
+        self.final_reposition_attempts = 0
 
         self.goal_pub = self.create_publisher(PoseStamped, self.output_goal_topic, 10)
         self.status_pub = self.create_publisher(String, self.status_topic, 10)
@@ -456,9 +522,13 @@ class ObjectSearchGoalMux(Node):
         self.metric_target_confidence = float(msg.confidence)
         self.metric_target_source = int(msg.source)
         self.metric_target_stable = bool(msg.stable)
+        self.metric_target_state = str(msg.state)
         self._clear_pending_observation()
         if msg.stable:
             self._reset_target_observation()
+            if target_moved:
+                self.final_approach_goal = None
+                self.final_reposition_goal = None
         elif target_moved and self.target_reposition_goal is not None:
             self.target_reposition_goal = None
         if first_metric_target and not msg.stable:
@@ -527,10 +597,7 @@ class ObjectSearchGoalMux(Node):
                 )
                 self._clear_metric_target()
             elif self.metric_target_stable:
-                return (
-                    ObjectSearchState.TARGET_APPROACH_METRIC,
-                    self._retime_pose(self.metric_target, now),
-                )
+                return self._select_final_target_goal(now)
             else:
                 return self._select_coarse_target_goal(now)
 
@@ -592,6 +659,183 @@ class ObjectSearchGoalMux(Node):
         goal.pose.position = copy.deepcopy(self.latest_odom.pose.pose.position)
         self._set_pose_yaw(goal, self.pending_bearing_yaw)
         return goal
+
+    def _select_final_target_goal(self, now) -> tuple[str, PoseStamped]:
+        """先到稳定目标外的安全位置, 再静止确认或小范围换位"""
+        assert self.metric_target is not None
+        assert self.latest_odom is not None
+
+        if self.final_reposition_goal is not None:
+            if self._odom_distance_to_pose(self.final_reposition_goal) > (
+                self.final_observation_reposition_tolerance
+            ):
+                return (
+                    ObjectSearchState.TARGET_FINAL_REPOSITION,
+                    self._retime_pose(self.final_reposition_goal, now),
+                )
+            self.final_reposition_goal = None
+            self._start_final_observation(now, "到达新观察点")
+
+        entry_distance = (
+            self.final_observation_distance
+            + self.final_observation_entry_tolerance
+        )
+        if (
+            self.final_observation_started_time is None
+            and self._target_distance(self.metric_target) > entry_distance
+        ):
+            return (
+                ObjectSearchState.TARGET_APPROACH_METRIC,
+                self._build_final_approach_goal(now),
+            )
+
+        if self.final_observation_started_time is None:
+            self._start_final_observation(now, "进入最终观察距离")
+
+        reposition_goal = self._update_final_observation(now)
+        if reposition_goal is not None:
+            return ObjectSearchState.TARGET_FINAL_REPOSITION, reposition_goal
+        return (
+            ObjectSearchState.TARGET_FINAL_OBSERVATION,
+            self._build_final_observation_goal(now),
+        )
+
+    def _start_final_observation(self, now, reason: str) -> None:
+        self.final_observation_started_time = now
+        self.final_observation_phase = "ALIGN"
+        self.final_observation_phase_time = now
+        self.get_logger().info(
+            "开始稳定目标最终观察, "
+            f"原因={reason}, 距离={self._target_distance(self.metric_target):.2f}m"
+        )
+
+    def _update_final_observation(self, now) -> PoseStamped | None:
+        """目标可见时静止确认, 丢失后小角度重捕获并更换观察点"""
+        target_age = self._age_seconds(now, self.latest_target_estimate_time)
+        if target_age <= self.final_observation_lost_timeout_sec:
+            if self.final_observation_phase != "ALIGN":
+                self.final_observation_phase = "ALIGN"
+                self.final_observation_phase_time = now
+            if self._age_seconds(now, self.final_observation_started_time) < (
+                self.final_observation_duration_sec
+            ):
+                return None
+            return self._start_final_reposition(now, "静止确认后证据仍不足")
+
+        if self.final_observation_phase == "ALIGN":
+            self._set_final_observation_phase("SCAN_LEFT", now)
+            return None
+        if not self._final_observation_yaw_reached():
+            return None
+        if self._age_seconds(now, self.final_observation_phase_time) < (
+            self.final_observation_scan_hold_sec
+        ):
+            return None
+
+        next_phase = {
+            "SCAN_LEFT": "SCAN_RIGHT",
+            "SCAN_RIGHT": "SCAN_RETURN",
+        }.get(self.final_observation_phase)
+        if next_phase is not None:
+            self._set_final_observation_phase(next_phase, now)
+            return None
+        return self._start_final_reposition(now, "局部重捕获后证据仍不足")
+
+    def _set_final_observation_phase(self, phase: str, now) -> None:
+        self.final_observation_phase = phase
+        self.final_observation_phase_time = now
+        self.get_logger().info(
+            f"最终观察重捕获阶段切换, phase={phase}, "
+            f"target_yaw={math.degrees(self._final_observation_yaw()):.1f}deg"
+        )
+
+    def _start_final_reposition(self, now, reason: str) -> PoseStamped:
+        """沿目标切向选择附近观察点, 避免完整原地旋转"""
+        assert self.metric_target is not None
+        assert self.latest_odom is not None
+        target = self.metric_target.pose.position
+        robot = self.latest_odom.pose.pose.position
+        radial_x = robot.x - target.x
+        radial_y = robot.y - target.y
+        radial_norm = math.hypot(radial_x, radial_y)
+        if radial_norm < 1e-6:
+            radial_x, radial_y, radial_norm = -1.0, 0.0, 1.0
+        side = 1.0 if self.final_reposition_attempts % 2 == 0 else -1.0
+        tangent_x = side * -radial_y / radial_norm
+        tangent_y = side * radial_x / radial_norm
+
+        goal = PoseStamped()
+        goal.header.frame_id = self.metric_target.header.frame_id
+        goal.header.stamp = now.to_msg()
+        goal.pose.position.x = (
+            robot.x + tangent_x * self.final_observation_reposition_distance
+        )
+        goal.pose.position.y = (
+            robot.y + tangent_y * self.final_observation_reposition_distance
+        )
+        goal.pose.position.z = robot.z
+        self._set_pose_yaw(goal, self._bearing_to_target(goal.pose.position))
+        self.final_reposition_attempts += 1
+        self.final_reposition_goal = copy.deepcopy(goal)
+        self.final_observation_started_time = None
+        self.get_logger().info(
+            f"最终观察需要新位置, 原因={reason}, "
+            f"横向移动={self.final_observation_reposition_distance:.2f}m, "
+            f"attempt={self.final_reposition_attempts}"
+        )
+        return goal
+
+    def _build_final_approach_goal(self, now) -> PoseStamped:
+        """在稳定目标外生成一次固定的安全观察位姿"""
+        if self.final_approach_goal is not None:
+            return self._retime_pose(self.final_approach_goal, now)
+        assert self.metric_target is not None
+        assert self.latest_odom is not None
+        target = self.metric_target.pose.position
+        robot = self.latest_odom.pose.pose.position
+        from_target_x = robot.x - target.x
+        from_target_y = robot.y - target.y
+        distance = max(math.hypot(from_target_x, from_target_y), 1e-6)
+
+        goal = PoseStamped()
+        goal.header.frame_id = self.metric_target.header.frame_id
+        goal.header.stamp = now.to_msg()
+        goal.pose.position.x = (
+            target.x
+            + from_target_x / distance * self.final_observation_distance
+        )
+        goal.pose.position.y = (
+            target.y
+            + from_target_y / distance * self.final_observation_distance
+        )
+        goal.pose.position.z = robot.z
+        self._set_pose_yaw(goal, self._bearing_to_target(goal.pose.position))
+        self.final_approach_goal = copy.deepcopy(goal)
+        return goal
+
+    def _build_final_observation_goal(self, now) -> PoseStamped:
+        assert self.latest_odom is not None
+        goal = PoseStamped()
+        goal.header.frame_id = self.frame_id or self.latest_odom.header.frame_id
+        goal.header.stamp = now.to_msg()
+        goal.pose.position = copy.deepcopy(self.latest_odom.pose.pose.position)
+        self._set_pose_yaw(goal, self._final_observation_yaw())
+        return goal
+
+    def _final_observation_yaw(self) -> float:
+        assert self.latest_odom is not None
+        target_yaw = self._bearing_to_target(self.latest_odom.pose.pose.position)
+        offset = {
+            "SCAN_LEFT": self.final_observation_scan_yaw,
+            "SCAN_RIGHT": -self.final_observation_scan_yaw,
+        }.get(self.final_observation_phase, 0.0)
+        return _normalize_angle(target_yaw + offset)
+
+    def _final_observation_yaw_reached(self) -> bool:
+        assert self.latest_odom is not None
+        current_yaw = _yaw_from_quaternion(self.latest_odom.pose.pose.orientation)
+        error = _normalize_angle(current_yaw - self._final_observation_yaw())
+        return abs(error) <= self.final_observation_scan_tolerance
 
     def _startup_observation_is_complete(self, now) -> bool:
         """完成静止预热, 必要时依次执行左右小角度观察"""
@@ -884,6 +1128,14 @@ class ObjectSearchGoalMux(Node):
         self.target_observation_phase_time = None
         self.target_reposition_goal = None
 
+    def _reset_final_observation(self) -> None:
+        self.final_observation_started_time = None
+        self.final_observation_phase = "ALIGN"
+        self.final_observation_phase_time = None
+        self.final_approach_goal = None
+        self.final_reposition_goal = None
+        self.final_reposition_attempts = 0
+
     @staticmethod
     def _age_seconds(now, then) -> float:
         if then is None:
@@ -952,8 +1204,10 @@ class ObjectSearchGoalMux(Node):
         self.metric_target_confidence = 0.0
         self.metric_target_source = TargetEstimate.SOURCE_NONE
         self.metric_target_stable = False
+        self.metric_target_state = "EMPTY"
         self.latest_target_estimate_time = None
         self._reset_target_observation()
+        self._reset_final_observation()
 
     def _clear_pending_observation(self) -> None:
         self.pending_evidence_time = None
@@ -981,16 +1235,10 @@ class ObjectSearchGoalMux(Node):
         return reason_code is None
 
     def _object_reached_gate_reason(self, now) -> tuple[str | None, str]:
-        """返回视觉到达证据尚不能触发最终完成的原因"""
-        if not self.latest_object_reached:
-            return "no_visual_evidence", "无当前视觉近距离证据"
-        evidence_age = self._age_seconds(now, self.latest_object_reached_time)
-        if evidence_age > self.object_reached_timeout_sec:
-            return (
-                "visual_evidence_expired",
-                f"视觉证据已过期, age={evidence_age:.2f}s, "
-                f"limit={self.object_reached_timeout_sec:.2f}s",
-            )
+        """返回视觉连续证据或 LiDAR 锁定尚不能完成任务的原因"""
+        evidence_source, evidence_age = self._completion_evidence(now)
+        if evidence_source is None:
+            return "no_completion_evidence", "无新鲜视觉证据或 LiDAR 锁定"
         target_pose = self._active_reached_target_pose()
         if target_pose is None:
             return "no_stable_target", "尚无稳定融合目标"
@@ -1003,7 +1251,23 @@ class ObjectSearchGoalMux(Node):
                 f"目标距离={target_distance:.2f}m, "
                 f"limit={self.object_reached_max_target_distance:.2f}m",
             )
-        return None, "全部门控已通过"
+        return None, f"{evidence_source}证据已通过, age={evidence_age:.2f}s"
+
+    def _completion_evidence(self, now) -> tuple[str | None, float]:
+        """选择当前新鲜的连续视觉证据或连续 LiDAR 锁定"""
+        visual_age = self._age_seconds(now, self.latest_object_reached_time)
+        if (
+            self.latest_object_reached
+            and visual_age <= self.object_reached_timeout_sec
+        ):
+            return "连续视觉", visual_age
+        lidar_age = self._age_seconds(now, self.latest_target_estimate_time)
+        if (
+            self.metric_target_state == "LIDAR_LOCKED"
+            and lidar_age <= self.lidar_reached_timeout_sec
+        ):
+            return "LiDAR锁定", lidar_age
+        return None, math.inf
 
     def _active_reached_target_pose(self) -> PoseStamped | None:
         """到达距离门控只使用稳定融合目标"""
@@ -1024,9 +1288,10 @@ class ObjectSearchGoalMux(Node):
         self.reached_hold_goal = None
         if self.latest_odom is not None:
             self.reached_hold_goal = self._build_hold_goal(now)
+        evidence_source, evidence_age = self._completion_evidence(now)
         self.get_logger().info(
             f"目标完成门控已通过, 目标距离={target_distance:.2f}m, "
-            f"视觉证据年龄={self._age_seconds(now, self.latest_object_reached_time):.2f}s"
+            f"证据={evidence_source or '未知'}, 证据年龄={evidence_age:.2f}s"
         )
         self._clear_target_search_state()
 
@@ -1195,6 +1460,12 @@ def _object_search_state_name(state: str) -> str:
         ),
         ObjectSearchState.TARGET_APPROACH_METRIC: (
             "接近稳定融合目标(TARGET_APPROACH_METRIC)"
+        ),
+        ObjectSearchState.TARGET_FINAL_OBSERVATION: (
+            "稳定目标最终观察(TARGET_FINAL_OBSERVATION)"
+        ),
+        ObjectSearchState.TARGET_FINAL_REPOSITION: (
+            "更换最终观察点(TARGET_FINAL_REPOSITION)"
         ),
         ObjectSearchState.TARGET_REACHED_VIEWPOINT: (
             "目标到达观察点(TARGET_REACHED_VIEWPOINT)"

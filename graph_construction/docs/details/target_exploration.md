@@ -44,7 +44,10 @@ stateDiagram-v2
     SEARCHING_WITH_INITIAL_GOAL --> TARGET_APPROACH_METRIC: 直接获得稳定目标
     TARGET_APPROACH_COARSE --> TARGET_APPROACH_METRIC: 目标变稳定
     TARGET_OBSERVATION --> TARGET_APPROACH_METRIC: 目标变稳定
-    TARGET_APPROACH_METRIC --> TARGET_REACHED_VIEWPOINT: 完成门控通过
+    TARGET_APPROACH_METRIC --> TARGET_FINAL_OBSERVATION: 到达安全观察距离
+    TARGET_FINAL_OBSERVATION --> TARGET_FINAL_REPOSITION: 证据仍不足
+    TARGET_FINAL_REPOSITION --> TARGET_FINAL_OBSERVATION: 到达新观察点
+    TARGET_FINAL_OBSERVATION --> TARGET_REACHED_VIEWPOINT: 完成门控通过
 ```
 
 | 状态 | 通俗说明 |
@@ -55,7 +58,9 @@ stateDiagram-v2
 | `TARGET_PENDING_OBSERVATION` | 保持位置并面向单视角候选 |
 | `TARGET_APPROACH_COARSE` | 接近粗目标的安全观察位置 |
 | `TARGET_OBSERVATION` | 面向粗目标观察或换位 |
-| `TARGET_APPROACH_METRIC` | 接近稳定三维目标 |
+| `TARGET_APPROACH_METRIC` | 接近稳定目标外的安全观察点 |
+| `TARGET_FINAL_OBSERVATION` | 面向稳定目标做最终确认 |
+| `TARGET_FINAL_REPOSITION` | 横向更换最终观察点 |
 | `TARGET_REACHED_VIEWPOINT` | 完成门控通过, 停止任务 |
 
 ## 4. 启动观察
@@ -257,16 +262,22 @@ Frontier 位置移动不足 0.75 m 时继续执行原路线, 等累计移动达�
 
 小于 0.3 m 的目标位置变化通常不会反复移动 goal
 
-当前已知缺口: 到达稳定目标半径后仍可能直接 hold, 还没有完整执行面向目标的最终观察
+稳定目标不再把物体坐标直接当作落脚点
+
+机器人先到目标外约 1.75 m 的安全观察点, 然后:
+
+1. 面向目标静止确认约 2 s
+2. 目标丢失时只左右约 15 度重捕获
+3. 证据不足时横向移动约 0.9 m
+4. 到新观察点后继续确认
 
 ## 13. 最终完成
 
 任务完成必须同时满足:
 
 - 当前有稳定融合目标
-- WildOS 发布近距离视觉到达证据
-- 视觉证据没有过期
-- 机器人与稳定目标距离满足门槛
+- 机器人与稳定目标距离不超过 2 m
+- WildOS 连续近距离视觉证据仍新鲜, 或融合状态为新鲜 `LIDAR_LOCKED`
 
 门控通过后:
 
@@ -298,9 +309,11 @@ Frontier 位置移动不足 0.75 m 时继续执行原路线, 等累计移动达�
 - 短暂空图不会清空活动路线
 - 恢复新分支后使用岔路处的局部方向
 - 目标观察期间暂停探索状态, 候选失效后恢复原分支
+- 稳定目标使用专用安全观察点和 0.5 m Planner 到达半径
+- 最终观察支持静止确认、小角度重捕获和附近换位
 - 30 s 日志汇总路线变化、保持、负向拒绝、恢复和释放原因
 
-24 项 C++ 探索路线测试通过
+25 项 C++ 探索路线测试通过
 
 收到新的完整运行日志后需要检查:
 
@@ -329,8 +342,12 @@ Frontier 位置移动不足 0.75 m 时继续执行原路线, 等累计移动达�
 | `path_invalid_confirm_duration` | 1.5 s | 路径失效持续时间 |
 | `path_invalid_confirm_frames` | 3 | 路径失效连续帧数 |
 | `recovery_observe_duration` | 3.0 s | 恢复前观察时间 |
-| `goal_radius` | 3.0 m | 稳定目标 Planner 半径 |
+| `goal_radius` | 3.0 m | 普通非目标搜索 goal 半径 |
 | `coarse_goal_radius` | 0.75 m | 粗目标观察位姿到达半径 |
+| `metric_goal_radius` | 0.5 m | 稳定目标安全观察位姿到达半径 |
+| `final_reposition_goal_radius` | 0.35 m | 最终观察换位到达半径 |
+| `final_observation_distance` | 1.75 m | 稳定目标外的观察距离 |
+| `object_reached_max_target_distance` | 2.0 m | 最终完成允许的目标距离 |
 
 ## 16. 低频诊断日志
 
