@@ -8,7 +8,7 @@ services:
       context: ..
       dockerfile: nebula2-wildos/docker/Dockerfile.orin
       args:
-        BASE_IMAGE: ${WILDOS_ORIN_BASE_IMAGE:-nvcr.io/nvidia/pytorch:25.04-py3-igpu}
+        BASE_IMAGE: ${WILDOS_ORIN_BASE_IMAGE:-nvcr.io/nvidia/pytorch:24.10-py3-igpu}
     network_mode: host
     ipc: host
     runtime: nvidia
@@ -30,6 +30,7 @@ services:
     volumes:
       - wildos_ros_logs:/root/.ros/log
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /mnt/ssd/han/wildos_ws/src/nebula2-wildos/ckpts:/opt/wildos_ws/src/nebula2-wildos/ckpts
     ulimits:
       memlock: -1
       stack: 67108864

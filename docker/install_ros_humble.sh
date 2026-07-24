@@ -2,6 +2,12 @@
 set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
+# 换清华源
+sed -i 's@http://ports.ubuntu.com/ubuntu-ports@https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports@g' /etc/apt/sources.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+
+# 2. 替换 ROS 2 官方源为清华源
+mkdir -p /etc/apt/sources.list.d/
+sed -i 's@http://packages.ros.org/ros2/ubuntu@https://mirrors.tuna.tsinghua.edu.cn/ros2/ubuntu@g' /etc/apt/sources.list.d/*.list 2>/dev/null || true
 
 apt-get update
 apt-get install -y --no-install-recommends \

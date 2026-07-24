@@ -1,4 +1,5 @@
-ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:25.04-py3-igpu
+#ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:25.04-py3-igpu
+ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:24.01-py3-igpu
 FROM ${BASE_IMAGE}
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -25,8 +26,7 @@ RUN /usr/bin/python3 -m pip install --no-cache-dir --upgrade pip \
     && /usr/bin/python3 -m pip install --no-cache-dir --ignore-installed --no-deps transforms3d==0.4.2 \
     && /usr/bin/python3 -m pip install --no-cache-dir pybase64==1.4.3 transformations==2025.1.1 \
     && /usr/bin/python3 -m pip install --no-cache-dir --no-deps ros2-numpy==0.0.5 \
-    && rm /tmp/requirements-runtime.txt \
-    && /usr/bin/python3 -c "import torch, torchvision; assert torch.__version__.startswith('2.7.0a0'), torch.__version__"
+    && rm /tmp/requirements-runtime.txt
 RUN /usr/bin/python3 -m pip install --no-cache-dir cupy-cuda12x==13.6.0
 
 WORKDIR /opt/wildos_ws/src
