@@ -15,6 +15,16 @@ from graph_construction.graph_memory import GraphState
 from graph_construction.grid_types import ClassifiedGrid, distance_to_mask
 
 
+_FOUR_CONNECTED_STRUCTURE = np.asarray(
+    (
+        (0, 1, 0),
+        (1, 1, 1),
+        (0, 1, 0),
+    ),
+    dtype=np.uint8,
+)
+
+
 @dataclass
 class GraphBuilderConfig:
     """图构建运行参数
@@ -25,7 +35,7 @@ class GraphBuilderConfig:
     # 过滤局部高程尖峰和帘状面噪声
     grid_map_max_surface_step: float = 0.35
 
-    # 用周边可靠地面修补机器人脚下的雷达盲区
+    # 启动安全先验的种子半径和最大连通盲区搜索半径
     robot_blind_zone_radius: float = 4.0
     robot_blind_zone_elevation_search_radius: float = 6.0
     robot_ground_height_offset: float = 0.22
@@ -438,29 +448,26 @@ class SparseGraphBuilder:
             grid.stats["robot_blind_zone_status"] = "initial_only_complete"
             return _BlindZoneRepair(empty, True)
 
-        repaired_cells = self._repair_robot_blind_zone(
+        repair = self._repair_robot_blind_zone(
             grid,
             robot_position,
             protected_unknown,
         )
-        status = str(grid.stats.get("robot_blind_zone_status", "unknown"))
-        complete = status in {
-            "center_obstacle",
-            "disabled",
-            "known_ground",
-            "repaired",
-        }
-        if self.config.robot_blind_zone_initial_only and complete:
+        if self.config.robot_blind_zone_initial_only and repair.complete:
             self._blind_zone_initialization_complete = True
-        return _BlindZoneRepair(repaired_cells, complete)
+        return repair
 
     def _repair_robot_blind_zone(
         self,
         grid: ClassifiedGrid,
         robot_position: Tuple[float, float, float],
         protected_unknown: np.ndarray | None = None,
-    ) -> np.ndarray:
-        """只修补机器人可物理占用的脚下 unknown 区域
+    ) -> _BlindZoneRepair:
+        """填充机器人脚下全部连通盲区, 并确认已连接外部已知 free
+
+        固定半径只定义盲区种子范围, 与种子相连的 unknown 会继续填充到
+        地面搜索半径, 避免人工 free 圆停在真实点云边界内形成孤岛
+        只有修补后的机器人分量接触原始外部 free 时才结束启动修补
 
         高程取自盲区边缘最近的可靠地面中位数, 障碍物和本帧突变地形不会被清除
         """
@@ -471,15 +478,18 @@ class SparseGraphBuilder:
         grid.stats["robot_blind_zone_artificial_free"] = 0
         if grid.elevation is None or self.config.robot_blind_zone_radius <= 0.0:
             grid.stats["robot_blind_zone_status"] = "disabled"
-            return repaired_cells
+            grid.stats["robot_blind_zone_connected"] = False
+            return _BlindZoneRepair(repaired_cells, True)
 
         center = grid.world_to_grid(robot_position[0], robot_position[1])
         if center is None:
             grid.stats["robot_blind_zone_status"] = "outside_grid"
-            return repaired_cells
+            grid.stats["robot_blind_zone_connected"] = False
+            return _BlindZoneRepair(repaired_cells, False)
         if grid.is_obstacle_index(center[0], center[1]):
             grid.stats["robot_blind_zone_status"] = "center_obstacle"
-            return repaired_cells
+            grid.stats["robot_blind_zone_connected"] = False
+            return _BlindZoneRepair(repaired_cells, True)
 
         resolution = max(grid.resolution, 1e-6)
         search_radius = max(
@@ -500,6 +510,7 @@ class SparseGraphBuilder:
         local_elevation = grid.elevation[min_y:max_y, min_x:max_x]
         sample_mask = (
             (distances <= search_radius)
+            & grid.free[min_y:max_y, min_x:max_x]
             & ~grid.obstacle[min_y:max_y, min_x:max_x]
             & np.isfinite(local_elevation)
         )
@@ -529,60 +540,133 @@ class SparseGraphBuilder:
         ground_samples = sample_elevations[sample_distances <= sample_band][:32]
         ground_elevation = float(np.median(ground_samples))
 
-        repair_cells = max(
-            1,
-            int(math.ceil(self.config.robot_blind_zone_radius / resolution)),
+        region_unknown = grid.unknown[min_y:max_y, min_x:max_x]
+        region_obstacle = grid.obstacle[min_y:max_y, min_x:max_x]
+        original_free = grid.free.copy()
+        local_original_free = original_free[min_y:max_y, min_x:max_x]
+        seed_margin = self.config.min_obstacle_clearance + math.sqrt(2.0) * resolution
+        seed_radius = min(
+            search_radius,
+            self.config.robot_blind_zone_radius + seed_margin,
         )
-        repair_min_x = max(0, center_x - repair_cells)
-        repair_max_x = min(grid.width, center_x + repair_cells + 1)
-        repair_min_y = max(0, center_y - repair_cells)
-        repair_max_y = min(grid.height, center_y + repair_cells + 1)
-        repair_offset_y, repair_offset_x = np.ogrid[
-            repair_min_y - center_y:repair_max_y - center_y,
-            repair_min_x - center_x:repair_max_x - center_x,
-        ]
-        repair_region = np.hypot(
-            repair_offset_x * resolution,
-            repair_offset_y * resolution,
-        ) <= self.config.robot_blind_zone_radius
-        region_unknown = grid.unknown[
-            repair_min_y:repair_max_y,
-            repair_min_x:repair_max_x,
-        ]
-        region_obstacle = grid.obstacle[
-            repair_min_y:repair_max_y,
-            repair_min_x:repair_max_x,
-        ]
-        repair_mask = repair_region & region_unknown & ~region_obstacle
+        blind_candidates = (
+            (distances <= search_radius)
+            & region_unknown
+            & ~region_obstacle
+        )
         if protected_unknown is not None:
-            repair_mask &= ~protected_unknown[
-                repair_min_y:repair_max_y,
-                repair_min_x:repair_max_x,
+            blind_candidates &= ~protected_unknown[
+                min_y:max_y,
+                min_x:max_x,
             ]
+
+        # 填充所有接触机器人种子范围的 unknown 分量, 而不是只画固定半径圆
+        blind_labels, _ = ndimage.label(
+            blind_candidates,
+            structure=_FOUR_CONNECTED_STRUCTURE,
+        )
+        local_center = (center_x - min_x, center_y - min_y)
+        original_free_labels, _ = ndimage.label(
+            local_original_free,
+            structure=_FOUR_CONNECTED_STRUCTURE,
+        )
+        center_free_label = int(
+            original_free_labels[local_center[1], local_center[0]]
+        )
+        center_original_component = (
+            original_free_labels == center_free_label
+            if center_free_label > 0
+            else np.zeros(local_original_free.shape, dtype=bool)
+        )
+        center_component_boundary = np.zeros(local_original_free.shape, dtype=bool)
+        center_component_boundary[[0, -1], :] = True
+        center_component_boundary[:, [0, -1]] = True
+        search_limit = (
+            center_component_boundary
+            | (distances >= search_radius - math.sqrt(2.0) * resolution)
+        )
+        # 只把延伸到搜索边界的原始 free 当作外围地面, 避免误接局部噪声小岛
+        boundary_free_labels = np.unique(
+            original_free_labels[
+                search_limit
+                & (original_free_labels > 0)
+            ]
+        )
+        center_component_reaches_limit = (
+            center_free_label > 0
+            and center_free_label in boundary_free_labels
+        )
+
+        # 大于固定种子圆的已有脚下 free 岛也必须从自身边界继续填充盲区
+        touches_center_component = ndimage.binary_dilation(
+            center_original_component,
+            structure=_FOUR_CONNECTED_STRUCTURE,
+            border_value=0,
+        )
+        seed_labels = np.unique(
+            blind_labels[
+                (
+                    (distances <= seed_radius)
+                    | touches_center_component
+                )
+                & (blind_labels > 0)
+            ]
+        )
+        repair_mask = (
+            np.isin(blind_labels, seed_labels)
+            if len(seed_labels)
+            else np.zeros(blind_candidates.shape, dtype=bool)
+        )
         repaired = int(np.count_nonzero(repair_mask))
         repaired_cells[
-            repair_min_y:repair_max_y,
-            repair_min_x:repair_max_x,
+            min_y:max_y,
+            min_x:max_x,
         ] = repair_mask
         region_unknown[repair_mask] = False
         grid.free[
-            repair_min_y:repair_max_y,
-            repair_min_x:repair_max_x,
+            min_y:max_y,
+            min_x:max_x,
         ][repair_mask] = True
         grid.elevation[
-            repair_min_y:repair_max_y,
-            repair_min_x:repair_max_x,
+            min_y:max_y,
+            min_x:max_x,
         ][repair_mask] = ground_elevation
+
+        # 修补完成条件使用真实 free 连通性, 不能再用 repaired cell 数量代替
+        external_original_free = np.zeros((grid.height, grid.width), dtype=bool)
+        external_original_free[min_y:max_y, min_x:max_x] = (
+            np.isin(original_free_labels, boundary_free_labels)
+            & ~center_original_component
+        )
+        connected = (
+            center_component_reaches_limit
+            or _free_component_reaches_target(
+                grid.free,
+                center,
+                external_original_free,
+            )
+        )
+        grid.stats["robot_blind_zone_connected"] = connected
+        grid.stats["robot_blind_zone_seed_radius"] = round(seed_radius, 3)
+        grid.stats["robot_blind_zone_search_radius"] = round(search_radius, 3)
 
         if repaired > 0:
             grid.stats["robot_blind_zone_filled"] = repaired
             grid.stats["robot_blind_zone_artificial_free"] = repaired
-            grid.stats["robot_blind_zone_status"] = "repaired"
             grid.stats["free"] = int(np.count_nonzero(grid.free))
             grid.stats["unknown"] = int(np.count_nonzero(grid.unknown))
+            grid.stats["robot_blind_zone_status"] = (
+                "repaired_connected"
+                if connected
+                else "repaired_waiting_boundary"
+            )
         else:
-            grid.stats["robot_blind_zone_status"] = "known_ground"
-        return repaired_cells
+            grid.stats["robot_blind_zone_status"] = (
+                "known_ground"
+                if connected
+                else "known_ground_isolated"
+            )
+        return _BlindZoneRepair(repaired_cells, connected)
 
     def _update_existing_nodes(
         self,
@@ -994,6 +1078,30 @@ class SparseGraphBuilder:
             min(point[1] for point in corners) - safe_margin,
             max(point[1] for point in corners) + safe_margin,
         )
+
+
+def _free_component_reaches_target(
+    free: np.ndarray,
+    start: tuple[int, int],
+    target: np.ndarray,
+) -> bool:
+    """检查机器人 free 分量是否接触启动范围外的原始 free"""
+    start_x, start_y = start
+    if (
+        start_x < 0
+        or start_y < 0
+        or start_x >= free.shape[1]
+        or start_y >= free.shape[0]
+        or not free[start_y, start_x]
+        or not np.any(target)
+    ):
+        return False
+    labels, _ = ndimage.label(
+        free,
+        structure=_FOUR_CONNECTED_STRUCTURE,
+    )
+    start_label = int(labels[start_y, start_x])
+    return start_label > 0 and bool(np.any(target & (labels == start_label)))
 
 
 def _snapshot_grid_state(grid: ClassifiedGrid) -> _GridStateSnapshot:

@@ -16,7 +16,8 @@ grid_map_fill_hole_max_cells: 90
 grid_map_fill_hole_min_free_neighbor_ratio: 0.65
 grid_map_fill_elevation_radius_cells: 5
 
-# 用周边地面修补机器人可占用的脚下雷达盲区
+# 用启动安全先验填满脚下连通盲区, 后续点云 obstacle 优先覆盖
+# 4.0m 是盲区种子半径, 6.0m 是最大连通盲区搜索半径
 robot_blind_zone_radius: 4.0
 robot_blind_zone_elevation_search_radius: 6.0
 robot_ground_height_offset: 0.22

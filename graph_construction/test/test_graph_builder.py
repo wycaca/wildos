@@ -31,6 +31,22 @@ def _build_edge_delta(
     )
 
 
+def _reachable_node_ids(graph: GraphState, start_node_id: int | None) -> set[int]:
+    """返回从指定节点通过当前邻接表可达的全部节点"""
+    if start_node_id is None or start_node_id not in graph.nodes:
+        return set()
+    reachable = {start_node_id}
+    pending = [start_node_id]
+    while pending:
+        node_id = pending.pop()
+        for edge_key in graph.adjacency.get(node_id, ()):
+            other_id = edge_key[1] if edge_key[0] == node_id else edge_key[0]
+            if other_id not in reachable:
+                reachable.add(other_id)
+                pending.append(other_id)
+    return reachable
+
+
 def test_graph_builder_defaults_match_paper_geometry():
     """默认几何净空和连边半径应与论文参数一致"""
     config = GraphBuilderConfig()
@@ -568,13 +584,14 @@ def test_graph_builder_repairs_robot_blind_zone_from_nearby_ground():
 
 
 def test_default_blind_zone_repairs_ground_out_to_1_2_metres():
-    """验证默认盲区修补覆盖配置范围且不向外扩张"""
+    """验证默认盲区修补填满脚下连通 unknown 并接到外部 free"""
     resolution = 0.2
-    size = 21
-    center = 10
+    size = 61
+    center = 30
     offset_y, offset_x = np.ogrid[-center:size - center, -center:size - center]
     distance = np.hypot(offset_x * resolution, offset_y * resolution)
     unknown = distance <= 1.2
+    original_unknown = unknown.copy()
     free = ~unknown
     elevation = np.zeros((size, size), dtype=float)
     elevation[unknown] = np.nan
@@ -602,7 +619,12 @@ def test_default_blind_zone_repairs_ground_out_to_1_2_metres():
 
     assert result.classified_grid.is_free_index(center + 5, center)
     assert result.classified_grid.is_free_index(center, center + 5)
-    assert result.classified_grid.stats["robot_blind_zone_status"] == "repaired"
+    assert not np.any(result.classified_grid.unknown[original_unknown])
+    assert (
+        result.classified_grid.stats["robot_blind_zone_status"]
+        == "repaired_connected"
+    )
+    assert result.classified_grid.stats["robot_blind_zone_connected"]
 
 
 def test_blind_zone_repair_only_runs_during_initialization():
@@ -822,7 +844,7 @@ def test_graph_builder_rejects_implausible_high_surface_near_blind_zone():
 
 
 def test_graph_builder_samples_outer_free_component_after_blind_zone_repair():
-    """验证脚下修补小岛不会阻断外围 free 分量采样"""
+    """验证脚下全部盲区填充后 current node 可以到达外围图"""
     free = np.ones((31, 31), dtype=bool)
     obstacle = np.zeros((31, 31), dtype=bool)
     unknown = np.zeros((31, 31), dtype=bool)
@@ -858,11 +880,188 @@ def test_graph_builder_samples_outer_free_component_after_blind_zone_repair():
     current_id = result.graph.current_node_id
     assert current_id is not None
     assert len(result.graph.nodes) > 2
-    assert not any(
-        current_id in (edge.from_id, edge.to_id)
-        and not grid.is_world_collision_free(
-            result.graph.nodes[edge.from_id].position[:2],
-            result.graph.nodes[edge.to_id].position[:2],
+    reachable_ids = _reachable_node_ids(result.graph, current_id)
+    outer_node_ids = {
+        node.node_id
+        for node in result.graph.nodes.values()
+        if node.position[0] < 1.8
+        or node.position[0] > 4.4
+        or node.position[1] < 1.8
+        or node.position[1] > 4.4
+    }
+    assert outer_node_ids
+    assert reachable_ids & outer_node_ids
+    assert not np.any(result.classified_grid.unknown[9:22, 9:22])
+    assert (
+        result.classified_grid.stats["robot_blind_zone_status"]
+        == "repaired_connected"
+    )
+
+
+def test_default_blind_zone_connects_across_five_metre_lidar_gap():
+    """默认 4 m 种子必须填满 5 m 盲区并连接真实点云区域"""
+    resolution = 0.2
+    size = 81
+    center = 40
+    offset_y, offset_x = np.ogrid[-center:size - center, -center:size - center]
+    distance = np.hypot(offset_x * resolution, offset_y * resolution)
+    blind_zone = distance <= 5.0
+    free = ~blind_zone
+    elevation = np.zeros((size, size), dtype=float)
+    elevation[blind_zone] = np.nan
+    grid = ClassifiedGrid(
+        width=size,
+        height=size,
+        resolution=resolution,
+        origin_x=0.0,
+        origin_y=0.0,
+        frame_id="map",
+        free=free,
+        obstacle=np.zeros((size, size), dtype=bool),
+        unknown=blind_zone.copy(),
+        elevation=elevation,
+        stats={},
+    )
+    robot_xy = ((center + 0.5) * resolution, (center + 0.5) * resolution)
+    builder = SparseGraphBuilder(GraphBuilderConfig())
+
+    result = builder.update(
+        grid,
+        robot_position=(robot_xy[0], robot_xy[1], 0.22),
+        stamp_seconds=1.0,
+    )
+
+    current_id = result.graph.current_node_id
+    reachable_ids = _reachable_node_ids(result.graph, current_id)
+    outer_node_ids = {
+        node.node_id
+        for node in result.graph.nodes.values()
+        if math.hypot(
+            node.position[0] - robot_xy[0],
+            node.position[1] - robot_xy[1],
+        )
+        > 5.2
+    }
+    assert current_id is not None
+    assert outer_node_ids
+    assert reachable_ids & outer_node_ids
+    assert not np.any(result.classified_grid.unknown[blind_zone])
+    assert result.classified_grid.stats["robot_blind_zone_connected"]
+
+
+def test_blind_zone_fill_starts_from_existing_large_startup_island_boundary():
+    """已有人工 free 岛超过种子半径时仍需填满外围 unknown 环"""
+    resolution = 0.2
+    size = 81
+    center = 40
+    offset_y, offset_x = np.ogrid[-center:size - center, -center:size - center]
+    distance = np.hypot(offset_x * resolution, offset_y * resolution)
+    startup_island = distance <= 5.0
+    blind_ring = (distance > 5.0) & (distance <= 5.6)
+    outer_free = distance > 5.6
+    grid = ClassifiedGrid(
+        width=size,
+        height=size,
+        resolution=resolution,
+        origin_x=0.0,
+        origin_y=0.0,
+        frame_id="map",
+        free=startup_island | outer_free,
+        obstacle=np.zeros((size, size), dtype=bool),
+        unknown=blind_ring.copy(),
+        elevation=np.where(blind_ring, np.nan, 0.0),
+        stats={},
+    )
+    robot_xy = ((center + 0.5) * resolution, (center + 0.5) * resolution)
+    builder = SparseGraphBuilder(GraphBuilderConfig())
+
+    result = builder.update(
+        grid,
+        robot_position=(robot_xy[0], robot_xy[1], 0.22),
+        stamp_seconds=1.0,
+    )
+
+    reachable_ids = _reachable_node_ids(
+        result.graph,
+        result.graph.current_node_id,
+    )
+    outer_node_ids = {
+        node.node_id
+        for node in result.graph.nodes.values()
+        if math.hypot(
+            node.position[0] - robot_xy[0],
+            node.position[1] - robot_xy[1],
+        )
+        > 5.8
+    }
+    assert not np.any(result.classified_grid.unknown[blind_ring])
+    assert result.classified_grid.stats["robot_blind_zone_connected"]
+    assert reachable_ids & outer_node_ids
+
+
+def test_observed_obstacle_overrides_connected_startup_safe_region():
+    """后续点云障碍必须删除人工区域中的节点和穿越边"""
+    resolution = 0.2
+    size = 41
+    center = 20
+
+    def make_grid(with_obstacle: bool) -> ClassifiedGrid:
+        """构造可被第二帧真实障碍覆盖的启动盲区"""
+        offset_y, offset_x = np.ogrid[-center:size - center, -center:size - center]
+        distance = np.hypot(offset_x * resolution, offset_y * resolution)
+        unknown = distance <= 2.0
+        obstacle = np.zeros((size, size), dtype=bool)
+        if with_obstacle:
+            obstacle[center - 6:center + 7, center + 3] = True
+            unknown[obstacle] = False
+        free = ~(unknown | obstacle)
+        elevation = np.zeros((size, size), dtype=float)
+        elevation[unknown] = np.nan
+        return ClassifiedGrid(
+            width=size,
+            height=size,
+            resolution=resolution,
+            origin_x=0.0,
+            origin_y=0.0,
+            frame_id="map",
+            free=free,
+            obstacle=obstacle,
+            unknown=unknown,
+            elevation=elevation,
+            stats={},
+        )
+
+    robot_xy = ((center + 0.5) * resolution, (center + 0.5) * resolution)
+    builder = SparseGraphBuilder(
+        GraphBuilderConfig(
+            robot_blind_zone_radius=1.0,
+            robot_blind_zone_elevation_search_radius=3.0,
+            node_sample_count=1000,
+            min_obstacle_clearance=0.0,
+            edge_radius=4.0,
+        )
+    )
+    builder.update(
+        make_grid(False),
+        robot_position=(robot_xy[0], robot_xy[1], 0.22),
+        stamp_seconds=1.0,
+    )
+
+    observed_grid = make_grid(True)
+    result = builder.update(
+        observed_grid,
+        robot_position=(robot_xy[0], robot_xy[1], 0.22),
+        stamp_seconds=2.0,
+    )
+
+    assert np.all(result.classified_grid.obstacle[center - 6:center + 7, center + 3])
+    assert all(
+        not any(
+            result.classified_grid.is_obstacle_index(cell_x, cell_y)
+            for cell_x, cell_y in result.classified_grid.world_line_cells(
+                result.graph.nodes[edge.from_id].position[:2],
+                result.graph.nodes[edge.to_id].position[:2],
+            )
         )
         for edge in result.graph.edges.values()
     )

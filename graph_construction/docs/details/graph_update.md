@@ -94,28 +94,57 @@ flowchart TD
 
 ### 脚下盲区
 
-顶部 LiDAR 很难直接看到机器狗正下方, 系统在启动时允许保守修补机器人附近的 unknown
+顶部 LiDAR 很难直接看到机器狗正下方, 系统在启动时将初始区域作为低置信度安全先验
 
-修补必须满足:
+旧实现只填充固定 4.0 m 圆
+
+真实点云盲区大于 4.0 m 时, 人工 free 圆和外围真实 free 之间仍会留下 unknown 环
+
+新边不能穿过 unknown, 因此 current node 会停在人工孤岛中
+
+当前实现改为:
+
+1. `robot_blind_zone_radius=4.0 m` 定义盲区种子范围
+2. 找出种子范围和已有脚下 free 岛边界接触的全部 unknown 分量
+3. 在 `robot_blind_zone_elevation_search_radius=6.0 m` 内完整填充这些分量
+4. 使用附近可信地面或机器人预期地面初始化高程
+5. 检查机器人 free 分量是否已经接到搜索边界上的原始 free
+6. 只有实际连通后才结束启动修补
+
+修补仍需满足:
 
 - 不覆盖 obstacle
 - 周围存在可信地面
 - 高度接近机器人预期地面
 - 不位于高程尖峰保护区
 
-当前配置半径为 4.0 m
+状态含义:
 
-修补只在第一帧有效地图执行一次
+| 状态 | 含义 |
+| --- | --- |
+| `repaired_connected` | 已填满连通盲区并接到外围原始 free |
+| `repaired_waiting_boundary` | 已填充盲区, 但还没有接到外围原始 free |
+| `known_ground` | 不需要填充, 脚下原始 free 已经连到搜索边界 |
+| `known_ground_isolated` | 没有可填充 cell, 但脚下 free 仍是孤岛 |
+| `initial_only_complete` | 之前已经完成连通初始化 |
 
-初始化完成后, 修补区域不会跟随机器人移动
+初始化完成后, 安全先验不会跟随机器人移动
 
 人工填充的 cell 会单独标记, 不会被当作传感器确认的新 free, 因此不会触发历史旧边批量重建
+
+后续点云优先级更高:
+
+- 点云确认 free 时更新人工区域的高程和安全半径
+- 点云确认 obstacle 时删除对应节点和经过该区域的边
+- 点云仍为 unknown 时保留启动阶段已经确认的人工路线
 
 ### 可达区域
 
 新节点只生成在机器人能够到达的 free 连通区域
 
-如果脚下修补形成孤立小岛, 系统可以跨过没有明确障碍的盲区连接外围 free 区域, 但不会把整片 unknown 改成 free
+启动修补必须先把脚下盲区变成连续 free, 图更新才允许在该区域生成安全边
+
+外围其他 free 分量仍可生成各自内部节点和边, 但不会通过未纳入启动安全先验的 unknown 建边
 
 ## 6. 历史节点如何处理
 
@@ -269,8 +298,8 @@ unknown 变 free 后不需要 retry cache, 下一帧重算全部局部 pair 时�
 
 自动化结果:
 
-- 图构建和持久图核心测试 56 项通过
-- `graph_construction` 全部 137 项测试通过
+- 图构建和持久图核心测试 59 项通过
+- `graph_construction` 全部 140 项测试通过
 - ROS `graph_construction` 包构建通过
 - flake8 忽略项目已有的 E501 和 W503 后通过
 
@@ -287,13 +316,14 @@ unknown 变 free 后不需要 retry cache, 下一帧重算全部局部 pair 时�
 
 | 参数                            | 当前值 | 含义                       |
 | ------------------------------- | -----: | -------------------------- |
-| `robot_blind_zone_radius`       |  4.0 m | 脚下保守修补范围           |
-| `robot_blind_zone_initial_only` |   true | 只在初始化阶段修补         |
-| `node_sample_count`             |   1000 | 每帧随机采样次数           |
-| `random_seed`                   |      7 | 保证测试和回放可复现       |
-| `max_free_radius`               |  4.0 m | 开阔区域最大节点覆盖半径   |
-| `min_obstacle_clearance`        |  0.5 m | 论文使用的节点和边安全距离 |
-| `edge_radius`                   |  8.0 m | 论文使用的最大连边距离     |
+| `robot_blind_zone_radius`                  |  4.0 m | 启动盲区种子半径           |
+| `robot_blind_zone_elevation_search_radius` |  6.0 m | 连通盲区最大搜索半径       |
+| `robot_blind_zone_initial_only`            |   true | 连通完成后停止启动修补     |
+| `node_sample_count`                        |   1000 | 每帧随机采样次数           |
+| `random_seed`                              |      7 | 保证测试和回放可复现       |
+| `max_free_radius`                          |  4.0 m | 开阔区域最大节点覆盖半径   |
+| `min_obstacle_clearance`                   |  0.5 m | 论文使用的节点和边安全距离 |
+| `edge_radius`                              |  8.0 m | 论文使用的最大连边距离     |
 
 算法默认值定义在 `GraphBuilderConfig`, ROS 覆盖值位于 `graph_construction/configs/graph_construction_elevation.yaml`
 

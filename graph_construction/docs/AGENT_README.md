@@ -109,7 +109,7 @@ graph_construction/launch/elevation_visual_navigation_sim.launch.py
 | 模块 | 当前结果 | 仍需完成 |
 |---|---|---|
 | 导航图 | free radius 稀疏节点和局部全 pair 更新完成 | Unity 10 分钟性能回归 |
-| 启动观察 | 4.0 m 初始化阶段保守修补和条件扫描完成 | Unity 验证修补安全性和扫描执行 |
+| 启动观察 | 4.0 m 盲区种子和 6.0 m 连通填充完成 | Unity 验证脚下图连通和扫描执行 |
 | 探索路线 | 能持续探索和死路恢复 | 减少普通路线回头和频繁切换 |
 | 视觉检测 | 0.120/0.110 双门槛完成 | 无目标 10 分钟误检测试 |
 | 目标定位 | 重复帧过滤和视角软权重完成 | 排查 Mask 延迟和 LiDAR 精修率 |
@@ -136,7 +136,8 @@ graph_construction/launch/elevation_visual_navigation_sim.launch.py
 - 当前节点使用附近安全普通节点
 - unknown 或 obstacle 中不能创建兜底节点
 - 旧的移动 anchor 和 breadcrumb 逻辑不得恢复
-- 脚下 unknown 修补半径当前为 4.0 m, 只在第一帧有效地图初始化时执行
+- 脚下 unknown 使用 4.0 m 种子和 6.0 m 搜索范围完整填充连通盲区
+- 启动修补只有接到外围原始 free 后才结束, 后续点云 obstacle 优先覆盖人工区域
 - 节点 UUID 必须稳定
 - 内部增量更新, 对外仍发布完整 `NavigationGraph`
 

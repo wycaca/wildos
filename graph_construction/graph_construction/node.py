@@ -482,6 +482,9 @@ def _format_grid_stats(stats: Any) -> str:
         f"脚下盲区修补={stats.get('robot_blind_zone_filled', 0)}, "
         f"人工free={stats.get('robot_blind_zone_artificial_free', 0)}, "
         f"盲区状态={stats.get('robot_blind_zone_status', 'unknown')}, "
+        f"盲区连通={stats.get('robot_blind_zone_connected', False)}, "
+        f"种子半径={stats.get('robot_blind_zone_seed_radius', 'none')}m, "
+        f"搜索半径={stats.get('robot_blind_zone_search_radius', 'none')}m, "
         f"地面来源={stats.get('robot_blind_zone_ground_source', 'none')}, "
         f"最近地面={stats.get('robot_blind_zone_nearest_ground', 'none')}m"
     )
