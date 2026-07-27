@@ -8,8 +8,8 @@ from types import SimpleNamespace
 import numpy as np
 
 try:
-    from grid_map_msgs.msg import GridMap
-    from std_msgs.msg import Float32MultiArray
+    from grid_map_msgs.msg import GridMap  # noqa: F401
+    from std_msgs.msg import Float32MultiArray  # noqa: F401
 except ImportError:
     sys.modules.setdefault("grid_map_msgs", types.ModuleType("grid_map_msgs"))
     sys.modules.setdefault("grid_map_msgs.msg", types.ModuleType("grid_map_msgs.msg"))
@@ -126,6 +126,41 @@ def test_grid_map_postprocess_fills_elevation_for_small_free_hole():
     assert grid.stats["elevation_filled"] == 1
 
 
+def test_grid_map_treats_unscored_initializer_cells_as_unknown():
+    traversability = np.zeros((5, 5), dtype=np.float32)
+    elevation = np.zeros((5, 5), dtype=np.float32)
+    variance = np.full((5, 5), 10.0, dtype=np.float32)
+    msg = _grid_map_message(
+        traversability,
+        elevation=elevation,
+        variance=variance,
+    )
+
+    grid = classify_grid_map(
+        msg,
+        traversability_layer="traversability",
+        elevation_layer="elevation",
+        free_threshold=0.5,
+        obstacle_threshold=0.1,
+        normalize_traversability=False,
+        normalize_low_quantile=0.05,
+        normalize_high_quantile=0.95,
+        z_offset=0.0,
+        min_free_component_cells=1,
+        fill_hole_max_cells=0,
+        fill_hole_min_free_neighbor_ratio=0.0,
+        majority_fill_iterations=0,
+        majority_fill_min_neighbors=1,
+        variance_layer="variance",
+        initializer_variance=10.0,
+    )
+
+    assert not np.any(grid.free)
+    assert not np.any(grid.obstacle)
+    assert np.all(grid.unknown)
+    assert grid.stats["initializer_prior"] == 25
+
+
 def _assert_round_trip(grid):
     for iy in range(grid.height):
         for ix in range(grid.width):
@@ -137,6 +172,7 @@ def _grid_map_message(
     layer: np.ndarray,
     *,
     elevation: np.ndarray | None = None,
+    variance: np.ndarray | None = None,
     center_x: float = 0.0,
     center_y: float = 0.0,
     resolution: float = 1.0,
@@ -146,13 +182,18 @@ def _grid_map_message(
     data_offset: int = 0,
 ):
     elevation_layer = layer * 0.0 if elevation is None else elevation
+    layers = ["traversability", "elevation"]
+    data = [
+        _multi_array(layer, data_offset=data_offset),
+        _multi_array(elevation_layer, data_offset=data_offset),
+    ]
+    if variance is not None:
+        layers.append("variance")
+        data.append(_multi_array(variance, data_offset=data_offset))
     return SimpleNamespace(
         header=SimpleNamespace(frame_id="odom"),
-        layers=["traversability", "elevation"],
-        data=[
-            _multi_array(layer, data_offset=data_offset),
-            _multi_array(elevation_layer, data_offset=data_offset),
-        ],
+        layers=layers,
+        data=data,
         outer_start_index=outer_start_index,
         inner_start_index=inner_start_index,
         info=SimpleNamespace(

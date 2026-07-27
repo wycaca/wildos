@@ -449,8 +449,8 @@ def _launch_setup(context):
             {"output_topic": odom_output_topic},
             {"parent_frame": _value(context, profile, "odom_parent_frame", "odom_parent_frame")},
             {"child_frame": _value(context, profile, "odom_child_frame", "odom_child_frame")},
-            {"stamp_mode": _odom_stamp_mode(context, wiring.backend)},
-            {"pose_source": _odom_pose_source(context, wiring.backend)},
+            {"stamp_mode": _odom_stamp_mode(context, profile, wiring.backend)},
+            {"pose_source": _odom_pose_source(context, profile, wiring.backend)},
             {"fallback_to_message": LaunchConfiguration("odom_fallback_to_message")},
         ],
         remappings=isolated_tf_remappings,
@@ -929,11 +929,13 @@ def _tf_remappings(ns):
     ]
 
 
-def _odom_stamp_mode(context, backend):
+def _odom_stamp_mode(context, profile, backend):
     override = _arg(context, "odom_stamp_mode")
     if override:
         return override
-    return "preserve" if backend == "dlio" else "now"
+    if backend == "dlio":
+        return "preserve"
+    return str(profile.get("odom_stamp_mode", "now"))
 
 
 def _scoring_odom_input_topic(wiring):
@@ -942,11 +944,13 @@ def _scoring_odom_input_topic(wiring):
     return wiring.odom_input_topic
 
 
-def _odom_pose_source(context, backend):
+def _odom_pose_source(context, profile, backend):
     override = _arg(context, "odom_pose_source")
     if override:
         return override
-    return "message" if backend == "dlio" else "tf"
+    if backend == "dlio":
+        return "message"
+    return str(profile.get("odom_pose_source", "tf"))
 
 
 def _launch_bool(context, name):

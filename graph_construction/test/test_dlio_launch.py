@@ -151,9 +151,12 @@ def test_unity_planner_output_is_remapped_to_source_path():
 def test_dlio_odom_adapter_defaults_to_message_pose():
     module = _load_launch_module()
     context = _context_with_defaults(module)
+    unity = module.load_topic_profile("unity")
+    robot = module.load_topic_profile("robot")
 
-    assert module._odom_pose_source(context, "dlio") == "message"
-    assert module._odom_pose_source(context, "platform") == "tf"
+    assert module._odom_pose_source(context, unity, "dlio") == "message"
+    assert module._odom_pose_source(context, unity, "platform") == "tf"
+    assert module._odom_pose_source(context, robot, "platform") == "message"
 
 
 def test_dlio_scoring_uses_globally_aligned_odom():

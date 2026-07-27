@@ -29,6 +29,8 @@ PROFILE_KEY_DESCRIPTIONS = {
     "pointcloud_input_topic": "elevation 后端使用的原始点云 topic",
     "aligned_lidar_topic": "elevation 对齐后点云 topic",
     "odom_input_topic": "原始 odom topic",
+    "odom_stamp_mode": "标准 odom 的时间戳策略, preserve 或 now",
+    "odom_pose_source": "标准 odom 的位姿来源, message 或 tf",
     "odom_output_topic": "适配后 odom topic, 供 scoring 和 planner 使用",
     "dlio_imu_input_topic": "DLIO 使用的原始 IMU topic",
     "dlio_reference_odom_topic": "仿真启动对齐使用的参考 odom topic",

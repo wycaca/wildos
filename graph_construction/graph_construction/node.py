@@ -48,6 +48,8 @@ _DIAGNOSTICS_LOG_PERIOD_SEC = 30.0
 _SLOW_CYCLE_WARNING_MS = 250.0
 _GRID_MAP_TRAVERSABILITY_LAYER = "traversability"
 _GRID_MAP_ELEVATION_LAYER = "elevation"
+_GRID_MAP_VARIANCE_LAYER = "variance"
+_GRID_MAP_INITIALIZER_VARIANCE = 10.0
 _GRID_MAP_NORMALIZE_LOW_QUANTILE = 0.05
 _GRID_MAP_NORMALIZE_HIGH_QUANTILE = 0.95
 _GRID_MAP_Z_OFFSET = 0.08
@@ -440,6 +442,8 @@ class GraphConstructionNode(Node):
             majority_fill_iterations=_GRID_MAP_MAJORITY_FILL_ITERATIONS,
             majority_fill_min_neighbors=_GRID_MAP_MAJORITY_FILL_MIN_NEIGHBORS,
             fill_elevation_radius_cells=self.config["grid_map_fill_elevation_radius_cells"],
+            variance_layer=_GRID_MAP_VARIANCE_LAYER,
+            initializer_variance=_GRID_MAP_INITIALIZER_VARIANCE,
         )
 
     def _graph_header(self, input_header, fallback_frame: str):
@@ -492,6 +496,7 @@ def _format_grid_stats(stats: Any) -> str:
     return (
         f", 有效={stats.get('valid', 0)}, 原始free={stats.get('raw_free', 0)}, "
         f"原始obstacle={stats.get('raw_obstacle', 0)}, 原始unknown={stats.get('raw_unknown', 0)}, "
+        f"待评分先验={stats.get('initializer_prior', 0)}, "
         f"free={stats.get('free', 0)}, obstacle={stats.get('obstacle', 0)}, "
         f"unknown={stats.get('unknown', 0)}, "
         f"脚下盲区修补={stats.get('robot_blind_zone_filled', 0)}, "

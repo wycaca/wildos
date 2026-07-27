@@ -25,7 +25,7 @@ pointcloud_axis_adapter
 | 平台 | Dockerfile | 基础镜像 | GPU 软件栈 |
 |---|---|---|---|
 | x86_64 | `docker/Dockerfile.x86_64` | `nvidia/cuda:12.6.3-cudnn-runtime-ubuntu22.04` | PyTorch 2.7.0, CUDA 12.6, CuPy 13.6 |
-| AGX Orin | `docker/Dockerfile.orin` | `nvcr.io/nvidia/pytorch:25.04-py3-igpu` | JetPack 6.2, NVIDIA PyTorch 2.7, CuPy 13.6 |
+| AGX Orin | `docker/Dockerfile.orin` | `nvcr.io/nvidia/pytorch:24.01-py3-igpu` | JetPack 6.2, NVIDIA PyTorch, CuPy 13.6 |
 
 两个镜像都安装 ROS2 Humble，并编译当前主链路 ROS package。`graaf` 固定到已验证提交 `2a4715ff46a25048e06078ea20afc325d59f987a`，避免镜像构建随上游 `main` 漂移
 
@@ -48,7 +48,7 @@ Dockerfile 专用 ignore 文件会排除 Git、虚拟环境、测试产物、旧
 
 ## 4. 模型文件
 
-完整镜像直接包含运行所需权重，因此构建前必须确认以下文件存在:
+Orin 镜像不再复制约 4.9GB 的模型目录，避免每次发送庞大构建上下文。运行时通过 `WILDOS_CKPT_DIR` 分别只读挂载以下文件:
 
 ```text
 ckpts/c-radio_v3-b_half.pth.tar
@@ -57,7 +57,13 @@ ckpts/traversability_ckpt.ckpt
 ckpts/siglip2/
 ```
 
-模型文件没有提交到 Git。构建机器需要提前下载或从已验证机器复制模型目录。Dockerfile 会建立 `frontier_head.ckpt` 和 `trav_head.ckpt` 兼容链接，使独立组件入口也能使用当前权重
+分别挂载会保留镜像内的 `frontier_head.ckpt` 和 `trav_head.ckpt` 兼容链接。模型文件没有提交到 Git。Orin 主机需要提前下载或从已验证机器复制模型目录，并在 `.env` 中设置实际路径:
+
+```dotenv
+WILDOS_CKPT_DIR=/mnt/ssd/han/wildos_ws/src/nebula2-wildos/ckpts
+```
+
+模型挂载不参与镜像构建。只替换权重时重建或重启容器即可，不需要重新构建镜像
 
 ## 5. Compose 配置
 
@@ -72,7 +78,22 @@ cp .env.docker.example .env
 ```dotenv
 WILDOS_TOPIC_PROFILE=robot
 USE_SIM_TIME=false
+LOCALIZATION_BACKEND=platform
+LAUNCH_DLIO=false
+ROS_DOMAIN_ID=2
+RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+GLOBAL_FRAME=odom
+BASE_FRAME=base_link
+POINTCLOUD_INPUT_TOPIC=/cloud_registered
+POINTCLOUD_OUTPUT_TOPIC=/spot1/cloud_registered
+POINTCLOUD_OUTPUT_FRAME=odom_3D
+ODOM_INPUT_TOPIC=/odom
+WILDOS_CKPT_DIR=/mnt/ssd/han/wildos_ws/src/nebula2-wildos/ckpts
 ```
+
+相机 topic 和 frame 通过 `CAM_FRAME`、`CAMERA_IMG_TOPIC` 和 `CAMERA_INFO_TOPIC` 配置
+
+真机 `/cloud_registered` 使用 `odom_3D` frame, TF 树提供 `odom -> odom_3D`, 因此 adapter 保留点云 frame, elevation mapping 通过 TF 转到全局 `odom`
 
 Unity 改为:
 
@@ -125,10 +146,53 @@ Orin 主机要求:
 建议直接在 Orin 上构建，避免在 x86 上使用 QEMU 模拟执行 CUDA ARM 层:
 
 ```bash
-docker compose -f compose.orin.yaml build
+DOCKER_BUILDKIT=1 docker compose -f compose.orin.yaml build wildos
 docker compose -f compose.orin.yaml up -d
 docker compose -f compose.orin.yaml logs -f wildos
 ```
+
+### 7.1 代码修改后的快速构建
+
+Orin Dockerfile 按变化频率拆成以下缓存层:
+
+1. ROS2 和系统依赖
+2. Python 依赖和虚拟环境
+3. elevation、消息、Graaf 等稳定 ROS package
+4. RADIO 和 ExploRFM Python package
+5. graph construction、visual navigation 和 planner 应用代码
+
+只修改 graph、planner 或 visual navigation 代码后，仍执行同一条构建命令:
+
+```bash
+DOCKER_BUILDKIT=1 docker compose -f compose.orin.yaml build wildos
+docker compose -f compose.orin.yaml up -d --force-recreate wildos
+```
+
+BuildKit 会复用前四类未变化的层，只复制源码并重新编译三个应用 package，不会重新安装 ROS2、系统依赖或 Python 依赖
+
+查看哪些层命中缓存:
+
+```bash
+DOCKER_BUILDKIT=1 docker compose -f compose.orin.yaml build --progress=plain wildos
+```
+
+只修改 `.env` 或 `compose.orin.yaml` 时不需要构建:
+
+```bash
+docker compose -f compose.orin.yaml up -d --force-recreate wildos
+```
+
+正常开发不要使用 `--no-cache`、`--pull` 或 `docker builder prune`。只有依赖缓存损坏或明确需要升级基础镜像时才清理缓存
+
+以下文件会使对应缓存层失效:
+
+| 修改内容 | 需要重做的层 |
+|---|---|
+| `docker/install_ros_humble.sh` | ROS2、系统依赖及后续全部层 |
+| `docker/requirements-runtime.txt` | Python 依赖及后续层 |
+| elevation、消息、Graaf、triangulation 源码 | 稳定 ROS package 及后续层 |
+| `nvidia_radio`、`explorfm` | Python package 及应用层 |
+| graph、planner、visual navigation | 仅应用构建层 |
 
 ## 8. 验证
 
@@ -192,7 +256,48 @@ Orin 镜像使用 NVIDIA 官方 iGPU tag，因为 Jetson GPU 驱动和 CUDA 用�
 - [PyTorch previous versions](https://pytorch.org/get-started/previous-versions/)
 - [JetPack 6.2.1 installation guide](https://docs.nvidia.com/jetson/jetpack/6.2.1/install-setup/index.html)
 
-## 11. 文件清单
+## 11. Orin 接口采集
+
+服务器无法代替机器人确认真实 topic、frame 和 QoS。在 Orin 主机上加载 ROS2 环境后执行:
+
+```bash
+source /opt/ros/humble/setup.bash
+export ROS_DOMAIN_ID=2
+
+ros2 topic list -t
+ros2 topic info /cloud_registered -v
+ros2 topic echo /cloud_registered --field header --once
+ros2 topic hz /cloud_registered
+
+ros2 topic info /odom -v
+ros2 topic echo /odom --once
+ros2 topic hz /odom
+
+ros2 run tf2_ros tf2_echo odom base_link
+```
+
+如果实际名称不是 `/cloud_registered` 或 `/odom`，先从 `ros2 topic list -t` 找到 `sensor_msgs/msg/PointCloud2` 和 `nav_msgs/msg/Odometry` 对应 topic，再替换命令中的名称
+
+查询相机接口:
+
+```bash
+ros2 topic list -t | grep -E 'image|camera_info'
+ros2 topic info <image_topic> -v
+ros2 topic echo <image_topic> --field header --once
+ros2 topic echo <camera_info_topic> --field header --once
+ros2 run tf2_ros tf2_echo base_link <camera_frame>
+```
+
+查询点云 frame 到机器人 frame 的 TF:
+
+```bash
+ros2 run tf2_ros tf2_echo odom <pointcloud_frame>
+ros2 run tf2_ros tf2_echo base_link <pointcloud_frame>
+```
+
+需要回传的结果包括完整 topic 列表、点云 header、odom 单帧、两者 QoS、相机 header，以及上述 TF 输出。根据这些真实结果再修改 `.env` 或 `compose.orin.yaml`
+
+## 12. 文件清单
 
 - `docker/Dockerfile.x86_64`: x86_64 CUDA 12.6 镜像
 - `docker/Dockerfile.orin`: JetPack 6.2 AGX Orin 镜像

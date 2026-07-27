@@ -95,7 +95,7 @@ WILDOS_TOPIC_PROFILE=unity \
 
 - `unity`
 - `isaac`
-- `robot`, 当前仍是实机占位配置
+- `robot`, 默认接入 `/cloud_registered`、`/odom` 和三路 Realsense
 
 统一集成 launch:
 
@@ -119,7 +119,7 @@ graph_construction/launch/elevation_visual_navigation_sim.launch.py
 
 文档记录的最新分模块测试:
 
-- `graph_construction` 完整 147 项测试通过
+- `graph_construction` 完整 151 项测试通过
 - 粒子滤波 9 项通过
 - 目标链路 54 项通过, 1 项环境相关测试跳过
 - Goal Mux 29 项通过

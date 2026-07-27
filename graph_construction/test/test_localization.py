@@ -104,6 +104,16 @@ def test_unity_planner_publishes_source_path_topic():
     assert _unity_profile()["planner_path_topic"] == "/spot1/graphnav_planner/path"
 
 
+def test_robot_profile_preserves_platform_odometry_and_registered_cloud_frame():
+    robot = _topic_profile_config()["profiles"]["robot"]
+
+    assert robot["pointcloud_input_topic"] == "/cloud_registered"
+    assert robot["aligned_lidar_topic"] == "/spot1/cloud_registered"
+    assert robot["pointcloud_output_frame"] == "odom_3D"
+    assert robot["odom_stamp_mode"] == "preserve"
+    assert robot["odom_pose_source"] == "message"
+
+
 def test_unity_dlio_disables_unstable_adaptive_gicp():
     config = _unity_dlio_config()
 

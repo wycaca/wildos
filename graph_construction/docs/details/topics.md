@@ -275,11 +275,15 @@ WildOS 每 30 s 输出一次 DEBUG 诊断, 包括:
 |---|---|---|---|
 | `unity` | `/livox/lidar` | `/unity/odom` | `/camera/{}/color/...` |
 | `isaac` | `/livox/lidar` | `/odom` | `/unitree_go2/{}_cam/...` |
-| `robot` | Ouster profile topic | 机器人 odom | RealSense profile topic |
+| `robot` | `/cloud_registered` | `/odom` | 待相机启动后确认 |
 
 `{}` 展开为 `front`、`left`、`right`
 
-`robot` profile 仍是占位配置, 真机部署前必须根据实际驱动确认 topic、frame、QoS 和时间同步
+`robot` profile 已确认 `/cloud_registered` 为 10Hz RELIABLE 点云, frame 为 `odom_3D`; `/odom` 为 10Hz RELIABLE odom, frame 链为 `odom -> base_link`
+
+`odom -> odom_3D` TF 已存在, 因此 adapter 保留点云 frame, elevation mapping 使用 TF 完成坐标转换
+
+相机尚未启动, 相机 topic、frame、QoS 和时间同步仍待确认
 
 `common_contract` 保存内部稳定 topic 和公共搜索参数, 不代表可启动的 profile
 

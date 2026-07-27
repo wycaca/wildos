@@ -34,6 +34,28 @@
 
 真机通常不订阅 `/clock`, 使用 `use_sim_time:=false`
 
+`robot` profile 默认使用 platform 定位:
+
+```text
+/cloud_registered -> pointcloud adapter -> /spot1/cloud_registered
+/odom -> odom frame adapter -> /spot1/odom_for_scoring
+```
+
+真机实测 `/cloud_registered` 的 frame 是 `odom_3D`, `/odom` 发布 `odom -> base_link`, TF 树同时提供接近单位变换的 `odom -> odom_3D`
+
+pointcloud adapter 保留真实 `odom_3D` frame 和全部八个字段, elevation mapping 再通过 TF 转换到全局 `odom`
+
+部署前必须检查原始消息:
+
+```bash
+ros2 topic echo /cloud_registered --field header --once
+ros2 topic echo /odom --once
+ros2 run tf2_ros tf2_echo odom base_link
+ros2 run tf2_ros tf2_echo odom odom_3D
+```
+
+不得把 `POINTCLOUD_OUTPUT_FRAME` 改成 `odom` 来冒充坐标变换
+
 ### 2.2 Frame
 
 必须形成一条无冲突的 TF 链:

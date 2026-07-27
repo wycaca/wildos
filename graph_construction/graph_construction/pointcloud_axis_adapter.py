@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from typing import Callable, Iterable, Tuple
 
 import rclpy
@@ -47,17 +48,20 @@ class PointCloudAxisAdapter(Node):
 
     def _on_cloud(self, msg: PointCloud2) -> None:
         """转换 XYZ 并丢弃非几何字段, elevation mapping 只需要点坐标"""
-        points = (self.transform_point(point) for point in _iter_xyz(msg))
-        header = Header()
-        header.stamp = msg.header.stamp
-        header.frame_id = self.output_frame
-        aligned_msg = point_cloud2.create_cloud(header, _xyz_fields(), points)
+        if self.axis_mode == "identity":
+            aligned_msg = _identity_cloud(msg, self.output_frame)
+        else:
+            points = (self.transform_point(point) for point in _iter_xyz(msg))
+            header = Header()
+            header.stamp = msg.header.stamp
+            header.frame_id = self.output_frame or msg.header.frame_id
+            aligned_msg = point_cloud2.create_cloud(header, _xyz_fields(), points)
         self.publisher.publish(aligned_msg)
 
         if not self._logged_first_cloud:
             self.get_logger().info(
                 f"Published first aligned cloud, input_frame={msg.header.frame_id}, "
-                f"output_frame={header.frame_id}"
+                f"output_frame={aligned_msg.header.frame_id}"
             )
             self._logged_first_cloud = True
 
@@ -73,6 +77,16 @@ def _axis_transform(axis_mode: str) -> Callable[[PointXYZ], PointXYZ]:
     if axis_mode in ("isaac_y_forward_to_base", "y_forward"):
         return lambda point: (point[1], -point[0], point[2])
     raise ValueError(f"Unsupported axis_mode={axis_mode}")
+
+
+def _identity_cloud(cloud: PointCloud2, output_frame: str) -> PointCloud2:
+    """Preserve all fields and avoid Python point iteration for aligned input"""
+    target_frame = str(output_frame).strip() or cloud.header.frame_id
+    if target_frame == cloud.header.frame_id:
+        return cloud
+    adapted = copy.deepcopy(cloud)
+    adapted.header.frame_id = target_frame
+    return adapted
 
 
 def _iter_xyz(cloud: PointCloud2) -> Iterable[PointXYZ]:

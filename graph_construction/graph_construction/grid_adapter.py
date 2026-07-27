@@ -27,6 +27,8 @@ def classify_grid_map(
     majority_fill_iterations: int,
     majority_fill_min_neighbors: int,
     fill_elevation_radius_cells: int = 5,
+    variance_layer: str | None = None,
+    initializer_variance: float | None = None,
 ) -> ClassifiedGrid:
     """把 elevation GridMap layer 转成 graph 分类格式"""
     layers = {name: data for name, data in zip(msg.layers, msg.data)}
@@ -40,6 +42,24 @@ def classify_grid_map(
     else:
         elevation = None
         valid = np.isfinite(trav)
+
+    initializer_prior = np.zeros(trav.shape, dtype=bool)
+    if (
+        variance_layer
+        and initializer_variance is not None
+        and variance_layer in layers
+    ):
+        variance = decode_grid_map_layer(
+            variance_layer,
+            layers[variance_layer],
+            msg,
+        )
+        initializer_prior = (
+            valid
+            & np.isfinite(variance)
+            & np.isclose(variance, float(initializer_variance), atol=1.0e-3)
+        )
+        valid &= ~initializer_prior
 
     trav = normalize_grid_map_layer(
         trav,
@@ -93,6 +113,7 @@ def classify_grid_map(
             "raw_free": raw_free_count,
             "raw_obstacle": raw_obstacle_count,
             "raw_unknown": raw_unknown_count,
+            "initializer_prior": int(np.count_nonzero(initializer_prior)),
             "free": int(np.count_nonzero(free)),
             "obstacle": int(np.count_nonzero(obstacle)),
             "unknown": int(np.count_nonzero(unknown)),
