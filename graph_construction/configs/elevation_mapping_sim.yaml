@@ -38,7 +38,7 @@ elevation_mapping_node:
     subscribers:
       livox:
         # launch 使用当前 backend 的规范化点云覆盖此值
-        topic_name: /livox/lidar_aligned
+        topic_name: /cloud_registered
         data_type: pointcloud
 
     publishers:

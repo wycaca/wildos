@@ -9,10 +9,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LANG=en_US.UTF-8 \
     LC_ALL=en_US.UTF-8 \
     ROS_DISTRO=humble \
+    ROS_DOMAIN_ID=2 \
     WILDOS_IMAGE_ARCH=aarch64 \
     WILDOS_TOPIC_PROFILE=robot \
     NVIDIA_VISIBLE_DEVICES=all \
-    NVIDIA_DRIVER_CAPABILITIES=all
+    NVIDIA_DRIVER_CAPABILITIES=all \
+    WILDOS_TOPIC_PROFILE=robot
 
 COPY nebula2-wildos/docker/install_ros_humble.sh /tmp/install_ros_humble.sh
 RUN chmod +x /tmp/install_ros_humble.sh \
@@ -48,6 +50,6 @@ RUN /usr/bin/python3 -m pip install --no-cache-dir -e /opt/wildos_ws/src/nebula2
 
 WORKDIR /opt/wildos_ws
 ENTRYPOINT ["/opt/wildos_ws/src/nebula2-wildos/docker/entrypoint.sh"]
-CMD ["do_object_search:=true", "use_sim_time:=false", "launch_paper_rviz:=false"]
+CMD ["do_object_search:=true", "use_sim_time:=false", "launch_paper_rviz:=false", "localization_backend:=dlio", "launch_dlio:=true"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=180s --retries=3 \
   CMD ["/opt/wildos_ws/src/nebula2-wildos/docker/healthcheck.sh"]

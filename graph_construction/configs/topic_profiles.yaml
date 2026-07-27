@@ -128,26 +128,26 @@ profiles:
     description: Real robot profile placeholder
 
     # 通信环境
-    ros_domain_id: "3"
+    ros_domain_id: "2"
     rmw_implementation: rmw_cyclonedds_cpp
 
     # frame 和外参 owner, 真机部署前必须核对
-    global_frame: spot1/odom
-    parent_frame: spot1/odom
-    odom_parent_frame: spot1/odom
-    odom_child_frame: spot1/base_link
-    base_frame: spot1/base_link
+    global_frame: odom
+    parent_frame: odom
+    odom_parent_frame: odom
+    odom_child_frame: base_link
+    base_frame: base_link
     cam_frame: spot1/realsense/{}_color_optical_frame
-    camera_parent_frame: spot1/base_link
-    lidar_parent_frame: spot1/base_link
-    lidar_frame: spot1/ouster_front
+    camera_parent_frame: base_link
+    lidar_parent_frame: base_link
+    lidar_frame: lidar_link
     pointcloud_axis_mode: identity
     pointcloud_output_frame: spot1/ouster_front
 
     # 外部输入, 当前均为占位值
-    pointcloud_input_topic: /spot1/ouster/front/points_filtered
+    pointcloud_input_topic: /cloud_registered
     aligned_lidar_topic: /spot1/ouster/front/points_aligned
-    odom_input_topic: /spot1/odom
+    odom_input_topic: /odom
     goal_pose_topic: /goal_pose
     camera_img_topic: /spot1/realsense/{}/color/image_raw/compressed
     camera_info_topic: /spot1/realsense/{}/color/camera_info
