@@ -13,7 +13,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     WILDOS_TOPIC_PROFILE=robot \
     NVIDIA_VISIBLE_DEVICES=all \
     NVIDIA_DRIVER_CAPABILITIES=all \
-    WILDOS_TOPIC_PROFILE=robot
+    WORLD_SIZE=1
 
 COPY nebula2-wildos/docker/install_ros_humble.sh /tmp/install_ros_humble.sh
 RUN chmod +x /tmp/install_ros_humble.sh \
