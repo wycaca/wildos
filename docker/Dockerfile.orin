@@ -1,4 +1,3 @@
-#ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:25.04-py3-igpu
 ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:24.01-py3-igpu
 FROM ${BASE_IMAGE}
 
@@ -47,6 +46,10 @@ RUN /usr/bin/python3 -m pip install --no-cache-dir -e /opt/wildos_ws/src/nebula2
       /opt/wildos_ws/src/nebula2-wildos/scripts/start_wildos_elevation.sh \
     && /opt/wildos_ws/src/nebula2-wildos/docker/build_workspace.sh "${GRAAF_COMMIT}" \
     && /usr/bin/python3 -c "import cupy, torch, torchvision; print(torch.__version__, torch.version.cuda, cupy.__version__)"
+
+# 确保安装 uv 并为 wildos 创建挂载系统包的虚拟环境
+RUN python3 -m pip install --no-cache-dir uv \
+    && uv venv --system-site-packages /opt/wildos_ws/src/nebula2-wildos/.venv
 
 WORKDIR /opt/wildos_ws
 ENTRYPOINT ["/opt/wildos_ws/src/nebula2-wildos/docker/entrypoint.sh"]
