@@ -36,11 +36,31 @@ def resolve_localization_wiring(
         )
 
     if normalized_backend == "platform":
+        pointcloud_input_topic = _required(
+            profile,
+            "pointcloud_input_topic",
+        )
+        use_axis_adapter = profile.get(
+            "use_pointcloud_axis_adapter",
+            True,
+        )
+        if not isinstance(use_axis_adapter, bool):
+            raise ValueError(
+                "Localization profile key use_pointcloud_axis_adapter "
+                "must be boolean"
+            )
+        mapping_pointcloud_topic = pointcloud_input_topic
+        if use_axis_adapter:
+            mapping_pointcloud_topic = _required(
+                profile,
+                "aligned_lidar_topic",
+            )
         return LocalizationWiring(
             backend=normalized_backend,
             odom_input_topic=_required(profile, "odom_input_topic"),
-            mapping_pointcloud_topic=_required(profile, "aligned_lidar_topic"),
-            pointcloud_input_topic=_required(profile, "pointcloud_input_topic"),
+            mapping_pointcloud_topic=mapping_pointcloud_topic,
+            pointcloud_input_topic=pointcloud_input_topic,
+            use_pointcloud_axis_adapter=use_axis_adapter,
         )
 
     topic_root = _required(profile, "dlio_topic_root").rstrip("/")

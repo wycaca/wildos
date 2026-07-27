@@ -746,7 +746,10 @@ def _localization_actions(
 ):
     """Create only the nodes owned by the selected localization backend"""
     if wiring.backend == "platform":
-        return [_lidar_static_tf(context, profile), pointcloud_axis_adapter]
+        actions = [_lidar_static_tf(context, profile)]
+        if wiring.use_pointcloud_axis_adapter:
+            actions.append(pointcloud_axis_adapter)
+        return actions
     if not _launch_bool(context, "launch_dlio"):
         return []
     return [

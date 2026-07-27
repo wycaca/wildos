@@ -281,7 +281,9 @@ WildOS 每 30 s 输出一次 DEBUG 诊断, 包括:
 
 `robot` profile 已确认 `/cloud_registered` 为 10Hz RELIABLE 点云, frame 为 `odom_3D`; `/odom` 为 10Hz RELIABLE odom, frame 链为 `odom -> base_link`
 
-`odom -> odom_3D` TF 已存在, 因此 adapter 保留点云 frame, elevation mapping 使用 TF 完成坐标转换
+`odom -> odom_3D` TF 已存在, robot profile 将注册点云直接交给 elevation mapping, 不经过 Python 点云转发
+
+Orin 默认使用 `rmw_fastrtps_cpp`, 宿主机 Point-LIO 也必须在相同 RMW 环境下重启
 
 相机尚未启动, 相机 topic、frame、QoS 和时间同步仍待确认
 

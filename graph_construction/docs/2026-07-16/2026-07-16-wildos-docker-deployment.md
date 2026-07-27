@@ -85,15 +85,14 @@ RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 GLOBAL_FRAME=odom
 BASE_FRAME=base_link
 POINTCLOUD_INPUT_TOPIC=/cloud_registered
-POINTCLOUD_OUTPUT_TOPIC=/spot1/cloud_registered
-POINTCLOUD_OUTPUT_FRAME=odom_3D
 ODOM_INPUT_TOPIC=/odom
+PUBLISH_CAMERA_STATIC_TF=false
 WILDOS_CKPT_DIR=/mnt/ssd/han/wildos_ws/src/nebula2-wildos/ckpts
 ```
 
 相机 topic 和 frame 通过 `CAM_FRAME`、`CAMERA_IMG_TOPIC` 和 `CAMERA_INFO_TOPIC` 配置
 
-真机 `/cloud_registered` 使用 `odom_3D` frame, TF 树提供 `odom -> odom_3D`, 因此 adapter 保留点云 frame, elevation mapping 通过 TF 转到全局 `odom`
+真机 `/cloud_registered` 使用 `odom_3D` frame, TF 树提供 `odom -> odom_3D`, 因此 robot profile 直接将注册点云交给 elevation mapping, 不再经过 Python adapter
 
 Unity 改为:
 

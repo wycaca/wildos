@@ -34,16 +34,25 @@
 
 真机通常不订阅 `/clock`, 使用 `use_sim_time:=false`
 
+Orin 默认使用 Fast DDS。启动 Point-LIO 和其他宿主机 ROS2 节点前必须使用相同环境:
+
+```bash
+export ROS_DOMAIN_ID=2
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+```
+
+修改 RMW 后必须重启 Point-LIO, 已经运行的 ROS2 进程不会切换中间件
+
 `robot` profile 默认使用 platform 定位:
 
 ```text
-/cloud_registered -> pointcloud adapter -> /spot1/cloud_registered
+/cloud_registered -> elevation mapping
 /odom -> odom frame adapter -> /spot1/odom_for_scoring
 ```
 
 真机实测 `/cloud_registered` 的 frame 是 `odom_3D`, `/odom` 发布 `odom -> base_link`, TF 树同时提供接近单位变换的 `odom -> odom_3D`
 
-pointcloud adapter 保留真实 `odom_3D` frame 和全部八个字段, elevation mapping 再通过 TF 转换到全局 `odom`
+`/cloud_registered` 已经是注册点云, robot profile 不再启动 Python pointcloud adapter。elevation mapping 保留真实 `odom_3D` frame 和全部八个字段, 再通过 TF 转换到全局 `odom`
 
 部署前必须检查原始消息:
 

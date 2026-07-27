@@ -121,6 +121,22 @@ def test_unity_dlio_launch_owns_dlio_and_skips_xyz_adapter():
     ) in remappings
 
 
+def test_robot_platform_launch_skips_registered_cloud_adapter():
+    module = _load_launch_module()
+    context = _context_with_defaults(module)
+    context.launch_configurations["topic_profile"] = "robot"
+    context.launch_configurations["localization_backend"] = "platform"
+
+    executables = {
+        _expanded(context, action.node_executable)
+        for action in module._launch_setup(context)
+        if isinstance(action, Node)
+    }
+
+    assert "pointcloud_axis_adapter" not in executables
+    assert "elevation_mapping_node.py" in executables
+
+
 def test_camera_stamp_adapter_can_be_disabled():
     module = _load_launch_module()
     context = _context_with_defaults(module)

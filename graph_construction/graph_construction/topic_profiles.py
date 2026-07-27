@@ -26,6 +26,7 @@ PROFILE_KEY_DESCRIPTIONS = {
     "lidar_frame": "LiDAR frame",
     "pointcloud_axis_mode": "elevation 点云轴向转换模式",
     "pointcloud_output_frame": "elevation 对齐点云输出 frame",
+    "use_pointcloud_axis_adapter": "是否使用 Python 点云轴向适配层",
     "pointcloud_input_topic": "elevation 后端使用的原始点云 topic",
     "aligned_lidar_topic": "elevation 对齐后点云 topic",
     "odom_input_topic": "原始 odom topic",

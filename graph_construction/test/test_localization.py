@@ -19,6 +19,10 @@ def _unity_profile():
     return _topic_profile_config()["profiles"]["unity"]
 
 
+def _robot_profile():
+    return _topic_profile_config()["profiles"]["robot"]
+
+
 def _unity_dlio_config():
     config_path = REPO_ROOT / "graph_construction" / "configs" / "dlio" / "unity.yaml"
     with config_path.open("r", encoding="utf-8") as config_stream:
@@ -49,6 +53,14 @@ def test_unity_dlio_localization_uses_raw_lidar_and_imu():
     assert wiring.mapping_pointcloud_topic == "/spot1/dlio/odom_node/pointcloud/deskewed"
     assert wiring.use_pointcloud_axis_adapter is False
     assert wiring.isolate_platform_tf is True
+
+
+def test_robot_platform_uses_registered_cloud_directly():
+    wiring = resolve_localization_wiring(_robot_profile(), "platform")
+
+    assert wiring.pointcloud_input_topic == "/cloud_registered"
+    assert wiring.mapping_pointcloud_topic == "/cloud_registered"
+    assert wiring.use_pointcloud_axis_adapter is False
 
 
 def test_unity_profile_normalizes_camera_stamps():
@@ -105,11 +117,12 @@ def test_unity_planner_publishes_source_path_topic():
 
 
 def test_robot_profile_preserves_platform_odometry_and_registered_cloud_frame():
-    robot = _topic_profile_config()["profiles"]["robot"]
+    robot = _robot_profile()
 
     assert robot["pointcloud_input_topic"] == "/cloud_registered"
-    assert robot["aligned_lidar_topic"] == "/spot1/cloud_registered"
+    assert robot["aligned_lidar_topic"] == "/cloud_registered"
     assert robot["pointcloud_output_frame"] == "odom_3D"
+    assert robot["use_pointcloud_axis_adapter"] is False
     assert robot["odom_stamp_mode"] == "preserve"
     assert robot["odom_pose_source"] == "message"
 

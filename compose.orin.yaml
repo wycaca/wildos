@@ -37,10 +37,9 @@ services:
       - odom_child_frame:=${BASE_FRAME:-base_link}
       - base_frame:=${BASE_FRAME:-base_link}
       - pointcloud_input_topic:=${POINTCLOUD_INPUT_TOPIC:-/cloud_registered}
-      - pointcloud_output_topic:=${POINTCLOUD_OUTPUT_TOPIC:-/spot1/cloud_registered}
-      - pointcloud_output_frame:=${POINTCLOUD_OUTPUT_FRAME:-odom_3D}
       - odom_input_topic:=${ODOM_INPUT_TOPIC:-/odom}
       - lidar_frame:=${LIDAR_FRAME:-lidar_link}
+      - publish_camera_static_tf:=${PUBLISH_CAMERA_STATIC_TF:-false}
       - cam_frame:=${CAM_FRAME:-spot1/realsense/{}_color_optical_frame}
       - camera_img_topic:=${CAMERA_IMG_TOPIC:-/spot1/realsense/{}/color/image_raw/compressed}
       - camera_info_topic:=${CAMERA_INFO_TOPIC:-/spot1/realsense/{}/color/camera_info}
