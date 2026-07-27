@@ -545,23 +545,6 @@ def odometry_health_metrics(
     return (position_error, orientation_error, speed)
 
 
-def is_odometry_healthy(
-    aligned: Odometry,
-    reference: Odometry | None,
-    max_position_error: float,
-    max_orientation_error_deg: float,
-    max_linear_speed: float,
-) -> tuple[bool, tuple[float, float, float]]:
-    metrics = odometry_health_metrics(aligned, reference)
-    healthy = (
-        _odometry_values_are_finite(aligned, metrics)
-        and metrics[0] <= max_position_error
-        and metrics[1] <= max_orientation_error_deg
-        and metrics[2] <= max_linear_speed
-    )
-    return healthy, metrics
-
-
 def _odometry_values_are_finite(
     aligned: Odometry,
     metrics: tuple[float, float, float],

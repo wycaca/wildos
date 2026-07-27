@@ -1,5 +1,7 @@
 # DLIO 坐标与 TF
 
+> 更换 LiDAR、IMU、外参或 topic 时参见 [环境配置](environment.md)
+
 ## 1. 这条链路解决什么问题
 
 DLIO 使用 LiDAR 和 IMU 估计机器人的连续位姿
@@ -62,6 +64,10 @@ DLIO 源码中 `baselink2imu` 和 `baselink2lidar` 均按 `base_link -> sensor` 
 适配器只转发一条, 避免重复发布同一外参
 
 真机上如果 LiDAR 和 IMU 不共用同一物理坐标系, 必须改为各自真实的 frame 和标定外参
+
+DLIO 环境参数位于 `graph_construction/configs/dlio/<profile>.yaml`
+
+其中 frame、外参、重力和 `pointcloud/deskew` 属于硬件接入参数, GICP、voxel、keyframe 和 `odom/geo/*` 属于数据质量调优参数
 
 ## 5. TF 发布权
 

@@ -101,6 +101,8 @@ Topic and frame names are selected by profile. Built-in profiles live in `graph_
 
 The default profile is `unity`, so the plain startup command uses `/livox/lidar`, ROS domain 89, and `rmw_zenoh_cpp`.
 
+See `graph_construction/docs/details/topics.md` for the full topic contract and `graph_construction/docs/details/environment.md` for the environment migration checklist.
+
 ```bash
 WILDOS_TOPIC_PROFILE=isaac ./scripts/start_wildos_elevation.sh
 WILDOS_TOPIC_PROFILE=unity ./scripts/start_wildos_elevation.sh

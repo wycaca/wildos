@@ -14,7 +14,8 @@
 | 目标搜索和探索路线 | `docs/details/target_exploration.md` |
 | 目标定位 | `docs/details/target_localization.md` |
 | Topic 契约 | `docs/details/topics.md` |
-| 当前 TODO | `docs/2026-07-23/2026-07-23-todo.md` |
+| 环境切换配置 | `docs/details/environment.md` |
+| 当前 TODO | `docs/2026-07-27/2026-07-27-startup-island-and-edge-performance-todo.md` |
 
 ## 2. 文档维护规则
 
@@ -108,8 +109,8 @@ graph_construction/launch/elevation_visual_navigation_sim.launch.py
 
 | 模块 | 当前结果 | 仍需完成 |
 |---|---|---|
-| 导航图 | free radius 稀疏节点和局部全 pair 更新完成 | Unity 10 分钟性能回归 |
-| 启动观察 | 4.0 m 盲区种子和 6.0 m 连通填充完成 | Unity 验证脚下图连通和扫描执行 |
+| 导航图 | free radius 节点、dirty pair 增量更新和图分量统计完成 | Unity 10 分钟性能回归 |
+| 启动观察 | 12 m 高程图先验和固定世界坐标盲区恢复完成 | Unity 验证脚下图连通和扫描执行 |
 | 探索路线 | 能持续探索和死路恢复 | 减少普通路线回头和频繁切换 |
 | 视觉检测 | 0.120/0.110 双门槛完成 | 无目标 10 分钟误检测试 |
 | 目标定位 | 重复帧过滤和视角软权重完成 | 排查 Mask 延迟和 LiDAR 精修率 |
@@ -118,7 +119,7 @@ graph_construction/launch/elevation_visual_navigation_sim.launch.py
 
 文档记录的最新分模块测试:
 
-- graph 137 项通过
+- `graph_construction` 完整 147 项测试通过
 - 粒子滤波 9 项通过
 - 目标链路 54 项通过, 1 项环境相关测试跳过
 - Goal Mux 29 项通过
@@ -133,11 +134,14 @@ graph_construction/launch/elevation_visual_navigation_sim.launch.py
 - unknown 不能直接删除历史安全路线
 - 新障碍必须删除冲突节点和边
 - 新节点只在机器人可达的新 free 区域生成
+- 隔着 unknown 的其他 free 分量不能加入 reachable mask
 - 当前节点使用附近安全普通节点
 - unknown 或 obstacle 中不能创建兜底节点
 - 旧的移动 anchor 和 breadcrumb 逻辑不得恢复
-- 脚下 unknown 使用 4.0 m 种子和 6.0 m 搜索范围完整填充连通盲区
+- 脚下 unknown 使用 4.0 m 种子和 12.0 m 搜索范围完整填充连通盲区
 - 启动修补只有接到外围原始 free 后才结束, 后续点云 obstacle 优先覆盖人工区域
+- 启动人工区域使用固定世界坐标跨帧恢复, 不能跟随机器人移动
+- 稳定帧不得重复检查全部局部 pair
 - 节点 UUID 必须稳定
 - 内部增量更新, 对外仍发布完整 `NavigationGraph`
 
@@ -199,6 +203,8 @@ graph_construction/launch/elevation_visual_navigation_sim.launch.py
 | 配置范围 | 文件 |
 |---|---|
 | topic、frame、ROS domain | `graph_construction/configs/topic_profiles.yaml` |
+| DLIO frame、外参和配准参数 | `graph_construction/configs/dlio/<profile>.yaml` |
+| 高程图范围、更新率和启动先验 | `graph_construction/configs/elevation_mapping_sim.yaml` |
 | 高程图解码和 graph ROS 参数 | `graph_construction/configs/graph_construction_elevation.yaml` |
 | graph 算法 | `GraphBuilderConfig` |
 | WildOS 模型和视觉阈值 | `visual_navigation/configs/wildos_nav_*.yaml` |

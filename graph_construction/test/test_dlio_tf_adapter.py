@@ -12,7 +12,6 @@ from graph_construction.dlio_tf_adapter import (
     align_odometry,
     alignment_from_odometry,
     alignment_to_transform,
-    is_odometry_healthy,
     odom_to_transform,
     relay_extrinsic_transforms,
 )
@@ -237,65 +236,6 @@ def test_heading_monitor_separates_fixed_offset_from_accumulated_drift():
     assert summary.initial_raw_error_deg == pytest.approx(10.0)
     assert summary.current_aligned_error_deg == pytest.approx(5.0)
     assert summary.cumulative_change_deg == pytest.approx(5.0)
-
-
-def test_health_check_accepts_small_simulation_error():
-    aligned = _odom(1.1, 2.0, 0.2, 12.0)
-    reference = _odom(1.0, 2.0, 0.2, 10.0)
-    aligned.twist.twist.linear.x = 0.5
-
-    healthy, metrics = is_odometry_healthy(
-        aligned,
-        reference,
-        max_position_error=1.0,
-        max_orientation_error_deg=20.0,
-        max_linear_speed=5.0,
-    )
-
-    assert healthy
-    assert metrics[0] == pytest.approx(0.1)
-    assert metrics[1] == pytest.approx(2.0)
-    assert metrics[2] == pytest.approx(0.5)
-
-
-@pytest.mark.parametrize(
-    "aligned_values,reference_values",
-    [
-        ((3.0, 0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 0.0)),
-        ((0.0, 0.0, 0.0, 45.0), (0.0, 0.0, 0.0, 0.0)),
-    ],
-)
-def test_health_check_rejects_pose_divergence(
-    aligned_values,
-    reference_values,
-):
-    aligned = _odom(*aligned_values)
-    reference = _odom(*reference_values)
-    healthy, _ = is_odometry_healthy(
-        aligned,
-        reference,
-        max_position_error=1.0,
-        max_orientation_error_deg=20.0,
-        max_linear_speed=5.0,
-    )
-
-    assert not healthy
-
-
-def test_health_check_rejects_excessive_speed():
-    aligned = _odom(0.0, 0.0, 0.0, 0.0)
-    aligned.twist.twist.linear.x = 6.0
-
-    healthy, metrics = is_odometry_healthy(
-        aligned,
-        None,
-        max_position_error=1.0,
-        max_orientation_error_deg=20.0,
-        max_linear_speed=5.0,
-    )
-
-    assert not healthy
-    assert metrics[2] == pytest.approx(6.0)
 
 
 def test_health_monitor_warns_but_keeps_gradual_reference_drift():
