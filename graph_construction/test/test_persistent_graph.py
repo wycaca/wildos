@@ -339,8 +339,8 @@ def test_graph_update_only_touches_local_history():
     )
 
 
-def test_identical_grid_rechecks_pairs_without_replacing_stable_edges():
-    """稳定帧重查局部 pair, 但不重建未变化边对象"""
+def test_identical_grid_reuses_stable_edges_without_pair_checks():
+    """稳定帧直接复用边对象, 不再重查局部 pair"""
     builder = SparseGraphBuilder(
         GraphBuilderConfig(
             node_sample_count=1000,
@@ -367,8 +367,10 @@ def test_identical_grid_rechecks_pairs_without_replacing_stable_edges():
 
     assert first.stats.local_pair_count > 0
     assert second.stats.dirty_cell_count == 0
-    assert second.stats.local_pair_count == first.stats.local_pair_count
-    assert second.stats.edge_clearance_check_count == second.stats.local_pair_count
+    assert second.stats.local_pair_count == 0
+    assert second.stats.edge_clearance_check_count == 0
+    assert second.stats.edge_update_skipped
+    assert second.stats.edge_keep_count == len(stable_edges)
     assert second.stats.edge_add_count == 0
     assert second.stats.edge_remove_count == 0
     assert second.stats.frontier_candidate_count == 0
@@ -415,6 +417,8 @@ def test_newly_free_cells_reconnect_pair_without_retry_state():
     )
 
     assert changed.stats.newly_free_cell_count == 3
+    assert changed.stats.edge_update_mode == "incremental"
+    assert changed.stats.local_pair_count < first.stats.local_pair_count
     assert changed.stats.edge_add_count == 1
     assert changed.stats.edge_remove_count == 0
     assert blocked_key in changed.graph.edges
@@ -508,6 +512,8 @@ def test_single_obstacle_without_crossing_edge_keeps_edge_object():
 
     assert changed.stats.dirty_cell_count == 1
     assert changed.stats.newly_obstacle_cell_count == 1
+    assert changed.stats.edge_update_mode == "reused"
+    assert changed.stats.edge_clearance_check_count == 0
     assert changed.stats.edge_remove_count == 0
     assert changed.graph.edges[edge_key] is stable_edge
 
@@ -533,6 +539,11 @@ def test_new_obstacle_removes_only_crossing_local_edge():
             InternalEdge(*remote_key, cost=4.0),
         ]
     )
+    builder.update(
+        _grid(width=20, height=20),
+        robot_position=(2.5, 2.5, 0.0),
+        stamp_seconds=1.0,
+    )
     remote_edge = builder.graph.edges[remote_key]
     free = np.ones((20, 20), dtype=bool)
     obstacle = np.zeros((20, 20), dtype=bool)
@@ -546,6 +557,8 @@ def test_new_obstacle_removes_only_crossing_local_edge():
     )
 
     assert changed.stats.newly_obstacle_cell_count == 1
+    assert changed.stats.edge_update_mode == "incremental"
+    assert changed.stats.local_pair_count == 1
     assert changed.stats.edge_remove_count == 1
     assert crossing_key not in changed.graph.edges
     assert changed.graph.edges[remote_key] is remote_edge
@@ -609,3 +622,18 @@ def test_edge_spatial_index_returns_only_nearby_corridors():
 
     assert lower_key in nearby
     assert upper_key not in nearby
+
+
+def test_z_only_node_update_does_not_reindex_incident_edges():
+    """只更新高程时边的 XY 空间索引必须保持不动"""
+    graph = GraphState()
+    first = graph.create_node((1.0, 1.0, 0.0), stamp_seconds=1.0)
+    second = graph.create_node((3.0, 1.0, 0.0), stamp_seconds=1.0)
+    edge_key = (first.node_id, second.node_id)
+    graph.set_edges([InternalEdge(*edge_key, cost=2.0)])
+    indexed_buckets = graph.edge_spatial_index._edge_keys[edge_key]
+
+    graph.move_node(first.node_id, (1.0, 1.0, 0.5))
+
+    assert graph.nodes[first.node_id].position[2] == 0.5
+    assert graph.edge_spatial_index._edge_keys[edge_key] is indexed_buckets

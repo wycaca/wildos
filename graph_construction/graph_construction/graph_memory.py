@@ -23,8 +23,11 @@ class NodeSpatialIndex:
 
     def insert(self, node_id: int, position: Point3) -> None:
         """插入节点或同步已经存在的节点位置"""
-        self.remove(node_id)
         key = self._key(position)
+        if self._node_keys.get(node_id) == key:
+            self._positions[node_id] = position
+            return
+        self.remove(node_id)
         self._buckets.setdefault(key, set()).add(node_id)
         self._node_keys[node_id] = key
         self._positions[node_id] = position
@@ -270,8 +273,11 @@ class GraphState:
         node = self.nodes.get(node_id)
         if node is None:
             return
+        xy_changed = node.position[:2] != position[:2]
         node.position = position
         self.spatial_index.insert(node_id, position)
+        if not xy_changed:
+            return
         for edge_key in self.adjacency.get(node_id, ()):
             edge = self.edges.get(edge_key)
             if edge is None:

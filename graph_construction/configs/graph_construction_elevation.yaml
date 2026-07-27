@@ -1,10 +1,12 @@
-# Elevation GridMap 主线, topic 和 frame 由 topic profile 覆盖
+# 输入输出 fallback, 集成 launch 会使用 topic profile 覆盖
 global_frame: odom
 odom_topic: /spot1/odom_for_scoring
 grid_map_topic: /elevation_mapping_node/elevation_map_raw
 nav_graph_topic: /spot1/nav_graph
 viz_topic: /spot1/graph_construction_viz
+publish_rate_hz: 2.0
 viz_show_radius_markers: false
+viz_show_full_edges: false
 viz_publish_rate_hz: 1.0
 max_grid_odom_time_delta_sec: 0.5
 
@@ -17,16 +19,15 @@ grid_map_fill_hole_min_free_neighbor_ratio: 0.65
 grid_map_fill_elevation_radius_cells: 5
 
 # 用启动安全先验填满脚下连通盲区, 后续点云 obstacle 优先覆盖
-# 4.0m 是盲区种子半径, 6.0m 是最大连通盲区搜索半径
+# 12 m 源头方形经膨胀后约 16 m 宽, 搜索半径必须越过人工区域边界
 robot_blind_zone_radius: 4.0
-robot_blind_zone_elevation_search_radius: 6.0
+robot_blind_zone_elevation_search_radius: 12.0
 robot_ground_height_offset: 0.22
 robot_ground_elevation_tolerance: 0.5
-robot_blind_zone_initial_only: true
 
 # 论文 Algorithm 3 随机采样和 Algorithm 5 半径图
 node_sample_count: 1000
-random_seed: 7
+max_free_radius: 4.0
 min_obstacle_clearance: 0.5
 edge_radius: 8.0
 frontier_candidate_spacing: 0.5

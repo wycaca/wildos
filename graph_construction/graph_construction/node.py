@@ -31,6 +31,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "nav_graph_topic": "/spot1/nav_graph",
     "viz_topic": "/spot1/graph_construction_viz",
     "viz_show_radius_markers": False,
+    "viz_show_full_edges": False,
     "viz_publish_rate_hz": 1.0,
     "publish_rate_hz": 2.0,
     "max_grid_odom_time_delta_sec": 0.5,
@@ -98,7 +99,10 @@ class GraphConstructionNode(Node):
         self.visualizer = GraphVisualizer(
             show_radius_markers=bool(
                 self.config.get("viz_show_radius_markers", False)
-            )
+            ),
+            show_full_edges=bool(
+                self.config.get("viz_show_full_edges", False)
+            ),
         )
 
         self.latest_grid = None
@@ -127,6 +131,7 @@ class GraphConstructionNode(Node):
                 "distance",
                 "nodes",
                 "sampling",
+                "compaction",
                 "frontier",
                 "current",
                 "edge_pairs",
@@ -335,6 +340,7 @@ class GraphConstructionNode(Node):
             f"距离场{update_summaries['distance'].average_ms:.0f}ms/"
             f"节点{update_summaries['nodes'].average_ms:.0f}ms/"
             f"采样{update_summaries['sampling'].average_ms:.0f}ms/"
+            f"压缩{update_summaries['compaction'].average_ms:.0f}ms/"
             f"Frontier{update_summaries['frontier'].average_ms:.0f}ms/"
             f"边{update_summaries['edges'].average_ms:.0f}ms"
             f"(pair{update_summaries['edge_pairs'].average_ms:.0f}/"
@@ -356,9 +362,18 @@ class GraphConstructionNode(Node):
             f"新增障碍栅格{stats.newly_obstacle_cell_count}, "
             f"局部pair{stats.local_pair_count}, "
             f"边碰撞检查{stats.edge_clearance_check_count}, "
+            f"边模式{stats.edge_update_mode}, "
             f"边增删保留{stats.edge_add_count}/"
             f"{stats.edge_remove_count}/{stats.edge_keep_count}, "
             f"总边{stats.total_edge_count}, "
+            f"压缩节点{stats.compacted_node_count}, "
+            f"图分量{stats.graph_component_count}, "
+            f"current分量{stats.current_component_node_count}"
+            f"(局部{stats.current_component_local_node_count}), "
+            f"启动盲区{stats.blind_zone_status}/"
+            f"填充{stats.blind_zone_filled_count}/"
+            f"连通{stats.blind_zone_connected}/"
+            f"搜索{stats.blind_zone_search_radius:.1f}m, "
             f"Frontier候选{stats.frontier_candidate_count}, "
             f"活动Frontier owner{stats.active_frontier_owner_count}"
         )

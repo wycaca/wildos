@@ -29,6 +29,8 @@ def test_resolve_config_uses_graph_builder_defaults_once():
         "current_node_max_edge_neighbors",
         "max_edge_candidates_per_node",
         "low_degree_retry_threshold",
+        "random_seed",
+        "robot_blind_zone_initial_only",
     ],
 )
 def test_resolve_config_rejects_removed_or_misspelled_keys(name):
@@ -82,6 +84,19 @@ def test_load_config_rejects_non_mapping_yaml(tmp_path: Path):
 
     with pytest.raises(ValueError, match="must be a mapping"):
         _load_config(str(config_path))
+
+
+def test_deployment_config_searches_beyond_dilated_startup_prior():
+    config_path = (
+        Path(__file__).parents[1]
+        / "configs"
+        / "graph_construction_elevation.yaml"
+    )
+
+    builder_config = _builder_config(_load_config(str(config_path)))
+
+    assert builder_config.robot_blind_zone_radius == 4.0
+    assert builder_config.robot_blind_zone_elevation_search_radius == 12.0
 
 
 def test_take_latest_inputs_processes_each_grid_once():

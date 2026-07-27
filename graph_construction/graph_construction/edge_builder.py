@@ -30,6 +30,8 @@ class EdgeBuildStats:
     kept_edge_count: int = 0
     pair_generation_seconds: float = 0.0
     validation_seconds: float = 0.0
+    reused_previous: bool = False
+    incremental_update: bool = False
 
 
 @dataclass
@@ -46,6 +48,28 @@ class EdgeBuilder:
     def __init__(self, edge_radius: float) -> None:
         self.edge_radius = float(edge_radius)
         self.last_stats = EdgeBuildStats()
+
+    def reuse_existing(
+        self,
+        graph: GraphState,
+        node_ids: Iterable[int],
+    ) -> None:
+        """稳定帧复用已有局部边并重置本帧工作量统计"""
+        local_node_ids = {
+            node_id
+            for node_id in node_ids
+            if node_id in graph.nodes
+        }
+        local_edge_count = sum(
+            1
+            for edge_key in graph.edge_keys_for_nodes(local_node_ids)
+            if edge_key[0] in local_node_ids and edge_key[1] in local_node_ids
+        )
+        self.last_stats = EdgeBuildStats(
+            local_node_count=len(local_node_ids),
+            kept_edge_count=local_edge_count,
+            reused_previous=True,
+        )
 
     def build_delta(
         self,
@@ -156,6 +180,103 @@ class EdgeBuilder:
             edge_keys_to_remove=edge_keys_to_remove,
         )
 
+    def build_pair_delta(
+        self,
+        graph: GraphState,
+        grid: ClassifiedGrid,
+        sdf_obstacle: np.ndarray,
+        sdf_unknown: np.ndarray,
+        min_clearance: float,
+        node_ids: Iterable[int],
+        pair_keys: Iterable[EdgeKey],
+    ) -> EdgeDelta:
+        """只重算地图变化或新增节点直接影响的 pair
+
+        pair 仍使用完整半径图的统一安全规则, 未列出的稳定边保持不变
+        """
+        local_node_ids = {
+            node_id
+            for node_id in node_ids
+            if node_id in graph.nodes
+        }
+        candidate_keys = {
+            normalize_edge_key(*edge_key)
+            for edge_key in pair_keys
+            if edge_key[0] in local_node_ids
+            and edge_key[1] in local_node_ids
+            and edge_key[0] != edge_key[1]
+        }
+        self.last_stats = EdgeBuildStats(
+            local_node_count=len(local_node_ids),
+            candidate_pair_count=len(candidate_keys),
+            incremental_update=True,
+        )
+        corridor_states = _corridor_state_grid(
+            grid,
+            sdf_obstacle,
+            sdf_unknown,
+            min_clearance,
+        )
+        edges_to_add: list[InternalEdge] = []
+        edge_keys_to_remove: set[EdgeKey] = set()
+        kept_edge_count = 0
+        validation_started = perf_counter()
+        for edge_key in sorted(candidate_keys):
+            node_a = graph.nodes.get(edge_key[0])
+            node_b = graph.nodes.get(edge_key[1])
+            if node_a is None or node_b is None:
+                continue
+            distance = hypot(
+                node_a.position[0] - node_b.position[0],
+                node_a.position[1] - node_b.position[1],
+            )
+            edge_exists = edge_key in graph.edges
+            if distance > self.edge_radius:
+                if edge_exists:
+                    edge_keys_to_remove.add(edge_key)
+                continue
+            start = grid.world_to_grid(
+                node_a.position[0],
+                node_a.position[1],
+            )
+            end = grid.world_to_grid(
+                node_b.position[0],
+                node_b.position[1],
+            )
+            if start is None or end is None:
+                continue
+            self.last_stats.clearance_check_count += 1
+            state = _edge_corridor_state(start, end, corridor_states)
+            if state == "free":
+                if edge_exists:
+                    kept_edge_count += 1
+                else:
+                    edges_to_add.append(
+                        InternalEdge(
+                            from_id=edge_key[0],
+                            to_id=edge_key[1],
+                            cost=distance,
+                        )
+                    )
+                continue
+            if not edge_exists:
+                continue
+            if state == "obstacle":
+                edge_keys_to_remove.add(edge_key)
+            else:
+                kept_edge_count += 1
+
+        self.last_stats.validation_seconds = (
+            perf_counter() - validation_started
+        )
+        self.last_stats.added_edge_count = len(edges_to_add)
+        self.last_stats.removed_edge_count = len(edge_keys_to_remove)
+        self.last_stats.kept_edge_count = kept_edge_count
+        return EdgeDelta(
+            edges_to_add=edges_to_add,
+            edge_keys_to_remove=edge_keys_to_remove,
+        )
+
 
 def _query_pair_indices(nodes, edge_radius: float) -> np.ndarray:
     """使用 SciPy 编译空间索引一次返回全部无向半径 pair"""
@@ -201,14 +322,23 @@ def _edge_corridor_state(
     可见障碍优先否决历史边, unknown 只阻止新边
     栅格状态已经在 pair 循环外合并, 每条线只执行一次数组查询
     """
-    # skimage.draw.line 在 Cython 中生成线段索引, 避免逐 cell Python generator
+    # 两个方向在格点平局时会选择不同 cell, 合并后得到保守 supercover
     index_y, index_x = raster_line(
         start[1],
         start[0],
         end[1],
         end[0],
     )
-    state = int(np.max(corridor_states[index_y, index_x]))
+    reverse_y, reverse_x = raster_line(
+        end[1],
+        end[0],
+        start[1],
+        start[0],
+    )
+    state = max(
+        int(np.max(corridor_states[index_y, index_x])),
+        int(np.max(corridor_states[reverse_y, reverse_x])),
+    )
     if state == 2:
         return "obstacle"
     if state == 1:

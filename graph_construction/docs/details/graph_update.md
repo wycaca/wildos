@@ -1,6 +1,6 @@
 # 导航图更新
 
-> 更新时间: 2026-07-23
+> 更新时间: 2026-07-27
 
 ## 1. 为什么需要导航图
 
@@ -73,17 +73,19 @@ Frontier 挂在附近已有节点上, 不为每个 Frontier cell 创建新节点
 ```mermaid
 flowchart TD
     A["GridMap + odom"] --> B["清理高程噪声"]
-    B --> C["初始化时一次性修补脚下盲区"]
+    B --> C["恢复固定世界坐标的启动安全先验"]
     C --> D["找出机器人可达 free 区域"]
     D --> E["比较前后两帧地图"]
     E --> F["更新窗口内历史节点"]
     F --> G["在可达 free 区域补节点"]
     G --> H["更新变化区域附近 Frontier"]
     H --> I["选择 current_node"]
-    I --> J["cKDTree 生成全部局部半径 pair"]
-    J --> K["统一检查每个 pair"]
-    K --> L["应用 edge delta"]
-    L --> M["发布完整导航图"]
+    I --> J["压缩新增 free 附近的重叠旧节点"]
+    J --> K["生成新增节点或 dirty cell 影响的 pair"]
+    K --> L["统一检查受影响 pair"]
+    L --> M["应用 edge delta"]
+    M --> N["统计 current node 图分量"]
+    N --> O["发布完整导航图"]
 ```
 
 ## 5. 地图预处理
@@ -106,10 +108,11 @@ flowchart TD
 
 1. `robot_blind_zone_radius=4.0 m` 定义盲区种子范围
 2. 找出种子范围和已有脚下 free 岛边界接触的全部 unknown 分量
-3. 在 `robot_blind_zone_elevation_search_radius=6.0 m` 内完整填充这些分量
+3. 在 `robot_blind_zone_elevation_search_radius=12.0 m` 内完整填充这些分量
 4. 使用附近可信地面或机器人预期地面初始化高程
 5. 检查机器人 free 分量是否已经接到搜索边界上的原始 free
 6. 只有实际连通后才结束启动修补
+7. 将人工 cell 保存为固定世界坐标先验, 后续帧只恢复原启动区域
 
 修补仍需满足:
 
@@ -126,9 +129,10 @@ flowchart TD
 | `repaired_waiting_boundary` | 已填充盲区, 但还没有接到外围原始 free |
 | `known_ground` | 不需要填充, 脚下原始 free 已经连到搜索边界 |
 | `known_ground_isolated` | 没有可填充 cell, 但脚下 free 仍是孤岛 |
-| `initial_only_complete` | 之前已经完成连通初始化 |
+| `initial_prior_restored` | 固定启动先验已恢复, 当前仍连接外部 free |
+| `initial_prior_disconnected` | 固定启动先验已恢复, 但当前已被真实地图切断 |
 
-初始化完成后, 安全先验不会跟随机器人移动
+初始化完成后, 安全先验不会跟随机器人移动, 但同一世界区域不会在第二帧重新变回 unknown
 
 人工填充的 cell 会单独标记, 不会被当作传感器确认的新 free, 因此不会触发历史旧边批量重建
 
@@ -144,7 +148,16 @@ flowchart TD
 
 启动修补必须先把脚下盲区变成连续 free, 图更新才允许在该区域生成安全边
 
-外围其他 free 分量仍可生成各自内部节点和边, 但不会通过未纳入启动安全先验的 unknown 建边
+隔着 unknown 的其他 free 分量不再被合并到 reachable mask, 当前帧不会在这些伪可达区域生成新节点
+
+边更新完成后会从 `current_node` 执行 BFS, 记录:
+
+- 完整图分量数
+- current node 分量节点数
+- current node 分量中的局部节点数
+- 当前局部节点是否全部连通
+
+这些统计用于区分“栅格已连通”和“NavigationGraph 已连通”
 
 ## 6. 历史节点如何处理
 
@@ -159,6 +172,15 @@ flowchart TD
 | 已滑出窗口   | 保持不变           |
 
 unknown 只代表当前看不到, 不能否定以前确认安全的路线
+
+当 unknown 变为真实 free 时, 历史节点的 free radius 可能扩大
+
+系统只在新增 free 附近压缩旧节点:
+
+- current node 和 Frontier owner 保留
+- 不在变化区域附近的历史节点保持不动
+- 普通节点被更大安全自由圆覆盖时删除
+- 删除节点后只重算受影响 pair
 
 ## 7. 新节点和 Frontier
 
@@ -192,7 +214,7 @@ Frontier 更新步骤:
 
 这些状态会随探索历史积累, 少量 unknown 变 free 也可能唤醒大量节点和候选
 
-## 9. 当前论文式边更新
+## 9. 当前论文式增量边更新
 
 当前实现只保留一条拓扑规则:
 
@@ -203,15 +225,27 @@ Frontier 更新步骤:
   -> 走廊出现 unknown: 不添加新边, 保留已有边
 ```
 
-实现步骤:
+首帧使用 `cKDTree.query_pairs()` 建立完整局部半径图
 
-1. 使用 `cKDTree.query_pairs()` 一次生成全部局部无向 pair
-2. 每个 pair 只执行一次走廊检查
-3. 计算 `edges_to_add` 和 `edge_keys_to_remove`
-4. 只修改真实变化的邻接表和边空间索引
-5. 当前窗口外的节点和边保持不变
+后续帧按变化类型处理:
 
-unknown 变 free 后不需要 retry cache, 下一帧重算全部局部 pair 时会自然补边
+| 变化 | 处理 |
+|---|---|
+| 节点和地图都稳定 | 直接复用全部边, 不生成 pair |
+| 新增节点 | 只检查新节点的半径内 incident pair |
+| 新 obstacle | 通过边空间索引复查经过变化区域的历史边 |
+| unknown 变 free | 只生成可能经过变化 cell 的半径 pair |
+| free 变 unknown | 保留历史安全边, 没有新节点时不检查 pair |
+
+长度不超过 `edge_radius` 的线段经过变化 cell 时, 至少有一个端点到该 cell 的距离不超过一半连接半径
+
+实现利用这个几何条件查询近端点, 再只生成这些端点的直接半径 pair, 不再把少量变化扩大成全部局部 pair
+
+每帧记录三种边模式:
+
+- `full`: 首帧或节点位置变化, 重建完整局部半径图
+- `incremental`: 只检查新增节点或 dirty cell 影响的 pair
+- `stable_reused` 或 `reused`: 没有会改变拓扑的 pair, 直接复用
 
 边只有存在和不存在两种拓扑状态
 
@@ -225,7 +259,11 @@ unknown 变 free 后不需要 retry cache, 下一帧重算全部局部 pair 时�
 - 栅格线生成使用 `skimage.draw.line` 的 Cython 实现
 - obstacle、unknown 和两个 SDF 预先合并成一个状态栅格
 
-逐 pair Python Bresenham、候选截断、历史边回灌和多种重试队列已经删除
+正向和反向栅格线在穿过 cell 角点时可能选择不同 cell
+
+当前会合并两个方向形成保守 supercover, 防止斜边漏检障碍角点
+
+逐 pair Python Bresenham、候选截断、历史边回灌和多种边角色已经删除
 
 ## 10. 为什么仍发布完整图
 
@@ -236,6 +274,8 @@ unknown 变 free 后不需要 retry cache, 下一帧重算全部局部 pair 时�
 - 未变化节点和边复用 ROS 消息缓存
 - 完整图按固定频率发布
 - RViz 可视化单独限频
+- RViz 默认只显示从 current node 开始的生成森林
+- `viz_show_full_edges=true` 时才显示完整半径图
 - 自动化测试确认消息转换不会修改内部图、邻接索引或 current node
 
 剩余风险是消息数组仍会随历史图增长, 后续通过用户提供的完整运行日志检查消息转换耗时
@@ -271,7 +311,7 @@ unknown 变 free 后不需要 retry cache, 下一帧重算全部局部 pair 时�
 
 它没有覆盖 unknown blocked candidate 长期积累后的集中重试, 因此不能代表 Unity 长任务性能
 
-### 当前论文式实现基准
+### 2026-07-23 全 pair 实现基准
 
 本机 250 个随机局部节点、5859 个半径 pair:
 
@@ -296,11 +336,33 @@ unknown 变 free 后不需要 retry cache, 下一帧重算全部局部 pair 时�
 
 以上是本机合成基准, 不包含 GridMap 上游、ROS 传输和 RViz
 
+### 2026-07-27 增量实现结果
+
+- 相同地图第二帧 `candidate_pair_count=0`
+- 相同地图第二帧 `edge_clearance_check_count=0`
+- 单个远离边的 obstacle 变化不检查 pair
+- 单个穿越边的 obstacle 变化只检查命中的边
+- unknown 变 free 只生成变化区域附近端点的 incident pair
+- 新增 free 附近被更大自由圆覆盖的普通旧节点会被压缩
+- 隔着 unknown 的外围 free 分量不再生成新节点
+- 节点只更新 Z 高程时不再重建关联边的 XY 空间索引
+
+20 m × 20 m、0.25 m 分辨率、250 个手工密集节点的合成压力测试:
+
+| 帧 | pair 检查 | `builder.update` |
+|---|---:|---:|
+| 首帧完整构图 | 13497 | 约 642 ms |
+| 相同地图稳定帧 | 0 | 约 17 ms |
+| 单个新 obstacle | 1527 | 约 70 ms |
+
+该压力测试故意跳过 free radius 采样, 直接放入 250 个密集节点, 用于验证最坏情况下的边失效粒度
+
 自动化结果:
 
-- 图构建和持久图核心测试 59 项通过
-- `graph_construction` 全部 140 项测试通过
-- ROS `graph_construction` 包构建通过
+- 图构建和持久图核心测试 63 项通过
+- ROS 镜像中与本次修改相关的 138 项测试通过
+- 镜像内另外 8 项 launch 测试读取了旧安装空间的 topic profile, 与本次图修改无关
+- ROS `graph_construction` 包在临时工作区构建通过
 - flake8 忽略项目已有的 E501 和 W503 后通过
 
 ### 仍需验证
@@ -317,15 +379,17 @@ unknown 变 free 后不需要 retry cache, 下一帧重算全部局部 pair 时�
 | 参数                            | 当前值 | 含义                       |
 | ------------------------------- | -----: | -------------------------- |
 | `robot_blind_zone_radius`                  |  4.0 m | 启动盲区种子半径           |
-| `robot_blind_zone_elevation_search_radius` |  6.0 m | 连通盲区最大搜索半径       |
-| `robot_blind_zone_initial_only`            |   true | 连通完成后停止启动修补     |
+| `robot_blind_zone_elevation_search_radius` | 12.0 m | 连通盲区最大搜索半径       |
 | `node_sample_count`                        |   1000 | 每帧随机采样次数           |
-| `random_seed`                              |      7 | 保证测试和回放可复现       |
 | `max_free_radius`                          |  4.0 m | 开阔区域最大节点覆盖半径   |
 | `min_obstacle_clearance`                   |  0.5 m | 论文使用的节点和边安全距离 |
 | `edge_radius`                              |  8.0 m | 论文使用的最大连边距离     |
+| `initialize_tf_grid_size`                  | 12.0 m | 高程图源头启动安全先验边长 |
+| `viz_show_full_edges`                      |  false | 是否在 RViz 显示全部实际边 |
 
 算法默认值定义在 `GraphBuilderConfig`, ROS 覆盖值位于 `graph_construction/configs/graph_construction_elevation.yaml`
+
+启动盲区只在连通完成前扩展, 随机采样固定使用种子 7, 两者属于实现约束而不是部署参数
 
 ## 14. 代码入口
 
