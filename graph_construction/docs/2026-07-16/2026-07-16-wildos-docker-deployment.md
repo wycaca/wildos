@@ -81,7 +81,8 @@ USE_SIM_TIME=false
 LOCALIZATION_BACKEND=platform
 LAUNCH_DLIO=false
 ROS_DOMAIN_ID=2
-RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+ROS_LOCALHOST_ONLY=0
+RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 GLOBAL_FRAME=odom
 BASE_FRAME=base_link
 POINTCLOUD_INPUT_TOPIC=/cloud_registered
@@ -108,7 +109,7 @@ WILDOS_TOPIC_PROFILE=isaac
 USE_SIM_TIME=true
 ```
 
-Compose 使用 `network_mode: host` 和 `ipc: host`。host network 保证 ROS2 multicast、Zenoh 和传感器 topic 可以直接通信，host IPC 避免 Fast DDS shared memory 位于不同 IPC namespace
+Compose 使用 `network_mode: host` 和 `ipc: host`。host network 保证 ROS2 multicast 和传感器 topic 可以直接通信, host IPC 同时兼容需要共享内存的运行组件
 
 ## 6. x86_64 部署
 
@@ -148,6 +149,20 @@ Orin 主机要求:
 DOCKER_BUILDKIT=1 docker compose -f compose.orin.yaml build wildos
 docker compose -f compose.orin.yaml up -d
 docker compose -f compose.orin.yaml logs -f wildos
+```
+
+进入 Orin 容器时会自动加载 ROS2、workspace install 和容器内 venv:
+
+```bash
+docker compose -f compose.orin.yaml exec wildos bash
+ros2 topic list
+```
+
+非交互命令使用 Bash 执行, 同样会自动加载环境:
+
+```bash
+docker compose -f compose.orin.yaml exec wildos \
+  bash -lc 'ros2 topic list'
 ```
 
 ### 7.1 代码修改后的快速构建

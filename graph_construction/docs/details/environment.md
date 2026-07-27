@@ -34,11 +34,12 @@
 
 真机通常不订阅 `/clock`, 使用 `use_sim_time:=false`
 
-Orin 默认使用 Fast DDS。启动 Point-LIO 和其他宿主机 ROS2 节点前必须使用相同环境:
+Orin 实测使用 CycloneDDS 才能稳定接收 Point-LIO 点云。启动 Point-LIO 和其他宿主机 ROS2 节点前必须使用相同环境:
 
 ```bash
 export ROS_DOMAIN_ID=2
-export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+export ROS_LOCALHOST_ONLY=0
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 ```
 
 修改 RMW 后必须重启 Point-LIO, 已经运行的 ROS2 进程不会切换中间件

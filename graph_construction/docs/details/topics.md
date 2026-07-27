@@ -283,7 +283,7 @@ WildOS 每 30 s 输出一次 DEBUG 诊断, 包括:
 
 `odom -> odom_3D` TF 已存在, robot profile 将注册点云直接交给 elevation mapping, 不经过 Python 点云转发
 
-Orin 默认使用 `rmw_fastrtps_cpp`, 宿主机 Point-LIO 也必须在相同 RMW 环境下重启
+Orin 和宿主机 Point-LIO 统一使用 `rmw_cyclonedds_cpp`。实测两端 RMW 不一致时只能发现 endpoint, 容器无法持续收到点云数据
 
 相机尚未启动, 相机 topic、frame、QoS 和时间同步仍待确认
 

@@ -64,6 +64,12 @@ RUN mkdir -p /opt/wildos_ws/src/nebula2-wildos/ckpts \
     && /tmp/build_workspace.sh "${GRAAF_COMMIT}" application \
     && /usr/bin/python3 -c "import cupy, torch, torchvision; print(torch.__version__, torch.version.cuda, cupy.__version__)"
 
+COPY nebula2-wildos/docker/ros_environment.sh /etc/profile.d/wildos_ros.sh
+RUN chmod 0644 /etc/profile.d/wildos_ros.sh \
+    && printf '\nsource /etc/profile.d/wildos_ros.sh\n' >> /root/.bashrc
+
+ENV BASH_ENV=/etc/profile.d/wildos_ros.sh
+
 WORKDIR /opt/wildos_ws
 ENTRYPOINT ["/opt/wildos_ws/src/nebula2-wildos/docker/entrypoint.sh"]
 CMD ["do_object_search:=true", "use_sim_time:=false", "launch_paper_rviz:=false", "localization_backend:=platform", "launch_dlio:=false"]
