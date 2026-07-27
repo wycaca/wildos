@@ -107,14 +107,10 @@ def generate_launch_description():
             _profile_arg("elevation_grid_map_topic", "elevation_grid_map_topic"),
             _profile_arg("odom_input_topic", "odom_input_topic"),
             _profile_arg("odom_output_topic", "odom_output_topic"),
-            _profile_arg("dlio_pointcloud_input_topic", "dlio_pointcloud_input_topic"),
             _profile_arg("dlio_imu_input_topic", "dlio_imu_input_topic"),
-            _profile_arg("dlio_odom_topic", "dlio_odom_topic"),
-            _profile_arg("dlio_aligned_odom_topic", "dlio_aligned_odom_topic"),
             _profile_arg("dlio_reference_odom_topic", "dlio_reference_odom_topic"),
             _profile_arg("dlio_local_frame", "dlio_local_frame"),
             _profile_arg("dlio_alignment_delay", "dlio_alignment_delay"),
-            _profile_arg("dlio_deskewed_topic", "dlio_deskewed_topic"),
             _profile_arg("dlio_topic_root", "dlio_topic_root"),
             _profile_arg("imu_frame", "imu_frame"),
             _profile_arg("odom_parent_frame", "odom_parent_frame"),
@@ -641,7 +637,7 @@ def _launch_setup(context):
         **python_node_extra_args,
         parameters=[
             {"use_sim_time": use_sim_time},
-            {"raw_lidar_topic": wiring.dlio_pointcloud_input_topic},
+            {"raw_lidar_topic": wiring.pointcloud_input_topic},
             {"raw_imu_topic": wiring.dlio_imu_input_topic},
             {"aligned_pointcloud_topic": aligned_lidar_topic},
             {"odom_topic": odom_output_topic},
@@ -824,7 +820,7 @@ def _dlio_node(
         ],
         arguments=["--ros-args", "--log-level", log_level],
         remappings=[
-            ("pointcloud", wiring.dlio_pointcloud_input_topic),
+            ("pointcloud", wiring.pointcloud_input_topic),
             ("imu", wiring.dlio_imu_input_topic),
             ("odom", wiring.odom_input_topic),
             ("pose", f"{topic_root}/pose"),
@@ -910,14 +906,10 @@ def _localization_profile_with_overrides(context, profile):
         "pointcloud_input_topic": "pointcloud_input_topic",
         "pointcloud_output_topic": "aligned_lidar_topic",
         "odom_input_topic": "odom_input_topic",
-        "dlio_pointcloud_input_topic": "dlio_pointcloud_input_topic",
         "dlio_imu_input_topic": "dlio_imu_input_topic",
-        "dlio_odom_topic": "dlio_odom_topic",
-        "dlio_aligned_odom_topic": "dlio_aligned_odom_topic",
         "dlio_reference_odom_topic": "dlio_reference_odom_topic",
         "dlio_local_frame": "dlio_local_frame",
         "dlio_alignment_delay": "dlio_alignment_delay",
-        "dlio_deskewed_topic": "dlio_deskewed_topic",
     }
     for arg_name, profile_key in override_keys.items():
         override = _arg(context, arg_name)

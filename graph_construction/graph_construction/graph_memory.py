@@ -23,8 +23,11 @@ class NodeSpatialIndex:
 
     def insert(self, node_id: int, position: Point3) -> None:
         """插入节点或同步已经存在的节点位置"""
-        self.remove(node_id)
         key = self._key(position)
+        if self._node_keys.get(node_id) == key:
+            self._positions[node_id] = position
+            return
+        self.remove(node_id)
         self._buckets.setdefault(key, set()).add(node_id)
         self._node_keys[node_id] = key
         self._positions[node_id] = position
@@ -270,8 +273,11 @@ class GraphState:
         node = self.nodes.get(node_id)
         if node is None:
             return
+        xy_changed = node.position[:2] != position[:2]
         node.position = position
         self.spatial_index.insert(node_id, position)
+        if not xy_changed:
+            return
         for edge_key in self.adjacency.get(node_id, ()):
             edge = self.edges.get(edge_key)
             if edge is None:
@@ -296,9 +302,9 @@ class GraphState:
             self.current_node_id = None
 
     def set_edges(self, edges: Iterable[InternalEdge]) -> None:
-        """使用规范化无向边键写入合并后的持久边集合
+        """使用规范化无向边键写入完整边集合
 
-        调用方先生成当前新边, 再合并未被可见障碍证伪的历史边
+        该接口用于初始化和测试, 在线更新使用 apply_edge_delta
         normalize_edge_key 保证 (a,b) 和 (b,a) 不会重复存储
         """
         replacement_edges = list(edges)
@@ -311,16 +317,18 @@ class GraphState:
         for edge in replacement_edges:
             self._set_edge(edge)
 
-    def replace_edges(
+    def apply_edge_delta(
         self,
-        affected_edge_keys: Iterable[EdgeKey],
-        replacement_edges: Iterable[InternalEdge],
+        edge_keys_to_remove: Iterable[EdgeKey],
+        edges_to_add: Iterable[InternalEdge],
     ) -> None:
-        """只替换局部受影响边, 远处历史边保持原对象不动"""
-        for edge_key in tuple(affected_edge_keys):
+        """应用最小边增量, 未变化边保持对象和索引不动"""
+        for edge_key in edge_keys_to_remove:
             self._remove_edge(normalize_edge_key(*edge_key))
-        for edge in replacement_edges:
-            self._set_edge(edge)
+        for edge in edges_to_add:
+            key = normalize_edge_key(edge.from_id, edge.to_id)
+            if key not in self.edges:
+                self._set_edge(edge)
 
     def edge_keys_for_nodes(self, node_ids: Iterable[int]) -> Set[EdgeKey]:
         """通过邻接索引收集节点关联边"""

@@ -97,6 +97,8 @@ graph_construction/launch/elevation_visual_navigation_sim.launch.py
 | 配置内容 | 文件 |
 |---|---|
 | 平台 topic、frame、ROS domain | `graph_construction/configs/topic_profiles.yaml` |
+| DLIO frame、外参和配准参数 | `graph_construction/configs/dlio/<profile>.yaml` |
+| 高程图范围、更新率和启动先验 | `graph_construction/configs/elevation_mapping_sim.yaml` |
 | 高程图解码和导航图 ROS 参数 | `graph_construction/configs/graph_construction_elevation.yaml` |
 | 导航图算法默认值 | `GraphBuilderConfig` |
 | WildOS 模型和视觉阈值 | `visual_navigation/configs/wildos_nav_*.yaml` |
@@ -111,6 +113,7 @@ graph_construction/launch/elevation_visual_navigation_sim.launch.py
 - [目标搜索与探索路线](target_exploration.md)
 - [目标定位与视觉雷达融合](target_localization.md)
 - [Topic 契约](topics.md)
+- [环境配置](environment.md)
 - [实现原则](principles.md)
 
 ## 8. 当前未完成事项

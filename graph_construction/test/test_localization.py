@@ -9,10 +9,14 @@ from graph_construction.localization import resolve_localization_wiring
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _unity_profile():
+def _topic_profile_config():
     config_path = REPO_ROOT / "graph_construction" / "configs" / "topic_profiles.yaml"
     with config_path.open("r", encoding="utf-8") as config_stream:
-        return yaml.safe_load(config_stream)["profiles"]["unity"]
+        return yaml.safe_load(config_stream)
+
+
+def _unity_profile():
+    return _topic_profile_config()["profiles"]["unity"]
 
 
 def _unity_dlio_config():
@@ -26,8 +30,8 @@ def test_unity_platform_localization_keeps_existing_topics():
 
     assert wiring.odom_input_topic == "/unity/odom"
     assert wiring.mapping_pointcloud_topic == "/livox/lidar_aligned"
-    assert wiring.dlio_pointcloud_input_topic == "/livox/lidar"
-    assert wiring.dlio_imu_input_topic == "/livox/imu"
+    assert wiring.pointcloud_input_topic == "/livox/lidar"
+    assert wiring.dlio_imu_input_topic == ""
     assert wiring.use_pointcloud_axis_adapter is True
     assert wiring.isolate_platform_tf is False
 
@@ -35,7 +39,7 @@ def test_unity_platform_localization_keeps_existing_topics():
 def test_unity_dlio_localization_uses_raw_lidar_and_imu():
     wiring = resolve_localization_wiring(_unity_profile(), "dlio")
 
-    assert wiring.dlio_pointcloud_input_topic == "/livox/lidar"
+    assert wiring.pointcloud_input_topic == "/livox/lidar"
     assert wiring.dlio_imu_input_topic == "/livox/imu"
     assert wiring.odom_input_topic == "/spot1/dlio/odom_node/odom"
     assert wiring.dlio_aligned_odom_topic == "/spot1/dlio/odom_node/aligned_odom"
@@ -51,6 +55,51 @@ def test_unity_profile_normalizes_camera_stamps():
     assert _unity_profile()["camera_stamp_mode"] == "now"
 
 
+def test_profiles_share_internal_topic_contract():
+    config = _topic_profile_config()
+    common_contract = config["common_contract"]
+    internal_topic_keys = {
+        "odom_output_topic",
+        "elevation_grid_map_topic",
+        "nav_graph_topic",
+        "scored_nav_graph_topic",
+        "planner_path_topic",
+        "object_mask_topic",
+        "object_target_estimate_topic",
+        "object_search_completed_topic",
+    }
+
+    assert set(config["profiles"]) == {"isaac", "unity", "robot"}
+    for profile in config["profiles"].values():
+        assert {
+            key: profile[key]
+            for key in internal_topic_keys
+        } == {
+            key: common_contract[key]
+            for key in internal_topic_keys
+        }
+
+
+def test_every_profile_declares_environment_inputs_and_frames():
+    required_keys = {
+        "ros_domain_id",
+        "rmw_implementation",
+        "global_frame",
+        "base_frame",
+        "lidar_frame",
+        "pointcloud_input_topic",
+        "aligned_lidar_topic",
+        "odom_input_topic",
+        "camera_img_topic",
+        "camera_info_topic",
+        "camera_stamp_mode",
+    }
+
+    for profile in _topic_profile_config()["profiles"].values():
+        assert required_keys <= set(profile)
+        assert all(str(profile[key]).strip() for key in required_keys)
+
+
 def test_unity_planner_publishes_source_path_topic():
     assert _unity_profile()["planner_path_topic"] == "/spot1/graphnav_planner/path"
 
@@ -60,6 +109,7 @@ def test_unity_dlio_disables_unstable_adaptive_gicp():
 
     assert config["adaptive"] is False
     assert config["pointcloud/deskew"] is False
+    assert "map/sparse/leafSize" not in config
 
 
 def test_unity_dlio_uses_gravity_alignment_and_bounded_accel_bias():

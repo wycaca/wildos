@@ -1,4 +1,4 @@
-from graph_construction.performance_stats import TimingWindow, format_timing
+from graph_construction.performance_stats import TimingWindow
 
 
 def test_timing_window_reports_average_p95_and_maximum():
@@ -12,7 +12,6 @@ def test_timing_window_reports_average_p95_and_maximum():
     assert summary.average_ms == 50.5
     assert summary.p95_ms == 95.0
     assert summary.maximum_ms == 100.0
-    assert "avg:50.5/p95:95.0/max:100.0ms" in format_timing("stage", summary)
 
 
 def test_timing_window_can_reset_samples():

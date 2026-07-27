@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from math import isfinite
 from typing import Iterable, Optional, Tuple
 
@@ -8,6 +9,8 @@ from std_msgs.msg import ColorRGBA, Header
 from visualization_msgs.msg import Marker, MarkerArray
 
 from graph_construction.graph_memory import GraphState, InternalNode
+
+
 class GraphVisualizer:
     """为构建出的导航图生成 RViz marker
 
@@ -19,8 +22,13 @@ class GraphVisualizer:
     MAX_RADIUS_MARKER = 20.0
     GRAPH_MARKER_Z_LIFT = 0.25
 
-    def __init__(self, show_radius_markers: bool = False) -> None:
+    def __init__(
+        self,
+        show_radius_markers: bool = False,
+        show_full_edges: bool = False,
+    ) -> None:
         self.show_radius_markers = bool(show_radius_markers)
+        self.show_full_edges = bool(show_full_edges)
 
     def build_markers(
         self,
@@ -172,7 +180,8 @@ class GraphVisualizer:
         marker.type = Marker.LINE_LIST
         marker.scale.x = 0.03
         marker.color = ColorRGBA(r=1.0, g=0.0, b=0.0, a=0.35)
-        for edge in graph.edges.values():
+        for edge_key in self._visible_edge_keys(graph):
+            edge = graph.edges[edge_key]
             node_a = graph.nodes.get(edge.from_id)
             node_b = graph.nodes.get(edge.to_id)
             if node_a is None or node_b is None:
@@ -180,6 +189,47 @@ class GraphVisualizer:
             marker.points.append(self._graph_point(node_a.position))
             marker.points.append(self._graph_point(node_b.position))
         return marker
+
+    def _visible_edge_keys(self, graph: GraphState) -> list[tuple[int, int]]:
+        """默认显示从 current node 开始的生成森林, 完整边仅用于专项调试"""
+        if self.show_full_edges:
+            return sorted(graph.edges)
+        roots = []
+        if graph.current_node_id in graph.nodes:
+            roots.append(graph.current_node_id)
+        roots.extend(
+            node_id
+            for node_id in sorted(graph.nodes)
+            if node_id != graph.current_node_id
+        )
+        visited: set[int] = set()
+        visible_edges: list[tuple[int, int]] = []
+        for root_id in roots:
+            if root_id in visited:
+                continue
+            visited.add(root_id)
+            pending = deque([root_id])
+            while pending:
+                node_id = pending.popleft()
+                neighbor_edges = sorted(
+                    graph.adjacency.get(node_id, ()),
+                    key=lambda edge_key: (
+                        graph.edges[edge_key].cost,
+                        edge_key,
+                    ),
+                )
+                for edge_key in neighbor_edges:
+                    other_id = (
+                        edge_key[1]
+                        if edge_key[0] == node_id
+                        else edge_key[0]
+                    )
+                    if other_id in visited:
+                        continue
+                    visited.add(other_id)
+                    pending.append(other_id)
+                    visible_edges.append(edge_key)
+        return visible_edges
 
     def _frontier_point_marker(self, header: Header, frontier_nodes: Iterable[InternalNode]) -> Marker:
         """显示所有 frontier_points, 用于确认 frontier heading 是否正确"""

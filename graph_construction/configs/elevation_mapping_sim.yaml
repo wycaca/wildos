@@ -1,33 +1,43 @@
 elevation_mapping_node:
   ros__parameters:
+    # frame 和输入 topic 由 launch 按 topic profile 覆盖
     map_frame: odom
     base_frame: base_link
     corrected_map_frame: odom
 
+    # 地图尺寸和传感器有效范围, 更换 LiDAR 或场景时检查
     resolution: 0.2
     map_length: 30.0
     min_valid_distance: 0.3
     max_height_range: 2.0
     max_ray_length: 20.0
+
+    # 更新频率
     update_variance_fps: 5.0
     update_pose_fps: 10.0
     map_acquire_fps: 5.0
     publish_statistics_fps: 1.0
-    # Static simulation keeps observed terrain stable and does not need ray-based stale-surface cleanup
+
+    # 静态仿真不清理射线遮挡后的旧地面
     enable_visibility_cleanup: false
     enable_drift_compensation: false
     enable_drift_corrected_TF_publishing: false
     enable_pointcloud_publishing: false
+
+    # 启动安全先验, offset 需要匹配 base_link 到地面的高度
     use_initializer_at_start: true
     initialize_method: linear
     initialize_frame_id: ["base_link"]
     initialize_tf_offset: [-0.22]
     dilation_size_initialize: 5
-    initialize_tf_grid_size: 1.0
+    initialize_tf_grid_size: 12.0
+
+    # 服务命名空间和发布内容通常不随环境修改
     service_namespace: /elevation_mapping_cupy
 
     subscribers:
       livox:
+        # launch 使用当前 backend 的规范化点云覆盖此值
         topic_name: /livox/lidar_aligned
         data_type: pointcloud
 

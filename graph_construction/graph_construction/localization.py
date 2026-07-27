@@ -12,7 +12,7 @@ class LocalizationWiring:
     backend: str
     odom_input_topic: str
     mapping_pointcloud_topic: str
-    dlio_pointcloud_input_topic: str = ""
+    pointcloud_input_topic: str
     dlio_imu_input_topic: str = ""
     dlio_aligned_odom_topic: str = ""
     dlio_reference_odom_topic: str = ""
@@ -40,25 +40,17 @@ def resolve_localization_wiring(
             backend=normalized_backend,
             odom_input_topic=_required(profile, "odom_input_topic"),
             mapping_pointcloud_topic=_required(profile, "aligned_lidar_topic"),
-            dlio_pointcloud_input_topic=_required(
-                profile,
-                "pointcloud_input_topic",
-            ),
-            dlio_imu_input_topic=str(
-                profile.get("dlio_imu_input_topic", "")
-            ).strip(),
+            pointcloud_input_topic=_required(profile, "pointcloud_input_topic"),
         )
 
+    topic_root = _required(profile, "dlio_topic_root").rstrip("/")
     return LocalizationWiring(
         backend=normalized_backend,
-        odom_input_topic=_required(profile, "dlio_odom_topic"),
-        mapping_pointcloud_topic=_required(profile, "dlio_deskewed_topic"),
-        dlio_pointcloud_input_topic=_required(
-            profile,
-            "dlio_pointcloud_input_topic",
-        ),
+        odom_input_topic=f"{topic_root}/odom",
+        mapping_pointcloud_topic=f"{topic_root}/pointcloud/deskewed",
+        pointcloud_input_topic=_required(profile, "pointcloud_input_topic"),
         dlio_imu_input_topic=_required(profile, "dlio_imu_input_topic"),
-        dlio_aligned_odom_topic=_required(profile, "dlio_aligned_odom_topic"),
+        dlio_aligned_odom_topic=f"{topic_root}/aligned_odom",
         dlio_reference_odom_topic=str(
             profile.get("dlio_reference_odom_topic", "")
         ).strip(),

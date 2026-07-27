@@ -1,229 +1,161 @@
-# 参数分层说明:
-# - 平台差异放在 topic profile, 算法调优放到对应节点 config
-# - 当前唯一几何地图后端是 elevation/2.5D GridMap
+# 平台接入配置
+# common_contract 是内部稳定契约, 新环境通常只新增 profile
+common_contract: &common_contract
+  namespace: spot1
+  camera_static_tf_convention: x_forward_y_left
+  camera_image_flip_x: "false"
+
+  # 内部 canonical topic, 除非整套系统改 namespace 否则不要修改
+  odom_output_topic: /spot1/odom_for_scoring
+  planner_odom_topic: odom_for_scoring
+  elevation_grid_map_topic: /elevation_mapping_node/elevation_map_raw
+  nav_graph_topic: /spot1/nav_graph
+  graph_construction_viz_topic: /spot1/graph_construction_viz
+  scored_nav_graph_topic: /spot1/scored_nav_graph
+  planner_path_topic: /spot1/graphnav_planner/path
+  model_viz_topic: /spot1/model_visualization
+  valid_geofrontiers_topic: /spot1/within_range_geofrontiers
+  score_ring_topic: /spot1/score_rings
+  object_mask_topic: /spot1/object_mask
+  object_target_estimate_topic: /spot1/object_target_estimate
+  object_target_estimate_viz_topic: /spot1/object_target_estimate_viz
+  object_target_particles_topic: /spot1/object_target_particles
+  object_reached_topic: /spot1/object_search_reached
+  object_search_completed_topic: /spot1/object_search_completed
+  object_search_status_topic: /spot1/object_search_status
+
+  # 公共目标搜索参数, 只有传感器或任务定义变化时才调整
+  object_search_initial_goal_distance: "30.0"
+  object_search_initial_goal_heading_deg: "0.0"
+  object_search_detection_min_peak_score: "0.12"
+  object_search_detection_confirm_min_peak_score: "0.110"
+  object_search_detection_min_component_pixels: "300"
+  object_search_detection_min_component_fraction: "0.0005"
+  object_search_detection_confirm_frames: "2"
+  object_search_detection_confirm_window_frames: "3"
+  object_search_detection_debug_interval: "20"
+  object_search_goal_publish_rate: "5.0"
+  object_search_object_reached_max_target_distance: "2.0"
+  object_search_reached_mask_fraction: "0.01"
+  object_search_reached_min_pixel_count: "1200"
+  object_search_reached_confirm_frames: "2"
+
 profiles:
   isaac:
+    <<: *common_contract
     description: Isaac Sim 5.1 Go2 profile
 
-    # 运行环境和坐标系
-    namespace: spot1
+    # 通信环境
     ros_domain_id: "3"
     rmw_implementation: rmw_fastrtps_cpp
+
+    # frame 和外参 owner
     global_frame: odom
     parent_frame: odom
-    cam_frame: "{}_camera"
     odom_parent_frame: odom
     odom_child_frame: base_link
     base_frame: base_link
+    cam_frame: "{}_camera"
     camera_parent_frame: base_link
-    camera_static_tf_convention: x_forward_y_left
-    camera_image_flip_x: "false"
     lidar_parent_frame: base_link
     lidar_frame: lidar
     pointcloud_axis_mode: isaac_lidar_to_base
     pointcloud_output_frame: base_link
 
-    # 传感器和 odom
+    # 外部输入
     pointcloud_input_topic: /livox/lidar
     aligned_lidar_topic: /livox/lidar_aligned
     odom_input_topic: /odom
-    odom_output_topic: /spot1/odom_for_scoring
-
-    # graph, visual scoring 和 planner topic
-    planner_odom_topic: odom_for_scoring
-    elevation_grid_map_topic: /elevation_mapping_node/elevation_map_raw
-    nav_graph_topic: /spot1/nav_graph
-    graph_construction_viz_topic: /spot1/graph_construction_viz
-    scored_nav_graph_topic: /spot1/scored_nav_graph
-    planner_path_topic: /spot1/graphnav_planner/path
-    model_viz_topic: /spot1/model_visualization
-    valid_geofrontiers_topic: /spot1/within_range_geofrontiers
-    score_ring_topic: /spot1/score_rings
-    object_mask_topic: /spot1/object_mask
-    object_target_estimate_topic: /spot1/object_target_estimate
-    object_target_estimate_viz_topic: /spot1/object_target_estimate_viz
-    object_target_particles_topic: /spot1/object_target_particles
-    object_reached_topic: /spot1/object_search_reached
-    object_search_completed_topic: /spot1/object_search_completed
-
-    # object search 策略
-    object_search_initial_goal_distance: "30.0"
-    object_search_initial_goal_heading_deg: "0.0"
-    object_search_mask_threshold: "0.09"
-    object_search_detection_min_peak_score: "0.12"
-    object_search_detection_confirm_min_peak_score: "0.110"
-    object_search_detection_min_component_pixels: "300"
-    object_search_detection_min_component_fraction: "0.0005"
-    object_search_detection_confirm_frames: "2"
-    object_search_detection_confirm_window_frames: "3"
-    object_target_max_depth: "100.0"
-    visual_frontiers_range: "9.0"
-    visual_frontier_threshold: "0.6"
-    object_search_detection_debug_interval: "20"
-    object_search_goal_publish_rate: "5.0"
-    object_search_object_reached_timeout_sec: "2.0"
-    object_search_object_reached_max_target_distance: "2.0"
-    object_search_reached_mask_fraction: "0.01"
-    object_search_reached_min_pixel_count: "1200"
-    object_search_reached_confirm_frames: "2"
-    object_search_status_topic: /spot1/object_search_status
-
-    # planner 输入和三相机 topic
     goal_pose_topic: /goal_pose
     camera_img_topic: /unitree_go2/{}_cam/color_image
     camera_info_topic: /unitree_go2/{}_cam/info
     camera_stamp_mode: preserve
 
+    # 环境相关视觉范围
+    object_search_mask_threshold: "0.09"
+    object_target_max_depth: "100.0"
+    visual_frontiers_range: "9.0"
+    visual_frontier_threshold: "0.6"
+    object_search_object_reached_timeout_sec: "2.0"
+
   unity:
+    <<: *common_contract
     description: Unity simulation profile
 
-    # 运行环境和坐标系
-    namespace: spot1
+    # 通信环境
     ros_domain_id: "89"
     rmw_implementation: rmw_zenoh_cpp
+
+    # frame 和外参 owner
     global_frame: odom_3D
     parent_frame: odom_3D
-    cam_frame: "{}_camera"
     odom_parent_frame: odom_3D
     odom_child_frame: base_link
     base_frame: base_link
+    cam_frame: "{}_camera"
     camera_parent_frame: base_link
-    camera_static_tf_convention: x_forward_y_left
-    camera_image_flip_x: "false"
     lidar_parent_frame: base_link
     lidar_frame: livox_frame
+    imu_frame: livox_frame
     pointcloud_axis_mode: identity
     pointcloud_output_frame: livox_frame
 
-    # 传感器和 odom
+    # 外部输入
     pointcloud_input_topic: /livox/lidar
     aligned_lidar_topic: /livox/lidar_aligned
     odom_input_topic: /unity/odom
-    odom_output_topic: /spot1/odom_for_scoring
-    dlio_pointcloud_input_topic: /livox/lidar
-    dlio_imu_input_topic: /livox/imu
-    dlio_odom_topic: /spot1/dlio/odom_node/odom
-    dlio_aligned_odom_topic: /spot1/dlio/odom_node/aligned_odom
-    dlio_reference_odom_topic: /unity/odom
-    dlio_local_frame: dlio_odom
-    dlio_alignment_delay: 3.2
-    dlio_deskewed_topic: /spot1/dlio/odom_node/pointcloud/deskewed
-    dlio_topic_root: /spot1/dlio/odom_node
-    imu_frame: livox_frame
-
-    # graph, visual scoring 和 planner topic
-    planner_odom_topic: odom_for_scoring
-    elevation_grid_map_topic: /elevation_mapping_node/elevation_map_raw
-    nav_graph_topic: /spot1/nav_graph
-    graph_construction_viz_topic: /spot1/graph_construction_viz
-    scored_nav_graph_topic: /spot1/scored_nav_graph
-    planner_path_topic: /spot1/graphnav_planner/path
-    model_viz_topic: /spot1/model_visualization
-    valid_geofrontiers_topic: /spot1/within_range_geofrontiers
-    score_ring_topic: /spot1/score_rings
-    object_mask_topic: /spot1/object_mask
-    object_target_estimate_topic: /spot1/object_target_estimate
-    object_target_estimate_viz_topic: /spot1/object_target_estimate_viz
-    object_target_particles_topic: /spot1/object_target_particles
-    object_reached_topic: /spot1/object_search_reached
-    object_search_completed_topic: /spot1/object_search_completed
-
-    # object search 策略
-    object_search_initial_goal_distance: "30.0"
-    object_search_initial_goal_heading_deg: "0.0"
-    object_search_mask_threshold: "0.10"
-    object_search_detection_min_peak_score: "0.12"
-    object_search_detection_confirm_min_peak_score: "0.110"
-    object_search_detection_min_component_pixels: "300"
-    object_search_detection_min_component_fraction: "0.0005"
-    object_search_detection_confirm_frames: "2"
-    object_search_detection_confirm_window_frames: "3"
-    object_target_max_depth: "30.0"
-    visual_frontiers_range: "11.0"
-    visual_frontier_threshold: "0.55"
-    object_search_detection_debug_interval: "20"
-    object_search_goal_publish_rate: "5.0"
-    object_search_object_reached_timeout_sec: "5.0"
-    object_search_object_reached_max_target_distance: "2.0"
-    object_search_reached_mask_fraction: "0.01"
-    object_search_reached_min_pixel_count: "1200"
-    object_search_reached_confirm_frames: "2"
-    object_search_status_topic: /spot1/object_search_status
-
-    # planner 输入和三相机 topic
     goal_pose_topic: /spot1/graphnav_goal_pose
     camera_img_topic: /camera/{}/color/image/compressed
     camera_info_topic: /camera/{}/color/camera_info
     camera_stamp_mode: now
 
+    # DLIO 接入, 与 configs/dlio/unity.yaml 配套
+    dlio_imu_input_topic: /livox/imu
+    dlio_reference_odom_topic: /unity/odom
+    dlio_local_frame: dlio_odom
+    dlio_alignment_delay: 3.2
+    dlio_topic_root: /spot1/dlio/odom_node
+
+    # 环境相关视觉范围
+    object_search_mask_threshold: "0.10"
+    object_target_max_depth: "30.0"
+    visual_frontiers_range: "11.0"
+    visual_frontier_threshold: "0.55"
+    object_search_object_reached_timeout_sec: "5.0"
+
   robot:
+    <<: *common_contract
     description: Real robot profile placeholder
 
-    # 运行环境和坐标系
-    namespace: spot1
+    # 通信环境
     ros_domain_id: "3"
     rmw_implementation: rmw_cyclonedds_cpp
+
+    # frame 和外参 owner, 真机部署前必须核对
     global_frame: spot1/odom
     parent_frame: spot1/odom
-    cam_frame: spot1/realsense/{}_color_optical_frame
     odom_parent_frame: spot1/odom
     odom_child_frame: spot1/base_link
     base_frame: spot1/base_link
+    cam_frame: spot1/realsense/{}_color_optical_frame
     camera_parent_frame: spot1/base_link
-    camera_static_tf_convention: x_forward_y_left
-    camera_image_flip_x: "false"
     lidar_parent_frame: spot1/base_link
     lidar_frame: spot1/ouster_front
     pointcloud_axis_mode: identity
     pointcloud_output_frame: spot1/ouster_front
 
-    # 传感器和 odom
+    # 外部输入, 当前均为占位值
     pointcloud_input_topic: /spot1/ouster/front/points_filtered
     aligned_lidar_topic: /spot1/ouster/front/points_aligned
     odom_input_topic: /spot1/odom
-    odom_output_topic: /spot1/odom_for_scoring
-
-    # graph, visual scoring 和 planner topic
-    planner_odom_topic: odom_for_scoring
-    elevation_grid_map_topic: /elevation_mapping_node/elevation_map_raw
-    nav_graph_topic: /spot1/nav_graph
-    graph_construction_viz_topic: /spot1/graph_construction_viz
-    scored_nav_graph_topic: /spot1/scored_nav_graph
-    planner_path_topic: /spot1/graphnav_planner/path
-    model_viz_topic: /spot1/model_visualization
-    valid_geofrontiers_topic: /spot1/within_range_geofrontiers
-    score_ring_topic: /spot1/score_rings
-    object_mask_topic: /spot1/object_mask
-    object_target_estimate_topic: /spot1/object_target_estimate
-    object_target_estimate_viz_topic: /spot1/object_target_estimate_viz
-    object_target_particles_topic: /spot1/object_target_particles
-    object_reached_topic: /spot1/object_search_reached
-    object_search_completed_topic: /spot1/object_search_completed
-
-    # object search 策略
-    object_search_initial_goal_distance: "30.0"
-    object_search_initial_goal_heading_deg: "0.0"
-    object_search_mask_threshold: "0.09"
-    object_search_detection_min_peak_score: "0.12"
-    object_search_detection_confirm_min_peak_score: "0.110"
-    object_search_detection_min_component_pixels: "300"
-    object_search_detection_min_component_fraction: "0.0005"
-    object_search_detection_confirm_frames: "2"
-    object_search_detection_confirm_window_frames: "3"
-    object_target_max_depth: "100.0"
-    visual_frontiers_range: "9.0"
-    visual_frontier_threshold: "0.6"
-    object_search_detection_debug_interval: "20"
-    object_search_goal_publish_rate: "5.0"
-    object_search_object_reached_timeout_sec: "2.0"
-    object_search_object_reached_max_target_distance: "2.0"
-    object_search_reached_mask_fraction: "0.01"
-    object_search_reached_min_pixel_count: "1200"
-    object_search_reached_confirm_frames: "2"
-    object_search_status_topic: /spot1/object_search_status
-
-    # planner 输入和三相机 topic
     goal_pose_topic: /goal_pose
     camera_img_topic: /spot1/realsense/{}/color/image_raw/compressed
     camera_info_topic: /spot1/realsense/{}/color/camera_info
     camera_stamp_mode: preserve
+
+    # 环境相关视觉范围
+    object_search_mask_threshold: "0.09"
+    object_target_max_depth: "100.0"
+    visual_frontiers_range: "9.0"
+    visual_frontier_threshold: "0.6"
+    object_search_object_reached_timeout_sec: "2.0"

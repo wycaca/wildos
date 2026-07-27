@@ -58,11 +58,3 @@ class EventRate:
             self._started_at = now
             self._count = 0
         return rate
-
-
-def format_timing(name: str, summary: TimingSummary) -> str:
-    """Format one compact timing group"""
-    return (
-        f"{name}=avg:{summary.average_ms:.1f}/p95:{summary.p95_ms:.1f}/"
-        f"max:{summary.maximum_ms:.1f}ms"
-    )
