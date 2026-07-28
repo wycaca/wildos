@@ -171,6 +171,7 @@ The current repository provides separate GPU images for x86_64 and NVIDIA Jetson
 docker compose -f compose.x86_64.yaml build
 docker compose -f compose.x86_64.yaml up -d
 
+cp .env.docker.example .env
 docker compose -f compose.orin.yaml build
 docker compose -f compose.orin.yaml up -d
 ```

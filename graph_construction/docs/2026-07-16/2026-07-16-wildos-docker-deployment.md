@@ -67,13 +67,31 @@ WILDOS_CKPT_DIR=/mnt/ssd/han/wildos_ws/src/nebula2-wildos/ckpts
 
 ## 5. Compose 配置
 
-复制环境模板:
+Orin 部署只允许通过根目录 `.env` 修改运行参数。首次部署复制模板:
 
 ```bash
 cp .env.docker.example .env
 ```
 
-真实机器人保持:
+参数所有权:
+
+| 文件 | 职责 | 是否由部署人员修改 |
+|---|---|---|
+| `.env` | 镜像、DDS、启动开关、外部 topic、frame、模型路径 | 是, 唯一入口 |
+| `compose.orin.yaml` | GPU、网络、IPC、挂载和资源限制 | 否 |
+| `docker/entrypoint.orin.sh` | 将 `.env` 映射为 ROS launch 参数 | 否 |
+| `docker/Dockerfile.orin` | 安装依赖和构建镜像 | 否 |
+| `topic_profiles.yaml` | 非 Docker 启动的内部默认契约 | 通常不改 |
+
+Compose 不再保存运行默认值, Dockerfile 也不再保存默认启动参数。缺少 `.env` 或必要变量时会直接报错, 避免静默使用另一套配置
+
+构建后可以只校验 `.env` 并查看最终 ROS launch 参数, 不启动 WildOS:
+
+```bash
+docker compose -f compose.orin.yaml run --rm wildos --check-config
+```
+
+真实机器人 `.env` 保持:
 
 ```dotenv
 WILDOS_TOPIC_PROFILE=robot
@@ -190,7 +208,7 @@ BuildKit 会复用前四类未变化的层，只复制源码并重新编译三�
 DOCKER_BUILDKIT=1 docker compose -f compose.orin.yaml build --progress=plain wildos
 ```
 
-只修改 `.env` 或 `compose.orin.yaml` 时不需要构建:
+只修改 `.env` 时不需要构建:
 
 ```bash
 docker compose -f compose.orin.yaml up -d --force-recreate wildos
@@ -309,7 +327,7 @@ ros2 run tf2_ros tf2_echo odom <pointcloud_frame>
 ros2 run tf2_ros tf2_echo base_link <pointcloud_frame>
 ```
 
-需要回传的结果包括完整 topic 列表、点云 header、odom 单帧、两者 QoS、相机 header，以及上述 TF 输出。根据这些真实结果再修改 `.env` 或 `compose.orin.yaml`
+需要回传的结果包括完整 topic 列表、点云 header、odom 单帧、两者 QoS、相机 header，以及上述 TF 输出。根据这些真实结果只修改 `.env`
 
 ## 12. 文件清单
 
@@ -318,11 +336,13 @@ ros2 run tf2_ros tf2_echo base_link <pointcloud_frame>
 - `docker/install_ros_humble.sh`: 两个平台共用的 ROS2 Humble 和系统依赖安装
 - `docker/requirements-runtime.txt`: WildOS 共用 Python 运行依赖
 - `docker/build_workspace.sh`: 固定 Graaf 并构建 10 个 ROS package
-- `docker/entrypoint.sh`: 环境初始化、运行前检查和默认集成启动
+- `docker/entrypoint.sh`: x86 环境初始化和默认集成启动
+- `docker/entrypoint.orin.sh`: Orin `.env` 校验、参数映射和集成启动
+- `docker/ros_environment.sh`: Orin Shell 的 ROS2、workspace 和 venv 初始化
 - `docker/verify_runtime.py`: 架构、模型、PyTorch CUDA、CuPy CUDA 和 ROS Python 检查
 - `docker/healthcheck.sh`: 集成 launch 进程健康检查
 - `docker/Dockerfile.x86_64.dockerignore`: x86 构建上下文过滤
 - `docker/Dockerfile.orin.dockerignore`: Orin 构建上下文过滤
 - `compose.x86_64.yaml`: x86_64 构建和部署
 - `compose.orin.yaml`: AGX Orin 构建和部署
-- `.env.docker.example`: Compose 参数模板
+- `.env.docker.example`: Orin 部署单一配置入口模板
