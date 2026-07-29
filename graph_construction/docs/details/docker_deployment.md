@@ -261,6 +261,7 @@ AGX Orin 三相机镜像
 - 把 arm64 的 Ubuntu Ports 源切换到清华 Ubuntu Ports 镜像
 - 把已有 ROS 2 官方源切换到清华 ROS 2 镜像
 - 同时处理传统 `.list` 和 deb822 `.sources` 格式
+- 关闭构建过程不需要的 `deb-src` 源码索引
 - 清理基础镜像继承的旧软件索引
 - 缺少 CA 证书时允许首次使用 HTTP，安装证书后切换为 HTTPS
 

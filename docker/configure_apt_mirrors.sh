@@ -47,6 +47,8 @@ for source_file in "${source_files[@]}"; do
     -e "s@https?://(archive\\.ubuntu\\.com/ubuntu|security\\.ubuntu\\.com/ubuntu|mirrors\\.tuna\\.tsinghua\\.edu\\.cn/ubuntu)@${ubuntu_mirror}@g" \
     -e "s@https?://(ports\\.ubuntu\\.com/ubuntu-ports|mirrors\\.tuna\\.tsinghua\\.edu\\.cn/ubuntu-ports)@${ubuntu_ports_mirror}@g" \
     -e "s@https?://(packages\\.ros\\.org/ros2/ubuntu|mirrors\\.tuna\\.tsinghua\\.edu\\.cn/ros2/ubuntu)@${ros_mirror}@g" \
+    -e '/^[[:space:]]*deb-src[[:space:]]/d' \
+    -e 's@^Types:.*deb-src.*$@Types: deb@g' \
     "${source_file}"
 done
 
