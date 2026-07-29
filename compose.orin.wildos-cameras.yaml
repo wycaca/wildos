@@ -1,4 +1,4 @@
-name: wildos-orin-split
+name: wildos-orin-wildos-cameras
 
 services:
   cameras:
@@ -15,7 +15,7 @@ services:
     restart: unless-stopped
     stop_grace_period: 20s
     env_file:
-      - ${WILDOS_ORIN_SPLIT_ENV_FILE:-.env.orin.split}
+      - ${WILDOS_ORIN_WILDOS_CAMERAS_ENV_FILE:-.env.orin.wildos-cameras}
     volumes:
       - /dev/bus/usb:/dev/bus/usb
       - camera_ros_logs:/root/.ros/log
@@ -35,7 +35,7 @@ services:
     restart: unless-stopped
     stop_grace_period: 30s
     env_file:
-      - ${WILDOS_ORIN_SPLIT_ENV_FILE:-.env.orin.split}
+      - ${WILDOS_ORIN_WILDOS_CAMERAS_ENV_FILE:-.env.orin.wildos-cameras}
     environment:
       DISPLAY: ${DISPLAY:-}
     volumes:

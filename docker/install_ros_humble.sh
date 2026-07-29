@@ -2,13 +2,8 @@
 set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
-# 换清华源
-sed -i 's@http://ports.ubuntu.com/ubuntu-ports@https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports@g' /etc/apt/sources.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
 
-# 2. 替换 ROS 2 官方源为清华源
-mkdir -p /etc/apt/sources.list.d/
-sed -i 's@http://packages.ros.org/ros2/ubuntu@https://mirrors.tuna.tsinghua.edu.cn/ros2/ubuntu@g' /etc/apt/sources.list.d/*.list 2>/dev/null || true
-
+# Install HTTPS and repository tools from the base image sources
 apt-get update
 apt-get install -y --no-install-recommends \
   ca-certificates \
@@ -18,13 +13,34 @@ apt-get install -y --no-install-recommends \
   lsb-release \
   software-properties-common
 
+# ROS 2 Humble binary packages require Ubuntu 22.04 Jammy
+ubuntu_codename="$(. /etc/os-release && printf '%s' "${VERSION_CODENAME:-}")"
+if [[ "${ubuntu_codename}" != "jammy" ]]; then
+  echo "ROS 2 Humble requires Ubuntu Jammy, actual=${ubuntu_codename:-unknown}" >&2
+  exit 1
+fi
+
+# Replace Ubuntu Ports and existing ROS 2 repository URLs
+source_files=(/etc/apt/sources.list)
+shopt -s nullglob
+source_files+=(/etc/apt/sources.list.d/*.list)
+source_files+=(/etc/apt/sources.list.d/*.sources)
+shopt -u nullglob
+for source_file in "${source_files[@]}"; do
+  [[ -f "${source_file}" ]] || continue
+  sed -i -E \
+    -e 's@https?://ports\.ubuntu\.com/ubuntu-ports@https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports@g' \
+    -e 's@https?://packages\.ros\.org/ros2/ubuntu@https://mirrors.tuna.tsinghua.edu.cn/ros2/ubuntu@g' \
+    "${source_file}"
+done
+
 locale-gen en_US en_US.UTF-8
 update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
-add-apt-repository universe
+add-apt-repository --yes --no-update universe
 
 curl -fsSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
   -o /usr/share/keyrings/ros-archive-keyring.gpg
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu jammy main" \
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] https://mirrors.tuna.tsinghua.edu.cn/ros2/ubuntu ${ubuntu_codename} main" \
   > /etc/apt/sources.list.d/ros2.list
 
 apt-get update

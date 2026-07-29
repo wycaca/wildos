@@ -44,18 +44,20 @@ AGX Orin 上的点云、高程图、运动轨迹和高程图生成已经完成�
 | 文件 | 职责 |
 |---|---|
 | `docker/Dockerfile.x86_64` | x86 DLIO 定位镜像 |
-| `compose.x86_64.yaml` | x86 定位服务 |
+| `compose.x86_64.lidar-dlio.yaml` | x86 雷达和 DLIO 定位服务 |
 | `docker/entrypoint.localization.sh` | 校验定位配置并启动 DLIO |
 | `docker/healthcheck.localization.sh` | 检查 DLIO 进程和 canonical 输出 |
 | `graph_construction/launch/dlio_localization.launch.py` | DLIO、健康门控和 canonical TF |
-| `.env.localization.example` | x86 定位环境模板 |
+| `.env.x86_64.lidar-dlio.example` | x86 雷达和 DLIO 环境模板 |
 | `docker/Dockerfile.camera.orin` | Orin 三相机镜像 |
 | `docker/entrypoint.camera.orin.sh` | 按序列号启动 front、left、right |
 | `docker/healthcheck.camera.orin.sh` | 检查三路 CameraInfo |
-| `compose.orin.split.yaml` | Orin 相机和 WildOS 拆分部署 |
-| `.env.orin.split.example` | Orin 拆分环境模板 |
+| `compose.orin.wildos-cameras.yaml` | Orin WildOS 和三相机服务 |
+| `.env.orin.wildos-cameras.example` | Orin WildOS 和三相机环境模板 |
 
-原 `compose.orin.yaml` 继续保留, 用于不启动相机容器的单 WildOS 部署
+`compose.orin.wildos.yaml` 用于不启动相机容器的单 WildOS 部署
+
+完整逐文件说明和部署步骤见 `docs/details/docker_deployment.md`
 
 ## 3. x86 定位部署
 
@@ -77,7 +79,7 @@ DLIO 配置必须使用现场标定结果, 不能直接使用 Unity 配置
 复制环境模板:
 
 ```bash
-cp .env.localization.example .env.localization
+cp .env.x86_64.lidar-dlio.example .env.x86_64.lidar-dlio
 ```
 
 编辑:
@@ -96,13 +98,13 @@ DLIO_CONFIG_FILE=/absolute/path/to/robot_dlio.yaml
 
 ```bash
 docker compose \
-  --env-file .env.localization \
-  -f compose.x86_64.yaml \
+  --env-file .env.x86_64.lidar-dlio \
+  -f compose.x86_64.lidar-dlio.yaml \
   build localization
 
 docker compose \
-  --env-file .env.localization \
-  -f compose.x86_64.yaml \
+  --env-file .env.x86_64.lidar-dlio \
+  -f compose.x86_64.lidar-dlio.yaml \
   up -d localization
 ```
 
@@ -110,8 +112,8 @@ docker compose \
 
 ```bash
 docker compose \
-  --env-file .env.localization \
-  -f compose.x86_64.yaml \
+  --env-file .env.x86_64.lidar-dlio \
+  -f compose.x86_64.lidar-dlio.yaml \
   logs -f localization
 ```
 
@@ -161,7 +163,7 @@ DLIO 继续使用雷达惯导 IMU, 不消费三台 RealSense IMU
 ### 4.2 准备配置
 
 ```bash
-cp .env.orin.split.example .env.orin.split
+cp .env.orin.wildos-cameras.example .env.orin.wildos-cameras
 ```
 
 填写三个序列号:
@@ -188,13 +190,13 @@ RIGHT_CAMERA_TRANSFORM="x y z qx qy qz qw"
 
 ```bash
 docker compose \
-  --env-file .env.orin.split \
-  -f compose.orin.split.yaml \
+  --env-file .env.orin.wildos-cameras \
+  -f compose.orin.wildos-cameras.yaml \
   build cameras wildos
 
 docker compose \
-  --env-file .env.orin.split \
-  -f compose.orin.split.yaml \
+  --env-file .env.orin.wildos-cameras \
+  -f compose.orin.wildos-cameras.yaml \
   up -d
 ```
 
@@ -204,8 +206,8 @@ docker compose \
 
 ```bash
 docker compose \
-  --env-file .env.orin.split \
-  -f compose.orin.split.yaml \
+  --env-file .env.orin.wildos-cameras \
+  -f compose.orin.wildos-cameras.yaml \
   restart cameras
 ```
 
@@ -213,8 +215,8 @@ docker compose \
 
 ```bash
 docker compose \
-  --env-file .env.orin.split \
-  -f compose.orin.split.yaml \
+  --env-file .env.orin.wildos-cameras \
+  -f compose.orin.wildos-cameras.yaml \
   restart wildos
 ```
 

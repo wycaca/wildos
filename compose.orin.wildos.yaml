@@ -16,7 +16,7 @@ services:
     restart: unless-stopped
     stop_grace_period: 30s
     env_file:
-      - ${WILDOS_ENV_FILE:-.env}
+      - ${WILDOS_ENV_FILE:-.env.orin.wildos}
     environment:
       DISPLAY: ${DISPLAY:-}
     volumes:

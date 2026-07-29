@@ -1,4 +1,4 @@
-name: wildos-localization-x86
+name: wildos-x86-lidar-dlio
 
 services:
   localization:
@@ -14,7 +14,7 @@ services:
     restart: unless-stopped
     stop_grace_period: 30s
     env_file:
-      - ${LOCALIZATION_ENV_FILE:-.env.localization}
+      - ${X86_LIDAR_DLIO_ENV_FILE:-.env.x86_64.lidar-dlio}
     volumes:
       - localization_ros_logs:/root/.ros/log
       - ${DLIO_CONFIG_FILE:?Set DLIO_CONFIG_FILE in the Compose environment}:/config/dlio.yaml:ro
