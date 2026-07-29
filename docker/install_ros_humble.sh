@@ -10,34 +10,13 @@ if [[ "${ubuntu_codename}" != "jammy" ]]; then
   exit 1
 fi
 
-# Replace Ubuntu Ports URLs in all supported apt source formats
-replace_ubuntu_ports() {
-  local mirror_url="$1"
-  local source_file
-  for source_file in "${source_files[@]}"; do
-    [[ -f "${source_file}" ]] || continue
-    sed -i -E \
-      "s@https?://(ports\\.ubuntu\\.com/ubuntu-ports|mirrors\\.tuna\\.tsinghua\\.edu\\.cn/ubuntu-ports)@${mirror_url}@g" \
-      "${source_file}"
-  done
-}
-
-mkdir -p /etc/apt/sources.list.d/
-source_files=(/etc/apt/sources.list)
-shopt -s nullglob
-source_files+=(/etc/apt/sources.list.d/*.list)
-source_files+=(/etc/apt/sources.list.d/*.sources)
-shopt -u nullglob
-
-ubuntu_ports_mirror=https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports
-if [[ ! -s /etc/ssl/certs/ca-certificates.crt ]]; then
-  ubuntu_ports_mirror=http://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports
+mirror_script=/tmp/configure_apt_mirrors.sh
+if [[ ! -x "${mirror_script}" ]]; then
+  echo "Missing APT mirror script: ${mirror_script}" >&2
+  exit 1
 fi
-replace_ubuntu_ports "${ubuntu_ports_mirror}"
 
-# Drop stale indexes inherited from the base image before using the mirror
-apt-get clean
-rm -rf /var/lib/apt/lists/*
+"${mirror_script}" auto
 apt-get -o Acquire::Retries=5 update
 apt-get install -y --no-install-recommends \
   ca-certificates \
@@ -48,16 +27,7 @@ apt-get install -y --no-install-recommends \
   software-properties-common
 
 # Use HTTPS after CA certificates are available
-replace_ubuntu_ports \
-  https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports
-
-# Replace any existing ROS 2 source before writing the canonical entry
-for source_file in "${source_files[@]}"; do
-  [[ -f "${source_file}" ]] || continue
-  sed -i -E \
-    's@https?://packages\.ros\.org/ros2/ubuntu@https://mirrors.tuna.tsinghua.edu.cn/ros2/ubuntu@g' \
-    "${source_file}"
-done
+"${mirror_script}" https
 
 locale-gen en_US en_US.UTF-8
 update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8

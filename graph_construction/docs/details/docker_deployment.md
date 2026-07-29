@@ -167,7 +167,7 @@ AGX Orin 三相机镜像
 
 #### `docker/Dockerfile.x86_64.dockerignore`
 
-只允许 DLIO repo 描述、`graph_construction` 和定位脚本进入 x86 构建上下文，避免传输模型和其他模块
+只允许 DLIO repo 描述、`graph_construction`、换源脚本和定位脚本进入 x86 构建上下文，避免传输模型和其他模块
 
 #### `docker/Dockerfile.orin.dockerignore`
 
@@ -175,7 +175,7 @@ AGX Orin 三相机镜像
 
 #### `docker/Dockerfile.camera.orin.dockerignore`
 
-只允许相机入口脚本和相机健康检查进入构建上下文
+只允许换源脚本、相机入口脚本和相机健康检查进入构建上下文
 
 ### 3.3 容器入口脚本
 
@@ -251,6 +251,21 @@ AGX Orin 三相机镜像
 
 ### 3.5 构建和运行辅助文件
 
+#### `docker/configure_apt_mirrors.sh`
+
+三个镜像共用的 APT 换源脚本
+
+主要职责:
+
+- 把 amd64 的 Ubuntu Archive 和 Security 源切换到清华 Ubuntu 镜像
+- 把 arm64 的 Ubuntu Ports 源切换到清华 Ubuntu Ports 镜像
+- 把已有 ROS 2 官方源切换到清华 ROS 2 镜像
+- 同时处理传统 `.list` 和 deb822 `.sources` 格式
+- 清理基础镜像继承的旧软件索引
+- 缺少 CA 证书时允许首次使用 HTTP，安装证书后切换为 HTTPS
+
+`auto` 参数根据 CA 证书是否存在选择协议，`http` 和 `https` 参数用于强制指定协议
+
 #### `docker/build_workspace.sh`
 
 把 Orin ROS 工作空间分成依赖阶段和应用阶段构建
@@ -264,6 +279,8 @@ AGX Orin 三相机镜像
 #### `docker/install_ros_humble.sh`
 
 为 Orin NVIDIA 基础镜像安装 ROS 2 Humble、编译工具、图像依赖、TF、DDS 和 RViz
+
+该脚本调用 `configure_apt_mirrors.sh`，不再独立维护 Ubuntu 换源逻辑
 
 #### `docker/requirements-runtime.txt`
 

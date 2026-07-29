@@ -10,9 +10,13 @@ ENV DEBIAN_FRONTEND=noninteractive \
     WILDOS_IMAGE_ROLE=localization \
     WILDOS_IMAGE_ARCH=x86_64
 
-RUN apt-get update \
+COPY nebula2-wildos/docker/configure_apt_mirrors.sh /tmp/configure_apt_mirrors.sh
+RUN chmod +x /tmp/configure_apt_mirrors.sh \
+    && /tmp/configure_apt_mirrors.sh auto \
+    && apt-get -o Acquire::Retries=5 update \
     && apt-get install -y --no-install-recommends \
       build-essential \
+      ca-certificates \
       cmake \
       git \
       libeigen3-dev \
@@ -29,6 +33,8 @@ RUN apt-get update \
       ros-humble-tf2-eigen \
       ros-humble-tf2-geometry-msgs \
       ros-humble-tf2-ros \
+    && /tmp/configure_apt_mirrors.sh https \
+    && rm /tmp/configure_apt_mirrors.sh \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/wildos_localization_ws/src

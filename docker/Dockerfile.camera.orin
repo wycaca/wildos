@@ -10,8 +10,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
     WILDOS_IMAGE_ROLE=cameras \
     WILDOS_IMAGE_ARCH=aarch64
 
-RUN apt-get update \
+COPY nebula2-wildos/docker/configure_apt_mirrors.sh /tmp/configure_apt_mirrors.sh
+RUN chmod +x /tmp/configure_apt_mirrors.sh \
+    && /tmp/configure_apt_mirrors.sh auto \
+    && apt-get -o Acquire::Retries=5 update \
     && apt-get install -y --no-install-recommends \
+      ca-certificates \
       procps \
       ros-humble-compressed-image-transport \
       ros-humble-image-transport \
@@ -19,6 +23,8 @@ RUN apt-get update \
       ros-humble-rmw-cyclonedds-cpp \
       ros-humble-tf2-ros \
       usbutils \
+    && /tmp/configure_apt_mirrors.sh https \
+    && rm /tmp/configure_apt_mirrors.sh \
     && rm -rf /var/lib/apt/lists/*
 
 COPY nebula2-wildos/docker/entrypoint.camera.orin.sh \

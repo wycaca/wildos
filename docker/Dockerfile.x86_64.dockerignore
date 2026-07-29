@@ -3,6 +3,7 @@
 !nebula2-wildos/dependencies/
 !nebula2-wildos/dependencies/dlio.repos
 !nebula2-wildos/docker/
+!nebula2-wildos/docker/configure_apt_mirrors.sh
 !nebula2-wildos/docker/entrypoint.localization.sh
 !nebula2-wildos/docker/healthcheck.localization.sh
 !nebula2-wildos/graph_construction/

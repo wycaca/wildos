@@ -15,10 +15,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
     TRANSFORMERS_OFFLINE=1 \
     WORLD_SIZE=1
 
+COPY nebula2-wildos/docker/configure_apt_mirrors.sh /tmp/configure_apt_mirrors.sh
 COPY nebula2-wildos/docker/install_ros_humble.sh /tmp/install_ros_humble.sh
-RUN chmod +x /tmp/install_ros_humble.sh \
+RUN chmod +x /tmp/configure_apt_mirrors.sh /tmp/install_ros_humble.sh \
     && /tmp/install_ros_humble.sh \
-    && rm /tmp/install_ros_humble.sh
+    && rm /tmp/configure_apt_mirrors.sh /tmp/install_ros_humble.sh
 
 COPY nebula2-wildos/docker/requirements-runtime.txt /tmp/requirements-runtime.txt
 RUN /usr/bin/python3 -m pip install --no-cache-dir --upgrade pip \
