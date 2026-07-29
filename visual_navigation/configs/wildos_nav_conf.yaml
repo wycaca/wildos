@@ -52,6 +52,7 @@ object_mask_topic: /spot1/object_mask
 object_completed_topic: /spot1/object_search_completed
 visualization_publish_period_sec: 2.0
 visualization_require_subscribers: true
+processing_rate_hz: 10.0
 
 # ROS2 subscriber params
 qos_history_depth: 1
@@ -80,6 +81,6 @@ tf_lookup_config:
     timer_duration: 0.1
     lookup_timeout: 0
     qos_history_depth: 1
-    wait_for_oldest: true
+    wait_for_oldest: false
     clear_buffer_on_process: true
     spin_thread: false

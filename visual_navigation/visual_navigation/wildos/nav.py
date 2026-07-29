@@ -111,6 +111,7 @@ class WildOS_Nav(TFLookupSubscriber):
         "object_completed_topic": "/spot1/object_search_completed",
         "visualization_publish_period_sec": 2.0,
         "visualization_require_subscribers": True,
+        "processing_rate_hz": None,
 
         # ROS2 订阅参数
         "qos_history_depth": 1,
@@ -160,6 +161,12 @@ class WildOS_Nav(TFLookupSubscriber):
 
     def __init__(self, config: OmegaConf=OmegaConf.create(), do_object_search=False):
         config = OmegaConf.merge(OmegaConf.create(self.default_config), config)
+        processing_rate_hz = config.get("processing_rate_hz")
+        if processing_rate_hz is not None:
+            processing_rate_hz = float(processing_rate_hz)
+            if processing_rate_hz <= 0.0:
+                raise ValueError("processing_rate_hz must be greater than 0")
+            config.tf_lookup_config.timer_duration = 1.0 / processing_rate_hz
 
         # 先创建 ROS 和 TF endpoints, 让中间件在模型加载期间完成发现
         super().__init__(
@@ -169,6 +176,10 @@ class WildOS_Nav(TFLookupSubscriber):
         self.get_logger().info(
             f"WildOS 模型初始化开始, object_search={do_object_search}"
         )
+        if processing_rate_hz is not None:
+            self.get_logger().info(
+                f"WildOS 视觉处理限频, rate={processing_rate_hz:.1f}Hz"
+            )
         np.random.seed(42)
         self.init_model(config, do_object_search)
         self.get_logger().info("WildOS 模型初始化完成")
