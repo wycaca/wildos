@@ -1,0 +1,51 @@
+name: wildos-orin-split
+
+services:
+  cameras:
+    image: wildos-cameras:${WILDOS_CAMERA_IMAGE_TAG:?Set WILDOS_CAMERA_IMAGE_TAG}
+    platform: linux/arm64
+    build:
+      context: ..
+      dockerfile: nebula2-wildos/docker/Dockerfile.camera.orin
+      args:
+        BASE_IMAGE: ${WILDOS_CAMERA_BASE_IMAGE:-ros:humble-ros-base-jammy}
+    network_mode: host
+    ipc: host
+    privileged: true
+    restart: unless-stopped
+    stop_grace_period: 20s
+    env_file:
+      - ${WILDOS_ORIN_SPLIT_ENV_FILE:-.env.orin.split}
+    volumes:
+      - /dev/bus/usb:/dev/bus/usb
+      - camera_ros_logs:/root/.ros/log
+
+  wildos:
+    image: wildos:${WILDOS_ORIN_IMAGE_TAG:?Set WILDOS_ORIN_IMAGE_TAG}
+    platform: linux/arm64
+    build:
+      context: ..
+      dockerfile: nebula2-wildos/docker/Dockerfile.orin
+      args:
+        BASE_IMAGE: ${WILDOS_ORIN_BASE_IMAGE:?Set WILDOS_ORIN_BASE_IMAGE}
+    network_mode: host
+    ipc: host
+    runtime: nvidia
+    shm_size: 2gb
+    restart: unless-stopped
+    stop_grace_period: 30s
+    env_file:
+      - ${WILDOS_ORIN_SPLIT_ENV_FILE:-.env.orin.split}
+    environment:
+      DISPLAY: ${DISPLAY:-}
+    volumes:
+      - wildos_ros_logs:/root/.ros/log
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ${WILDOS_CKPT_DIR:?Set WILDOS_CKPT_DIR}:/opt/wildos_ws/src/nebula2-wildos/ckpts:ro
+    ulimits:
+      memlock: -1
+      stack: 67108864
+
+volumes:
+  camera_ros_logs:
+  wildos_ros_logs:

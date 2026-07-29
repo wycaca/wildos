@@ -11,3 +11,6 @@ external_references/*
 .agents
 .venv
 .pytest_cache
+.env
+.env.localization
+.env.orin.split

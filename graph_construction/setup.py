@@ -6,6 +6,7 @@ from setuptools import find_packages, setup
 
 package_name = "graph_construction"
 launch_files = [
+    "launch/dlio_localization.launch.py",
     "launch/elevation_visual_navigation_sim.launch.py",
 ]
 

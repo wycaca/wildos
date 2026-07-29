@@ -165,18 +165,23 @@ source install/setup.bash
 
 ### Docker Compose Deployment
 
-The current repository provides separate GPU images for x86_64 and NVIDIA Jetson AGX Orin:
+The x86 host runs LiDAR-inertial localization, while NVIDIA Jetson AGX Orin runs the WildOS main chain and an optional standalone camera service:
 
 ```bash
-docker compose -f compose.x86_64.yaml build
-docker compose -f compose.x86_64.yaml up -d
+cp .env.localization.example .env.localization
+docker compose --env-file .env.localization -f compose.x86_64.yaml build
+docker compose --env-file .env.localization -f compose.x86_64.yaml up -d
 
 cp .env.docker.example .env
 docker compose -f compose.orin.yaml build
 docker compose -f compose.orin.yaml up -d
+
+cp .env.orin.split.example .env.orin.split
+docker compose --env-file .env.orin.split -f compose.orin.split.yaml build
+docker compose --env-file .env.orin.split -f compose.orin.split.yaml up -d
 ```
 
-See [WildOS dual-architecture Docker deployment](graph_construction/docs/2026-07-16/2026-07-16-wildos-docker-deployment.md) for model prerequisites, JetPack compatibility, topic profiles, GPU validation, and RViz usage.
+See [WildOS split Docker deployment](graph_construction/docs/2026-07-29/2026-07-29-split-docker-deployment.md) for host responsibilities, configuration, startup order, and validation.
 
 <br>
 

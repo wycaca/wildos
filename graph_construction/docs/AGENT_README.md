@@ -15,6 +15,7 @@
 | 目标定位 | `docs/details/target_localization.md` |
 | Topic 契约 | `docs/details/topics.md` |
 | 环境切换配置 | `docs/details/environment.md` |
+| 双主机 Docker 拆分部署 | `docs/2026-07-29/2026-07-29-split-docker-deployment.md` |
 | 当前 TODO | `docs/2026-07-27/2026-07-27-startup-island-and-edge-performance-todo.md` |
 
 ## 2. 文档维护规则
@@ -178,6 +179,8 @@ graph_construction/launch/elevation_visual_navigation_sim.launch.py
 ## 10. Sim-to-Real 风险
 
 论文实机使用 Spot、Ouster OS0-128、VectorNav VN-100 和三台 RealSense D455
+
+当前实机部署使用 x86 主机运行雷达接入和 DLIO, AGX Orin 运行高程图、WildOS 和 Planner, 三相机计划使用两台 D435i 和一台 D435if
 
 论文计算分工:
 

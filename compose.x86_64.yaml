@@ -1,36 +1,28 @@
-name: wildos-x86-64
+name: wildos-localization-x86
 
 services:
-  wildos:
-    image: wildos:${WILDOS_X86_IMAGE_TAG:-x86_64}
+  localization:
+    image: wildos-localization:${WILDOS_X86_IMAGE_TAG:-x86_64}
     platform: linux/amd64
     build:
       context: ..
       dockerfile: nebula2-wildos/docker/Dockerfile.x86_64
       args:
-        BASE_IMAGE: ${WILDOS_X86_BASE_IMAGE:-nvidia/cuda:12.6.3-cudnn-runtime-ubuntu22.04}
+        BASE_IMAGE: ${WILDOS_X86_BASE_IMAGE:-ros:humble-ros-base-jammy}
     network_mode: host
     ipc: host
-    gpus: all
-    shm_size: 2gb
     restart: unless-stopped
     stop_grace_period: 30s
-    environment:
-      WILDOS_TOPIC_PROFILE: ${WILDOS_TOPIC_PROFILE:-robot}
-      HF_HUB_OFFLINE: "1"
-      TRANSFORMERS_OFFLINE: "1"
-      DISPLAY: ${DISPLAY:-}
-    command:
-      - do_object_search:=${DO_OBJECT_SEARCH:-true}
-      - use_sim_time:=${USE_SIM_TIME:-false}
-      - launch_paper_rviz:=${LAUNCH_PAPER_RVIZ:-false}
-      - log_level:=${WILDOS_LOG_LEVEL:-INFO}
+    env_file:
+      - ${LOCALIZATION_ENV_FILE:-.env.localization}
     volumes:
-      - wildos_ros_logs:/root/.ros/log
-      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - localization_ros_logs:/root/.ros/log
+      - ${DLIO_CONFIG_FILE:?Set DLIO_CONFIG_FILE in the Compose environment}:/config/dlio.yaml:ro
+    environment:
+      DLIO_CONFIG_FILE: /config/dlio.yaml
     ulimits:
       memlock: -1
       stack: 67108864
 
 volumes:
-  wildos_ros_logs:
+  localization_ros_logs:
