@@ -3,4 +3,5 @@
 !nebula2-wildos/docker/
 !nebula2-wildos/docker/configure_apt_mirrors.sh
 !nebula2-wildos/docker/entrypoint.camera.orin.sh
+!nebula2-wildos/docker/healthcheck.camera.orin.py
 !nebula2-wildos/docker/healthcheck.camera.orin.sh

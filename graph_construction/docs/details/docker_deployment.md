@@ -200,6 +200,7 @@ AGX Orin 三相机镜像
 
 - 加载 ROS 和工作空间环境
 - 把环境变量转换为 ROS launch 参数
+- 默认选择实机 `wildos_nav_conf.yaml`，可通过 `WILDOS_VISUAL_CONFIG` 覆盖
 - 调用 `verify_runtime.py` 检查模型和 GPU
 - 启动 `start_wildos_elevation.sh`
 
@@ -239,7 +240,13 @@ AGX Orin 三相机镜像
 
 #### `docker/healthcheck.camera.orin.sh`
 
-依次检查 front、left、right 的彩色 `CameraInfo`
+加载 ROS 环境并调用独立的 Python 健康检查器
+
+#### `docker/healthcheck.camera.orin.py`
+
+创建临时 `rclpy` 节点，同时订阅 front、left、right 的彩色 `CameraInfo`
+
+该检查器不使用 ROS 2 CLI daemon，避免健康检查超时或并发执行导致 daemon 状态损坏
 
 任意相机未启动、序列号错误或 USB 不稳定都会使容器显示 `unhealthy`
 
@@ -308,6 +315,14 @@ WildOS 启动前检查:
 - `rclpy` 可以导入
 
 任意条件不满足时阻止 WildOS 启动
+
+#### `docker/benchmark_visual_model.orin.py`
+
+使用 front、left、right 三路真实压缩图像构造一个三图 batch，加载与 Orin 部署一致的 FP16 RADIO、SigLIP2、traversability head 和 frontier head
+
+输出模型加载时间、目标文本编码时间、三图 batch 推理平均值与 P95、输出张量尺寸和 CUDA 显存统计
+
+该脚本不依赖雷达、里程计、导航图或相机外参，适合在完整导航链尚未接入时单独验收相机到视觉模型的链路
 
 ## 4. 部署前准备
 
@@ -581,9 +596,9 @@ ros2 topic echo /spot1/realsense/front/color/camera_info --once
 检查相机 TF:
 
 ```bash
-ros2 run tf2_ros tf2_echo base_link front_color_optical_frame
-ros2 run tf2_ros tf2_echo base_link left_color_optical_frame
-ros2 run tf2_ros tf2_echo base_link right_color_optical_frame
+ros2 run tf2_ros tf2_echo base_link spot1/realsense/front_color_optical_frame
+ros2 run tf2_ros tf2_echo base_link spot1/realsense/left_color_optical_frame
+ros2 run tf2_ros tf2_echo base_link spot1/realsense/right_color_optical_frame
 ```
 
 ### 7.5 启动 WildOS
@@ -615,6 +630,40 @@ docker compose \
   -f compose.orin.wildos-cameras.yaml \
   up -d
 ```
+
+### 7.6 单独测试三相机视觉模型
+
+完整 WildOS 容器已经运行时先停止该服务，避免同时加载两份模型:
+
+```bash
+docker compose \
+  --env-file .env.orin.wildos-cameras \
+  -f compose.orin.wildos-cameras.yaml \
+  stop wildos
+```
+
+保持相机服务运行，执行三相机真实图像基准:
+
+```bash
+docker compose \
+  --env-file .env.orin.wildos-cameras \
+  -f compose.orin.wildos-cameras.yaml \
+  run --rm --no-deps wildos \
+  python3 /opt/wildos_ws/src/nebula2-wildos/docker/benchmark_visual_model.orin.py \
+  --runs 100 \
+  --object-query "blue bucket"
+```
+
+测试完成后恢复 WildOS:
+
+```bash
+docker compose \
+  --env-file .env.orin.wildos-cameras \
+  -f compose.orin.wildos-cameras.yaml \
+  start wildos
+```
+
+该测试只验证三路图像解码、视觉模型前向和目标文本编码，完整视觉评分仍要求 `/odom`、`/cloud_registered`、导航图和相机外参可用
 
 ## 8. 日常操作
 

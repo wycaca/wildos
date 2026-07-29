@@ -31,6 +31,8 @@ COPY nebula2-wildos/docker/entrypoint.camera.orin.sh \
   /usr/local/bin/wildos-camera-entrypoint
 COPY nebula2-wildos/docker/healthcheck.camera.orin.sh \
   /usr/local/bin/wildos-camera-healthcheck
+COPY nebula2-wildos/docker/healthcheck.camera.orin.py \
+  /usr/local/lib/wildos-camera-healthcheck.py
 RUN chmod +x \
   /usr/local/bin/wildos-camera-entrypoint \
   /usr/local/bin/wildos-camera-healthcheck

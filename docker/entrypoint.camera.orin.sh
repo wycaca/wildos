@@ -17,12 +17,35 @@ require_variable() {
   fi
 }
 
+# Reject template values and duplicate physical device assignments
+require_camera_serial() {
+  local variable_name="$1"
+  local serial
+  require_variable "${variable_name}"
+  serial="${!variable_name}"
+  if [[ "${serial}" == replace_with_* ]]; then
+    echo "Camera serial is still a template value: ${variable_name}" >&2
+    exit 1
+  fi
+  if [[ ! "${serial}" =~ ^[0-9]+$ ]]; then
+    echo "Camera serial must contain only digits: ${variable_name}" >&2
+    exit 1
+  fi
+}
+
 for variable_name in \
   FRONT_CAMERA_SERIAL \
   LEFT_CAMERA_SERIAL \
   RIGHT_CAMERA_SERIAL; do
-  require_variable "${variable_name}"
+  require_camera_serial "${variable_name}"
 done
+
+if [[ "${FRONT_CAMERA_SERIAL}" == "${LEFT_CAMERA_SERIAL}" ]] \
+  || [[ "${FRONT_CAMERA_SERIAL}" == "${RIGHT_CAMERA_SERIAL}" ]] \
+  || [[ "${LEFT_CAMERA_SERIAL}" == "${RIGHT_CAMERA_SERIAL}" ]]; then
+  echo "Camera serial assignments must be unique" >&2
+  exit 1
+fi
 
 camera_namespace="${CAMERA_NAMESPACE:-spot1/realsense}"
 camera_width="${CAMERA_COLOR_WIDTH:-640}"

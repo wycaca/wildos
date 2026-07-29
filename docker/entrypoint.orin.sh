@@ -64,6 +64,9 @@ append_launch_arguments PUBLISH_CAMERA_STATIC_TF publish_camera_static_tf
 append_launch_arguments CAM_FRAME cam_frame
 append_launch_arguments CAMERA_IMG_TOPIC camera_img_topic
 append_launch_arguments CAMERA_INFO_TOPIC camera_info_topic
+launch_arguments+=(
+  "visual_config:=${WILDOS_VISUAL_CONFIG:-wildos_nav_conf.yaml}"
+)
 
 if [[ "${check_config}" == "true" ]]; then
   printf '%s\n' "${launch_arguments[@]}"

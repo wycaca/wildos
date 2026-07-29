@@ -5,9 +5,4 @@ set +u
 source /opt/ros/humble/setup.bash
 set -u
 
-camera_namespace="/${CAMERA_NAMESPACE:-spot1/realsense}"
-for name in front left right; do
-  timeout 4 ros2 topic echo \
-    "${camera_namespace}/${name}/color/camera_info" \
-    --once >/dev/null
-done
+exec python3 /usr/local/lib/wildos-camera-healthcheck.py

@@ -1,6 +1,6 @@
 # Model Params
-frontier_ckpt: frontier_head.ckpt
-traversability_ckpt: trav_head.ckpt
+frontier_ckpt: frontier_ckpt_new.ckpt
+traversability_ckpt: traversability_ckpt.ckpt
 model_version: c-radio_v3-b
 adaptor_version: null
 use_naclip: true
