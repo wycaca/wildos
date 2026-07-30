@@ -1,5 +1,10 @@
 name: wildos-orin
 
+x-dds-environment: &dds-environment
+  ROS_DOMAIN_ID: "${ROS_DOMAIN_ID:?Set ROS_DOMAIN_ID}"
+  ROS_LOCALHOST_ONLY: "${ROS_LOCALHOST_ONLY:-0}"
+  RMW_IMPLEMENTATION: "${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
+
 services:
   cameras:
     image: wildos-cameras:${WILDOS_CAMERA_IMAGE_TAG:?Set WILDOS_CAMERA_IMAGE_TAG}
@@ -10,12 +15,22 @@ services:
       args:
         BASE_IMAGE: ${WILDOS_CAMERA_BASE_IMAGE:-ros:humble-ros-base-jammy}
     network_mode: host
-    ipc: host
     privileged: true
     restart: unless-stopped
     stop_grace_period: 20s
-    env_file:
-      - ${WILDOS_ORIN_WILDOS_CAMERAS_ENV_FILE:-.env.orin.wildos-cameras}
+    environment:
+      <<: *dds-environment
+      BASE_FRAME: "${BASE_FRAME:-base_link}"
+      CAMERA_NAMESPACE: "${CAMERA_NAMESPACE:-spot1/realsense}"
+      CAMERA_COLOR_WIDTH: "${CAMERA_COLOR_WIDTH:-640}"
+      CAMERA_COLOR_HEIGHT: "${CAMERA_COLOR_HEIGHT:-480}"
+      CAMERA_COLOR_FPS: "${CAMERA_COLOR_FPS:-15}"
+      FRONT_CAMERA_SERIAL: "${FRONT_CAMERA_SERIAL:?Set FRONT_CAMERA_SERIAL}"
+      LEFT_CAMERA_SERIAL: "${LEFT_CAMERA_SERIAL:?Set LEFT_CAMERA_SERIAL}"
+      RIGHT_CAMERA_SERIAL: "${RIGHT_CAMERA_SERIAL:?Set RIGHT_CAMERA_SERIAL}"
+      FRONT_CAMERA_TRANSFORM: "${FRONT_CAMERA_TRANSFORM:-}"
+      LEFT_CAMERA_TRANSFORM: "${LEFT_CAMERA_TRANSFORM:-}"
+      RIGHT_CAMERA_TRANSFORM: "${RIGHT_CAMERA_TRANSFORM:-}"
     volumes:
       - /dev/bus/usb:/dev/bus/usb
       - camera_ros_logs:/root/.ros/log
@@ -29,7 +44,6 @@ services:
       args:
         BASE_IMAGE: ${WILDOS_ORIN_BASE_IMAGE:?Set WILDOS_ORIN_BASE_IMAGE}
     network_mode: host
-    ipc: host
     runtime: nvidia
     shm_size: 2gb
     restart: unless-stopped
@@ -37,13 +51,20 @@ services:
     depends_on:
       cameras:
         condition: service_healthy
-    env_file:
-      - ${WILDOS_ORIN_WILDOS_CAMERAS_ENV_FILE:-.env.orin.wildos-cameras}
     environment:
-      DISPLAY: ${DISPLAY:-}
+      <<: *dds-environment
+      DO_OBJECT_SEARCH: "${DO_OBJECT_SEARCH:-true}"
+      WILDOS_LOG_LEVEL: "${WILDOS_LOG_LEVEL:-INFO}"
+      WILDOS_VISUAL_CONFIG: "${WILDOS_VISUAL_CONFIG:-wildos_nav_conf.yaml}"
+      GLOBAL_FRAME: "${GLOBAL_FRAME:-odom}"
+      BASE_FRAME: "${BASE_FRAME:-base_link}"
+      POINTCLOUD_INPUT_TOPIC: "${POINTCLOUD_INPUT_TOPIC:-/cloud_registered}"
+      ODOM_INPUT_TOPIC: "${ODOM_INPUT_TOPIC:-/odom}"
+      LIDAR_FRAME: "${LIDAR_FRAME:-lidar_link}"
+      CAMERA_IMG_TOPIC: "${CAMERA_IMG_TOPIC:-/spot1/realsense/{}/color/image_raw/compressed}"
+      CAMERA_INFO_TOPIC: "${CAMERA_INFO_TOPIC:-/spot1/realsense/{}/color/camera_info}"
     volumes:
       - wildos_ros_logs:/root/.ros/log
-      - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - ${WILDOS_CKPT_DIR:?Set WILDOS_CKPT_DIR}:/opt/wildos_ws/src/nebula2-wildos/ckpts:ro
     ulimits:
       memlock: -1

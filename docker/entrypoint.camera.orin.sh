@@ -93,7 +93,7 @@ start_static_tf() {
     --qy "${transform_args[4]}" \
     --qz "${transform_args[5]}" \
     --qw "${transform_args[6]}" \
-    --frame-id "${CAMERA_PARENT_FRAME:-base_link}" \
+    --frame-id "${BASE_FRAME:-base_link}" \
     --child-frame-id "${name}_link" &
   camera_pids+=("$!")
 }
