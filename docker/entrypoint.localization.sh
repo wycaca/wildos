@@ -46,4 +46,4 @@ exec ros2 launch graph_construction dlio_localization.launch.py \
   base_frame:="${BASE_FRAME}" \
   lidar_frame:="${LIDAR_FRAME}" \
   imu_frame:="${IMU_FRAME}" \
-  log_level:="${DLIO_LOG_LEVEL:-info}"
+  log_level:=info

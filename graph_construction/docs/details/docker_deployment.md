@@ -107,19 +107,6 @@ x86 和 Orin 使用 ROS 2 DDS 通信，必须使用相同的 `ROS_DOMAIN_ID` 和
 - 模板: `.env.orin.wildos-cameras.example`
 - 部署文件: `.env.orin.wildos-cameras`
 
-### 2.4 配置文件旧名称
-
-| 旧名称 | 当前名称 |
-|---|---|
-| `compose.x86_64.yaml` | `compose.x86_64.lidar-dlio.yaml` |
-| `compose.orin.yaml` | `compose.orin.wildos.yaml` |
-| `compose.orin.split.yaml` | `compose.orin.wildos-cameras.yaml` |
-| `.env.localization.example` | `.env.x86_64.lidar-dlio.example` |
-| `.env.docker.example` | `.env.orin.wildos.example` |
-| `.env.orin.split.example` | `.env.orin.wildos-cameras.example` |
-
-旧名称不再作为部署入口
-
 ## 3. `docker` 目录逐文件说明
 
 ### 3.1 镜像定义
@@ -237,12 +224,6 @@ AGX Orin 三相机镜像
 - 根据可选外参发布 `base_link -> camera_link`
 - 容器退出时统一停止所有相机和静态 TF 进程
 
-#### `docker/entrypoint.sh`
-
-旧的通用 WildOS 入口，保留用于兼容其他镜像或手工运行
-
-当前 `Dockerfile.orin` 使用 `entrypoint.orin.sh`，不直接使用此文件
-
 ### 3.4 健康检查
 
 #### `docker/healthcheck.lidar.mid360.sh`
@@ -281,7 +262,7 @@ AGX Orin 三相机镜像
 
 任意相机未启动、序列号错误或 USB 不稳定都会使容器显示 `unhealthy`
 
-#### `docker/healthcheck.sh`
+#### `docker/healthcheck.orin.sh`
 
 检查 WildOS ROS launch 进程是否存在
 

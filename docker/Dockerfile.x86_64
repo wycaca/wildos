@@ -7,9 +7,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
     LD_LIBRARY_PATH=/usr/local/lib \
-    ROS_DISTRO=humble \
-    WILDOS_IMAGE_ROLE=lidar-localization \
-    WILDOS_IMAGE_ARCH=x86_64
+    ROS_DISTRO=humble
 
 COPY nebula2-wildos/docker/configure_apt_mirrors.sh /tmp/configure_apt_mirrors.sh
 RUN chmod +x /tmp/configure_apt_mirrors.sh \
@@ -76,5 +74,5 @@ RUN chmod +x \
 
 WORKDIR /opt/wildos_localization_ws
 ENTRYPOINT ["/usr/local/bin/wildos-localization-entrypoint"]
-HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
+HEALTHCHECK --interval=10s --timeout=12s --start-period=30s --retries=3 \
   CMD ["/usr/local/bin/wildos-localization-healthcheck"]

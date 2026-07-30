@@ -59,7 +59,7 @@ RUN mkdir -p /opt/wildos_ws/src/nebula2-wildos/ckpts \
     && chmod +x \
       /opt/wildos_ws/src/nebula2-wildos/docker/build_workspace.sh \
       /opt/wildos_ws/src/nebula2-wildos/docker/entrypoint.orin.sh \
-      /opt/wildos_ws/src/nebula2-wildos/docker/healthcheck.sh \
+      /opt/wildos_ws/src/nebula2-wildos/docker/healthcheck.orin.sh \
       /opt/wildos_ws/src/nebula2-wildos/scripts/start_wildos_elevation.sh \
     && /tmp/build_workspace.sh "${GRAAF_COMMIT}" application \
     && /usr/bin/python3 -c "import cupy, torch, torchvision; print(torch.__version__, torch.version.cuda, cupy.__version__)"
@@ -73,4 +73,4 @@ ENV BASH_ENV=/etc/profile.d/wildos_ros.sh
 WORKDIR /opt/wildos_ws
 ENTRYPOINT ["/opt/wildos_ws/src/nebula2-wildos/docker/entrypoint.orin.sh"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=180s --retries=3 \
-  CMD ["/opt/wildos_ws/src/nebula2-wildos/docker/healthcheck.sh"]
+  CMD ["/opt/wildos_ws/src/nebula2-wildos/docker/healthcheck.orin.sh"]

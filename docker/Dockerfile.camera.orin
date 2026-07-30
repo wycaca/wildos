@@ -6,9 +6,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
-    ROS_DISTRO=humble \
-    WILDOS_IMAGE_ROLE=cameras \
-    WILDOS_IMAGE_ARCH=aarch64
+    ROS_DISTRO=humble
 
 COPY nebula2-wildos/docker/configure_apt_mirrors.sh /tmp/configure_apt_mirrors.sh
 RUN chmod +x /tmp/configure_apt_mirrors.sh \
@@ -38,5 +36,5 @@ RUN chmod +x \
   /usr/local/bin/wildos-camera-healthcheck
 
 ENTRYPOINT ["/usr/local/bin/wildos-camera-entrypoint"]
-HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
+HEALTHCHECK --interval=10s --timeout=8s --start-period=30s --retries=3 \
   CMD ["/usr/local/bin/wildos-camera-healthcheck"]
