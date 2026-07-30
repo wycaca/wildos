@@ -315,9 +315,10 @@ AGX Orin 三相机镜像
 - 把 amd64 的 Ubuntu Archive 和 Security 源切换到清华 Ubuntu 镜像
 - 把 arm64 的 Ubuntu Ports 源切换到清华 Ubuntu Ports 镜像
 - 把已有 ROS 2 官方源切换到清华 ROS 2 镜像
+- 把已有中科大 Ubuntu、Ubuntu Ports 和 ROS 2 源统一切换到清华镜像
 - 同时处理传统 `.list` 和 deb822 `.sources` 格式
 - 关闭构建过程不需要的 `deb-src` 源码索引
-- 清理基础镜像继承的旧软件索引
+- 清理旧软件索引和未完成的下载缓存
 - 缺少 CA 证书时允许首次使用 HTTP，安装证书后切换为 HTTPS
 
 `auto` 参数根据 CA 证书是否存在选择协议，`http` 和 `https` 参数用于强制指定协议
@@ -334,9 +335,17 @@ AGX Orin 三相机镜像
 
 #### `docker/install_ros_humble.sh`
 
-为 Orin NVIDIA 基础镜像安装 ROS 2 Humble、编译工具、图像依赖、TF、DDS 和 RViz
+为 Ubuntu 22.04 安装 ROS 2 Humble、编译工具、图像依赖、TF、DDS 和 RViz
 
-该脚本调用 `configure_apt_mirrors.sh`，不再独立维护 Ubuntu 换源逻辑
+该脚本调用同目录的 `configure_apt_mirrors.sh`，可用于 Orin 镜像和 x86 Ubuntu 22.04 宿主机
+
+x86 宿主机安装命令:
+
+```bash
+sudo ./docker/install_ros_humble.sh
+```
+
+APT 更新使用无缓存和自动重试参数，降低镜像同步窗口或缓存代理返回旧索引的概率
 
 #### `docker/requirements-runtime.txt`
 

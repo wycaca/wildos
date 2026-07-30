@@ -44,14 +44,15 @@ shopt -u nullglob
 for source_file in "${source_files[@]}"; do
   [[ -f "${source_file}" ]] || continue
   sed -i -E \
-    -e "s@https?://(archive\\.ubuntu\\.com/ubuntu|security\\.ubuntu\\.com/ubuntu|mirrors\\.tuna\\.tsinghua\\.edu\\.cn/ubuntu)@${ubuntu_mirror}@g" \
-    -e "s@https?://(ports\\.ubuntu\\.com/ubuntu-ports|mirrors\\.tuna\\.tsinghua\\.edu\\.cn/ubuntu-ports)@${ubuntu_ports_mirror}@g" \
-    -e "s@https?://(packages\\.ros\\.org/ros2/ubuntu|mirrors\\.tuna\\.tsinghua\\.edu\\.cn/ros2/ubuntu)@${ros_mirror}@g" \
+    -e "s@https?://(archive\\.ubuntu\\.com/ubuntu|security\\.ubuntu\\.com/ubuntu|mirrors\\.(tuna\\.tsinghua|ustc)\\.edu\\.cn/ubuntu)@${ubuntu_mirror}@g" \
+    -e "s@https?://(ports\\.ubuntu\\.com/ubuntu-ports|mirrors\\.(tuna\\.tsinghua|ustc)\\.edu\\.cn/ubuntu-ports)@${ubuntu_ports_mirror}@g" \
+    -e "s@https?://(packages\\.ros\\.org/ros2/ubuntu|mirrors\\.(tuna\\.tsinghua|ustc)\\.edu\\.cn/ros2/ubuntu)@${ros_mirror}@g" \
     -e '/^[[:space:]]*deb-src[[:space:]]/d' \
     -e 's@^Types:.*deb-src.*$@Types: deb@g' \
     "${source_file}"
 done
 
-# Remove indexes downloaded from repositories used by the base image
+# Remove indexes and partial downloads from previous mirrors
 apt-get clean
 rm -rf /var/lib/apt/lists/*
+rm -rf /var/cache/apt/archives/partial/*
