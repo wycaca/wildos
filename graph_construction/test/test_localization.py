@@ -116,12 +116,12 @@ def test_unity_planner_publishes_source_path_topic():
     assert _unity_profile()["planner_path_topic"] == "/spot1/graphnav_planner/path"
 
 
-def test_robot_profile_preserves_platform_odometry_and_registered_cloud_frame():
+def test_robot_profile_preserves_external_odometry_and_registered_cloud_frame():
     robot = _robot_profile()
 
     assert robot["pointcloud_input_topic"] == "/cloud_registered"
     assert robot["aligned_lidar_topic"] == "/cloud_registered"
-    assert robot["pointcloud_output_frame"] == "odom_3D"
+    assert robot["pointcloud_output_frame"] == "dlio_odom"
     assert robot["use_pointcloud_axis_adapter"] is False
     assert robot["odom_stamp_mode"] == "preserve"
     assert robot["odom_pose_source"] == "message"

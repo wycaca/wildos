@@ -7,7 +7,8 @@
 | 文件 | 修改时机 | 内容 |
 |---|---|---|
 | `graph_construction/configs/topic_profiles.yaml` | 更换平台或通信环境 | 外部 topic、frame、RMW、内部 topic 契约 |
-| `graph_construction/configs/dlio/<profile>.yaml` | 使用 DLIO 或更换 LiDAR、IMU | 传感器 frame、外参、去畸变、IMU 和 GICP 参数 |
+| `graph_construction/configs/dlio/unity.yaml` | 调整 Unity 内置 DLIO | 传感器 frame、外参、去畸变、IMU 和 GICP 参数 |
+| x86 现场 DLIO YAML | 调整实机 DLIO | 通过 `.env.x86_64.lidar-dlio` 的 `DLIO_CONFIG_FILE` 挂载 |
 | `graph_construction/configs/elevation_mapping_sim.yaml` | 更换地图范围或传感器量程 | GridMap 尺寸、更新率、启动安全先验 |
 | `graph_construction/configs/graph_construction_elevation.yaml` | 更换机器人尺寸或图密度要求 | 地图分类、净空、节点和边参数 |
 | `visual_navigation/configs/wildos_nav_sim_conf.yaml` | 更换视觉模型或相机性能要求 | 模型、同步、评分和目标检测参数 |
@@ -34,7 +35,7 @@
 
 真机通常不订阅 `/clock`, 使用 `use_sim_time:=false`
 
-Orin 实测使用 CycloneDDS 才能稳定接收 Point-LIO 点云。启动 Point-LIO 和其他宿主机 ROS2 节点前必须使用相同环境:
+Orin 和 x86 D-LIO 使用 CycloneDDS 通信。启动两台主机上的 ROS 2 容器或调试节点前必须使用相同环境:
 
 ```bash
 export ROS_DOMAIN_ID=2
@@ -42,7 +43,7 @@ export ROS_LOCALHOST_ONLY=0
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 ```
 
-修改 RMW 后必须重启 Point-LIO, 已经运行的 ROS2 进程不会切换中间件
+修改 RMW 后必须重启相关 ROS 2 进程，已经运行的进程不会切换中间件
 
 `robot` profile 默认使用 platform 定位:
 
@@ -51,9 +52,9 @@ export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 /odom -> odom frame adapter -> /spot1/odom_for_scoring
 ```
 
-真机实测 `/cloud_registered` 的 frame 是 `odom_3D`, `/odom` 发布 `odom -> base_link`, TF 树同时提供接近单位变换的 `odom -> odom_3D`
+当前 x86 D-LIO 默认让 `/cloud_registered` 保留 `dlio_odom` frame，通过 `/tf` 提供 `odom -> dlio_odom -> base_link`
 
-`/cloud_registered` 已经是注册点云, robot profile 不再启动 Python pointcloud adapter。elevation mapping 保留真实 `odom_3D` frame 和全部八个字段, 再通过 TF 转换到全局 `odom`
+`/cloud_registered` 已经是注册点云，robot profile 不再启动 Python pointcloud adapter。elevation mapping 保留点云原始 frame 和字段，再通过 TF 转换到全局 `odom`
 
 部署前必须检查原始消息:
 
@@ -61,10 +62,10 @@ export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 ros2 topic echo /cloud_registered --field header --once
 ros2 topic echo /odom --once
 ros2 run tf2_ros tf2_echo odom base_link
-ros2 run tf2_ros tf2_echo odom odom_3D
+ros2 run tf2_ros tf2_echo odom dlio_odom
 ```
 
-不得把 `POINTCLOUD_OUTPUT_FRAME` 改成 `odom` 来冒充坐标变换
+不得只修改点云 header 来冒充坐标变换
 
 ### 2.2 Frame
 
@@ -161,7 +162,7 @@ DLIO odom、aligned odom、健康状态、deskewed 点云和隔离 TF 都从 `dl
 
 ### 3.1 必须按硬件修改
 
-在 `configs/dlio/<profile>.yaml` 中检查:
+Unity 在 `configs/dlio/unity.yaml` 中检查，x86 实机在 `DLIO_CONFIG_FILE` 指向的现场 YAML 中检查:
 
 | 参数 | 含义 |
 |---|---|

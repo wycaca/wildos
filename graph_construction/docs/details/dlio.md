@@ -1,6 +1,8 @@
 # DLIO 坐标与 TF
 
 > 更换 LiDAR、IMU、外参或 topic 时参见 [环境配置](environment.md)
+>
+> 本文第 1 至 6 节描述 Unity 内置 DLIO 对齐链路，x86 实机部署接口见 [Docker 部署说明](docker_deployment.md)
 
 ## 1. 这条链路解决什么问题
 

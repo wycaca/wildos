@@ -100,6 +100,8 @@ header 时间不能替代逐点时间
 
 ## 5. DLIO 输入和输出
 
+本节描述由 WildOS 集成 launch 启动的 DLIO，主要用于 Unity
+
 启动方式:
 
 ```text
@@ -144,6 +146,8 @@ DLIO 的输入点云直接使用 `pointcloud_input_topic`, 不需要单独配置
 - 修复错误定位后重启高程图, 防止旧错误位姿继续留在地图中
 
 坐标对齐、外参方向、TF 发布权和方向差诊断见 [DLIO 坐标与 TF](dlio.md)
+
+x86 实机 Compose 使用独立 `dlio_localization.launch.py`，内部 topic 位于 `/wildos/dlio/*`，只向 Orin 暴露 `/cloud_registered`、`/odom` 和 `/tf`
 
 ## 6. 适配层和 Canonical Topic
 
@@ -275,17 +279,17 @@ WildOS 每 30 s 输出一次 DEBUG 诊断, 包括:
 |---|---|---|---|
 | `unity` | `/livox/lidar` | `/unity/odom` | `/camera/{}/color/...` |
 | `isaac` | `/livox/lidar` | `/odom` | `/unitree_go2/{}_cam/...` |
-| `robot` | `/cloud_registered` | `/odom` | 待相机启动后确认 |
+| `robot` | `/cloud_registered` | `/odom` | `/spot1/realsense/{}/color/...` |
 
 `{}` 展开为 `front`、`left`、`right`
 
-`robot` profile 已确认 `/cloud_registered` 为 10Hz RELIABLE 点云, frame 为 `odom_3D`; `/odom` 为 10Hz RELIABLE odom, frame 链为 `odom -> base_link`
+`robot` profile 使用 x86 D-LIO 的 `/cloud_registered` 和 `/odom`，默认 frame 链为 `odom -> dlio_odom -> base_link`
 
-`odom -> odom_3D` TF 已存在, robot profile 将注册点云直接交给 elevation mapping, 不经过 Python 点云转发
+robot profile 将注册点云直接交给 elevation mapping，不经过 Python 点云转发
 
-Orin 和宿主机 Point-LIO 统一使用 `rmw_cyclonedds_cpp`。实测两端 RMW 不一致时只能发现 endpoint, 容器无法持续收到点云数据
+Orin 和 x86 D-LIO 统一使用 `rmw_cyclonedds_cpp`。两端 RMW 不一致时可能只能发现 endpoint，无法持续收到点云数据
 
-相机尚未启动, 相机 topic、frame、QoS 和时间同步仍待确认
+三相机输入已固定为 `/spot1/realsense/{front,left,right}/color/image_raw/compressed` 和对应的 `camera_info`
 
 `common_contract` 保存内部稳定 topic 和公共搜索参数, 不代表可启动的 profile
 
