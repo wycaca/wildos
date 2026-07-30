@@ -125,6 +125,7 @@ def test_robot_profile_preserves_platform_odometry_and_registered_cloud_frame():
     assert robot["use_pointcloud_axis_adapter"] is False
     assert robot["odom_stamp_mode"] == "preserve"
     assert robot["odom_pose_source"] == "message"
+    assert robot["cam_frame"] == "{}_color_optical_frame"
 
 
 def test_unity_dlio_disables_unstable_adaptive_gicp():

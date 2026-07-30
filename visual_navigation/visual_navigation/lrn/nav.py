@@ -66,7 +66,7 @@ class LRN(GoalNavigator):
         # ROS2 frames and topics
         "parent_frame": "spot1/odom",
         "body_frame": "spot1/base_link",
-        "cam_frame": "spot1/realsense/{}_color_optical_frame",
+        "cam_frame": "{}_color_optical_frame",
         "camera_img_topic": "/spot1/realsense/{}/color/image_raw/compressed",
         "camera_info_topic": "/spot1/realsense/{}/color/camera_info",
         "odometry_topic": "/spot1/odom",

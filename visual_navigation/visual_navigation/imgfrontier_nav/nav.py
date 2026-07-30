@@ -59,7 +59,7 @@ class ImgFrontierNav(GoalNavigator):
 
         # ROS2 frames and topics
         "parent_frame": "spot1/odom",
-        "cam_frame": "spot1/realsense/{}_color_optical_frame",
+        "cam_frame": "{}_color_optical_frame",
         "camera_img_topic": "/spot1/realsense/{}/color/image_raw/compressed",
         "camera_depth_topic": "/spot1/realsense/{}/aligned_depth_to_color/image_raw",
         "camera_info_topic": "/spot1/realsense/{}/color/camera_info",

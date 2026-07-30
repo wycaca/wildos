@@ -596,9 +596,9 @@ ros2 topic echo /spot1/realsense/front/color/camera_info --once
 检查相机 TF:
 
 ```bash
-ros2 run tf2_ros tf2_echo base_link spot1/realsense/front_color_optical_frame
-ros2 run tf2_ros tf2_echo base_link spot1/realsense/left_color_optical_frame
-ros2 run tf2_ros tf2_echo base_link spot1/realsense/right_color_optical_frame
+ros2 run tf2_ros tf2_echo base_link front_color_optical_frame
+ros2 run tf2_ros tf2_echo base_link left_color_optical_frame
+ros2 run tf2_ros tf2_echo base_link right_color_optical_frame
 ```
 
 ### 7.5 启动 WildOS

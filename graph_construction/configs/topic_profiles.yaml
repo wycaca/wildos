@@ -137,7 +137,7 @@ profiles:
     odom_parent_frame: odom
     odom_child_frame: base_link
     base_frame: base_link
-    cam_frame: spot1/realsense/{}_color_optical_frame
+    cam_frame: "{}_color_optical_frame"
     camera_parent_frame: base_link
     lidar_parent_frame: base_link
     lidar_frame: lidar_link
