@@ -1,10 +1,13 @@
 **
 !nebula2-wildos/
 !nebula2-wildos/dependencies/
-!nebula2-wildos/dependencies/dlio.repos
+!nebula2-wildos/dependencies/x86_localization.repos
 !nebula2-wildos/docker/
+!nebula2-wildos/docker/build_x86_localization.sh
 !nebula2-wildos/docker/configure_apt_mirrors.sh
+!nebula2-wildos/docker/entrypoint.lidar.mid360.sh
 !nebula2-wildos/docker/entrypoint.localization.sh
+!nebula2-wildos/docker/healthcheck.lidar.mid360.sh
 !nebula2-wildos/docker/healthcheck.localization.sh
 !nebula2-wildos/graph_construction/
 !nebula2-wildos/graph_construction/**
@@ -13,4 +16,5 @@
 **/.pytest_cache
 **/__pycache__
 **/*.egg-info
+**/docs
 **/test

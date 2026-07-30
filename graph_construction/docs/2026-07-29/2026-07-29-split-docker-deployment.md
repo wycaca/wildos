@@ -8,7 +8,8 @@
 
 ```text
 x86 主机
-  LiDAR + IMU
+  Livox MID360 驱动
+  -> /livox/lidar + /livox/imu
   -> DLIO
   -> /cloud_registered
   -> /odom
@@ -43,8 +44,12 @@ AGX Orin 上的点云、高程图、运动轨迹和高程图生成已经完成�
 
 | 文件 | 职责 |
 |---|---|
-| `docker/Dockerfile.x86_64` | x86 DLIO 定位镜像 |
-| `compose.x86_64.lidar-dlio.yaml` | x86 雷达和 DLIO 定位服务 |
+| `docker/Dockerfile.x86_64` | x86 MID360 和 D-LIO 共用镜像 |
+| `dependencies/x86_localization.repos` | 固定 Livox SDK2、Livox ROS Driver 2 和 D-LIO 版本 |
+| `docker/build_x86_localization.sh` | 编译 Livox SDK2、驱动、D-LIO 和定位适配 |
+| `compose.x86_64.lidar-dlio.yaml` | 独立运行 x86 `lidar` 和 `localization` 服务 |
+| `docker/entrypoint.lidar.mid360.sh` | 校验 MID360 配置并启动 Livox 驱动 |
+| `docker/healthcheck.lidar.mid360.sh` | 检查原始点云、IMU 和逐点时间字段 |
 | `docker/entrypoint.localization.sh` | 校验定位配置并启动 DLIO |
 | `docker/healthcheck.localization.sh` | 检查 DLIO 进程和 canonical 输出 |
 | `graph_construction/launch/dlio_localization.launch.py` | DLIO、健康门控和 canonical TF |
@@ -80,11 +85,13 @@ DLIO 配置必须使用现场标定结果, 不能直接使用 Unity 配置
 
 ```bash
 cp .env.x86_64.lidar-dlio.example .env.x86_64.lidar-dlio
+cp docker/config/MID360_config.example.json /absolute/path/MID360_config.json
 ```
 
 编辑:
 
 ```dotenv
+MID360_CONFIG_FILE=/absolute/path/MID360_config.json
 POINTCLOUD_INPUT_TOPIC=/livox/lidar
 IMU_INPUT_TOPIC=/livox/imu
 POINTCLOUD_OUTPUT_TOPIC=/cloud_registered
@@ -92,7 +99,9 @@ ODOM_OUTPUT_TOPIC=/odom
 DLIO_CONFIG_FILE=/absolute/path/to/robot_dlio.yaml
 ```
 
-`DLIO_CONFIG_FILE` 是 x86 主机路径, Compose 会只读挂载到容器中的 `/config/dlio.yaml`
+`MID360_CONFIG_FILE` 和 `DLIO_CONFIG_FILE` 是 x86 主机路径, Compose 会分别只读挂载到两个服务
+
+MID360 JSON 中所有 `host_net_info` IP 必须填写 x86 雷达网卡地址，`lidar_configs.ip` 填写雷达地址
 
 ### 3.2 构建和启动
 
@@ -100,12 +109,12 @@ DLIO_CONFIG_FILE=/absolute/path/to/robot_dlio.yaml
 docker compose \
   --env-file .env.x86_64.lidar-dlio \
   -f compose.x86_64.lidar-dlio.yaml \
-  build localization
+  build lidar localization
 
 docker compose \
   --env-file .env.x86_64.lidar-dlio \
   -f compose.x86_64.lidar-dlio.yaml \
-  up -d localization
+  up -d
 ```
 
 查看日志:
@@ -114,12 +123,15 @@ docker compose \
 docker compose \
   --env-file .env.x86_64.lidar-dlio \
   -f compose.x86_64.lidar-dlio.yaml \
-  logs -f localization
+  logs -f lidar localization
 ```
 
 ### 3.3 输出验收
 
 ```bash
+ros2 topic hz /livox/lidar
+ros2 topic hz /livox/imu
+ros2 topic echo /livox/lidar --field fields --once
 ros2 topic hz /cloud_registered
 ros2 topic hz /odom
 ros2 topic echo /cloud_registered --field header --once

@@ -1,0 +1,13 @@
+repositories:
+  Livox-SDK2:
+    type: git
+    url: https://github.com/Livox-SDK/Livox-SDK2.git
+    version: f5d9375f84efe2b15bc0a052d3e18482ed13adf4
+  direct_lidar_inertial_odometry:
+    type: git
+    url: https://github.com/vectr-ucla/direct_lidar_inertial_odometry.git
+    version: c8acc37100e349d70a9d8432d656cbce7e5072cd
+  livox_ros_driver2:
+    type: git
+    url: https://github.com/Livox-SDK/livox_ros_driver2.git
+    version: 13eb05e4e6dd7a765b934d0c5fd6236676a57b49
