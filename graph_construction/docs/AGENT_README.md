@@ -16,7 +16,7 @@
 | Topic 契约 | `docs/details/topics.md` |
 | 环境切换配置 | `docs/details/environment.md` |
 | 双主机 Docker 拆分部署 | `docs/2026-07-29/2026-07-29-split-docker-deployment.md` |
-| 当前 TODO | `docs/2026-07-27/2026-07-27-startup-island-and-edge-performance-todo.md` |
+| 当前 TODO | 本文第 6.1 节 |
 
 ## 2. 文档维护规则
 
@@ -117,6 +117,46 @@ graph_construction/launch/elevation_visual_navigation_sim.launch.py
 | 目标定位 | 重复帧过滤和视角软权重完成 | 排查 Mask 延迟和 LiDAR 精修率 |
 | 最终完成 | 最终观察、换位和 `REACHED` 门控代码完成 | Unity 完整闭环验收 |
 | DLIO | 仿真主链路已接通 | 排查相对参考 odom 的累计方向差 |
+
+### 6.1 导航节点跟随 Pose Graph 修正 TODO
+
+目标:
+
+导航节点不再只保存固定世界坐标, 而是保存参考 Pose Graph 节点和相对位置
+
+```text
+创建导航节点:
+  p_relative = T_reference^-1 * p_world
+
+Pose Graph 更新后:
+  p_world = T_reference * p_relative
+```
+
+这样 SLAM 回环或全局优化修正历史位姿时, 导航节点会一起移动, 不需要删除并重建导航图
+
+实现前提:
+
+- 定位模块能够发布带稳定节点 UUID 的 Pose Graph
+- Pose Graph 更新包含历史参考节点的优化后位姿
+- 当前只有 DLIO odom、没有 Pose Graph 输入时继续使用现有固定世界坐标, 不引入 dummy Pose Graph
+
+实现任务:
+
+- [ ] 定义 Pose Graph 输入 topic、消息类型、frame 和时间戳契约
+- [ ] 为导航节点增加可选的参考节点 UUID 和相对三维位置
+- [ ] 创建节点时绑定当前或最近的 Pose Graph 节点, 并计算相对位置
+- [ ] Pose Graph 更新后重算节点世界坐标、空间索引和受影响边, 保持导航节点 UUID 不变
+- [ ] 参考节点暂时缺失或更新失败时保留上一张有效图, 不发布半更新结果
+- [ ] 没有 Pose Graph 输入时保持当前 DLIO 和平台 odom 行为不变
+- [ ] 增加平移修正、旋转修正、历史节点、边、Frontier 和 current node 回归测试
+- [ ] 实现后同步更新 `docs/details/graph_update.md`、`docs/details/topics.md` 和对应配置
+
+验收条件:
+
+- Pose Graph 优化后, 节点、边、Frontier 和 Planner 路径在同一 frame 中一致移动
+- 导航节点 UUID、访问状态和探索记忆不会因位姿修正丢失
+- Pose Graph 更新失败时仍能继续发布上一张完整有效图
+- 未启用 Pose Graph 时, 现有启动、建图、视觉评分和 Planner 链路结果不变
 
 文档记录的最新分模块测试:
 
