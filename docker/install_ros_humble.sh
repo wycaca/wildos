@@ -17,7 +17,7 @@ fi
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 mirror_script="${APT_MIRROR_SCRIPT:-${script_dir}/configure_apt_mirrors.sh}"
-if [[ ! -x "${mirror_script}" ]]; then
+if [[ ! -f "${mirror_script}" ]]; then
   echo "Missing APT mirror script: ${mirror_script}" >&2
   exit 1
 fi
@@ -32,7 +32,7 @@ apt_update() {
     update
 }
 
-"${mirror_script}" auto
+bash "${mirror_script}" auto
 apt_update
 apt-get install -y --no-install-recommends \
   ca-certificates \
@@ -43,7 +43,7 @@ apt-get install -y --no-install-recommends \
   software-properties-common
 
 # Use HTTPS after CA certificates are available
-"${mirror_script}" https
+bash "${mirror_script}" https
 
 locale-gen en_US en_US.UTF-8
 update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8

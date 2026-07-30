@@ -342,7 +342,7 @@ AGX Orin 三相机镜像
 x86 宿主机安装命令:
 
 ```bash
-sudo ./docker/install_ros_humble.sh
+sudo bash ./docker/install_ros_humble.sh
 ```
 
 APT 更新使用无缓存和自动重试参数，降低镜像同步窗口或缓存代理返回旧索引的概率
