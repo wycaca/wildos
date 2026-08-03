@@ -362,6 +362,18 @@ WildOS 启动前检查:
 
 该脚本不依赖雷达、里程计、导航图或相机外参，适合在完整导航链尚未接入时单独验收相机到视觉模型的链路
 
+#### `scripts/deploy_orin_cameras.sh`
+
+Orin 相机自动部署脚本:
+
+- 通过 udev 自动发现并去重三台 Intel RealSense
+- 首次选择 front、left、right 后保存 USB 物理路径
+- 自动复制 `.env.orin.wildos-cameras.example`
+- 自动写入相机序列号和 USB 物理路径
+- 复用同一 `.env` 中的相机标定外参
+- 验证 Compose 并构建 `cameras` 镜像
+- 使用 `--up` 时构建后直接启动相机服务
+
 ## 4. 部署前准备
 
 ### 4.1 仓库位置
@@ -610,17 +622,56 @@ docker compose \
 
 ## 7. Orin WildOS 和三相机部署
 
-### 7.1 确认相机序列号
+### 7.1 自动发现、配置和构建
 
-连接三台相机后，在 Orin 上执行:
+连接三台相机后，在 Orin 仓库根目录执行:
+
+```bash
+bash scripts/deploy_orin_cameras.sh
+```
+
+脚本会自动:
+
+1. 从 `/dev/video*` 和 udev 属性读取三台 RealSense 的序列号、型号和 USB 物理路径
+2. 首次运行时通过编号选择 front、left、right，不需要手动复制序列号
+3. 保存角色与 USB 物理端口的映射，后续运行无需再次选择
+4. 从 `.env.orin.wildos-cameras.example` 创建 `.env.orin.wildos-cameras`
+5. 写入三个相机序列号和安装位外参
+6. 验证 Compose 并构建 `cameras` 镜像
+
+首次运行会自动创建 `.env.orin.wildos-cameras`
+
+序列号和 USB 物理路径由脚本写入，把标定结果补充到同一文件:
+
+```dotenv
+FRONT_CAMERA_TRANSFORM="x y z qx qy qz qw"
+LEFT_CAMERA_TRANSFORM="x y z qx qy qz qw"
+RIGHT_CAMERA_TRANSFORM="x y z qx qy qz qw"
+```
+
+只生成和检查配置，不构建镜像:
+
+```bash
+bash scripts/deploy_orin_cameras.sh --prepare-only
+```
+
+要求三个外参完整，并在构建后直接启动相机:
+
+```bash
+bash scripts/deploy_orin_cameras.sh --require-transforms --up
+```
+
+外参为空时脚本允许构建镜像和验证图像，但会输出警告
+
+### 7.2 手动准备环境文件
+
+自动脚本无法使用时，在 Orin 上执行:
 
 ```bash
 rs-enumerate-devices
 ```
 
 记录三台设备序列号，并固定 front、left、right 角色，不使用 `/dev/videoN` 作为身份
-
-### 7.2 准备环境文件
 
 ```bash
 cp .env.orin.wildos-cameras.example .env.orin.wildos-cameras
