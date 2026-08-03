@@ -8,6 +8,7 @@
 
 | 内容 | 文档 |
 |---|---|
+| 日期文档技术总结 | `docs/details/issues.md` |
 | 系统总览 | `docs/details/overview.md` |
 | 实现原则 | `docs/details/principles.md` |
 | 导航图更新 | `docs/details/graph_update.md` |
