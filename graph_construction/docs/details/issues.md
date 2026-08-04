@@ -548,7 +548,7 @@ DLIO 自动化测试已通过, 但与 Unity 参考 odom 约 10 至 16.6 度的�
 - 源码已经修改, 运行进程却仍加载旧 install tree
 - 旧进程、旧 TF 或旧 publisher 残留, 导致看似随机的冲突
 - Unity、Isaac 和实机通过复制 launch 维护, 配置逐渐不一致
-- x86 和 Orin 重复运行定位或发布相同 TF
+- 雷达定位主机和 WildOS Orin 重复运行定位或发布相同 TF
 
 ### 解决办法
 
@@ -557,8 +557,8 @@ DLIO 自动化测试已通过, 但与 Unity 参考 odom 约 10 至 16.6 度的�
 - 算法参数保留在所属模块配置, 固定实现值改为代码常量
 - 启动脚本阻止重复启动第二套同名主链路
 - 运行前确认加载的是主 workspace 的最新 install tree
-- x86 主机运行 LiDAR、IMU 和 DLIO
-- Orin 运行三相机、高程图、导航图、视觉和 Planner
+- 机器狗 Orin 运行 LiDAR、IMU、DLIO 和现有导航算法
+- 新 Orin 运行三相机、高程图、导航图、视觉和 Planner
 - 两台主机使用相同 ROS domain、RMW 和系统时间
 - 三台相机按序列号绑定 front、left、right, 不依赖 `/dev/videoN`
 
@@ -643,7 +643,7 @@ flowchart TD
 | 目标定位 | 多视角软权重、物理门控和 LiDAR 连续性保护 | Mask 延迟、LiDAR 精修率和外参精度 |
 | 最终完成 | 最终观察、换位和 `REACHED` 门控 | Unity 端到端闭环 |
 | DLIO | 主链接入、TF 隔离和健康暂停恢复 | 累计方向差来源 |
-| 部署 | x86 与 Orin 拆分方案和容器健康检查 | 现场相机、时钟、DDS 带宽和持续负载 |
+| 部署 | 双 Orin 拆分方案、x86 备用方案和容器健康检查 | 现场相机、时钟、DDS 带宽和持续负载 |
 
 ## 17. 总结
 

@@ -1,13 +1,13 @@
 # Docker 部署说明
 
-本文档是当前实机 Docker 部署的操作入口，覆盖 x86 雷达定位主机和 AGX Orin 计算主机
+本文档是当前实机 Docker 部署的操作入口，覆盖机器狗 AGX Orin 雷达定位主机、新 AGX Orin 视觉主机和保留的 x86 雷达定位方案
 
 日期目录下的 Docker 文档作为历史记录保留，当前部署以本文档和当前文件名为准
 
 ## 1. 部署架构
 
 ```text
-x86_64 主机
+机器狗 AGX Orin
   lidar 服务
     -> Livox MID360 驱动
     -> /livox/lidar
@@ -17,8 +17,10 @@ x86_64 主机
     -> /cloud_registered
     -> /odom
     -> /tf
+  原有导航算法
+    -> 消费 /odom、/tf 和路径
 
-AGX Orin
+新 AGX Orin
   cameras 容器
     -> 2 台 D435i + 1 台 D435if
     -> 三路彩色图像和 CameraInfo
@@ -28,9 +30,15 @@ AGX Orin
     -> 图构建和路径规划
     -> 视觉评分和目标搜索
     -> 运动输出
+
+保留方案
+  x86_64 主机
+    -> 使用相同 lidar 和 localization 服务替代机器狗 AGX Orin
 ```
 
-x86 和 Orin 使用 ROS 2 DDS 通信，必须使用相同的 `ROS_DOMAIN_ID` 和 `RMW_IMPLEMENTATION`
+两台 AGX Orin 使用 ROS 2 DDS 通信，必须使用相同的 `ROS_DOMAIN_ID` 和 `RMW_IMPLEMENTATION`
+
+x86 方案保留用于替代机器狗 AGX Orin，输出 topic 和 TF 契约保持一致
 
 ## 2. Compose 配置文件
 
@@ -59,7 +67,29 @@ x86 和 Orin 使用 ROS 2 DDS 通信，必须使用相同的 `ROS_DOMAIN_ID` 和
 - 部署文件: `.env.x86_64.lidar-dlio`
 - Compose 只向 `lidar` 和 `localization` 注入各自需要的变量
 
-### 2.2 `compose.orin.wildos.yaml`
+### 2.2 `compose.orin.lidar-dlio.yaml`
+
+平台和模块:
+
+- 平台: `linux/arm64`
+- 部署位置: 机器狗原有 AGX Orin
+- 服务: `lidar`、`localization`
+- 镜像: `wildos-localization:orin-arm64`
+- Dockerfile: `docker/Dockerfile.orin.lidar-dlio`
+
+职责与 x86 雷达定位 Compose 一致:
+
+- 启动 MID360 驱动和 D-LIO
+- 输出 `/livox/lidar`、`/livox/imu`、`/cloud_registered`、`/odom` 和 `/tf`
+- 使用 host network 与机器狗原导航、新 Orin WildOS 通信
+- 不包含 WildOS 视觉模型、相机驱动和 CUDA 推理依赖
+
+配套环境模板:
+
+- 模板: `.env.orin.lidar-dlio.example`
+- 部署文件: `.env.orin.lidar-dlio`
+
+### 2.3 `compose.orin.wildos.yaml`
 
 平台和模块:
 
@@ -83,7 +113,7 @@ x86 和 Orin 使用 ROS 2 DDS 通信，必须使用相同的 `ROS_DOMAIN_ID` 和
 - 模板: `.env.orin.wildos.example`
 - 部署文件: `.env.orin.wildos`
 
-### 2.3 `compose.orin.wildos-cameras.yaml`
+### 2.4 `compose.orin.wildos-cameras.yaml`
 
 平台和模块:
 
@@ -119,11 +149,25 @@ x86 雷达定位镜像，只包含 Livox MID360、D-LIO 和定位输出适配所
 
 - 使用 ROS 2 Humble 基础镜像
 - 安装 Livox SDK2、PCL、Eigen、OpenMP、CycloneDDS 和 colcon 的构建依赖
-- 根据 `dependencies/x86_localization.repos` 导入固定版本 Livox SDK2、Livox ROS Driver 2 和 D-LIO
+- 根据 `dependencies/lidar_dlio.repos` 导入固定版本 Livox SDK2、Livox ROS Driver 2 和 D-LIO
 - 编译 `livox_ros_driver2`、`direct_lidar_inertial_odometry` 和 `graph_construction`
 - 安装 MID360 与定位各自的入口脚本和健康检查
 
 该镜像不包含 WildOS 模型、PyTorch、CuPy、高程图和路径规划模块
+
+#### `docker/Dockerfile.orin.lidar-dlio`
+
+机器狗 AGX Orin 雷达定位镜像，平台为 `linux/arm64`
+
+该镜像与 x86 雷达定位镜像使用相同的:
+
+- ROS 2 Humble 基础镜像
+- Livox SDK2、Livox ROS Driver 2 和 D-LIO 固定版本
+- `graph_construction` 定位输出适配
+- MID360 和 localization 入口脚本
+- topic、frame、健康检查和日志约定
+
+该镜像在机器狗 AGX Orin 上原生构建，不需要 NVIDIA runtime 和 CUDA
 
 #### `docker/Dockerfile.orin`
 
@@ -160,6 +204,10 @@ AGX Orin 三相机镜像
 
 只允许 x86 依赖描述、`graph_construction`、换源脚本、构建脚本和运行脚本进入 x86 构建上下文，避免传输模型和其他模块
 
+#### `docker/Dockerfile.orin.lidar-dlio.dockerignore`
+
+与 x86 雷达定位构建上下文保持相同白名单，只为 arm64 Dockerfile 提供独立过滤入口
+
 #### `docker/Dockerfile.orin.dockerignore`
 
 允许 WildOS、`elevation_mapping_cupy` 和 `graaf_vendor` 进入 Orin 构建上下文，排除 Git 数据、测试、构建产物、文档和模型
@@ -172,7 +220,7 @@ AGX Orin 三相机镜像
 
 #### `docker/entrypoint.lidar.mid360.sh`
 
-用于 x86 `lidar` 服务
+用于 x86 和机器狗 Orin 的 `lidar` 服务
 
 启动前检查:
 
@@ -185,7 +233,7 @@ AGX Orin 三相机镜像
 
 #### `docker/entrypoint.localization.sh`
 
-用于 x86 `localization` 服务
+用于 x86 和机器狗 Orin 的 `localization` 服务
 
 启动前检查:
 
@@ -270,9 +318,9 @@ AGX Orin 三相机镜像
 
 ### 3.5 构建和运行辅助文件
 
-#### `docker/build_x86_localization.sh`
+#### `docker/build_lidar_dlio.sh`
 
-构建 x86 雷达定位工作空间:
+在 amd64 或 arm64 镜像中构建雷达定位工作空间:
 
 - 使用 CMake 编译并安装 Livox SDK2
 - 将 Livox ROS Driver 2 切换到 ROS 2 package 描述
@@ -283,7 +331,7 @@ AGX Orin 三相机镜像
 
 单台 MID360 的驱动配置模板
 
-- `host_net_info` 填写 x86 雷达网卡的静态 IP 和主机端口
+- `host_net_info` 填写雷达定位主机网卡的静态 IP 和主机端口
 - `lidar_configs.ip` 填写 MID360 的 IP
 - `extrinsic_parameter` 仅控制驱动发布的设备外参，需要与现场 TF 和 D-LIO 配置保持一致
 
@@ -391,15 +439,16 @@ wildos_ws/src/
 
 ### 4.2 主机要求
 
-x86 主机:
+机器狗 AGX Orin:
 
 - Docker Engine 和 Docker Compose v2
 - 连接 Livox MID360 的有线网卡已设置静态 IPv4 地址
 - 主机网卡 IP、MID360 IP 与驱动 JSON 位于同一子网
 - 防火墙允许 JSON 中的 Livox UDP 端口
 - 已准备现场 DLIO 参数文件
+- 原有导航算法与容器使用相同 ROS domain 和 RMW
 
-AGX Orin:
+新 AGX Orin:
 
 - Docker Engine 和 Docker Compose v2
 - NVIDIA Container Runtime
@@ -407,9 +456,11 @@ AGX Orin:
 - 三台 RealSense 可通过 `/dev/bus/usb` 访问
 - WildOS 模型目录完整
 
+保留的 x86 方案需要满足与机器狗 AGX Orin 相同的雷达网卡、MID360 和 DLIO 参数要求
+
 ### 4.3 DDS 和时间同步
 
-两台主机必须保持以下配置一致:
+两台 AGX Orin 必须保持以下配置一致:
 
 ```dotenv
 ROS_DOMAIN_ID=2
@@ -419,17 +470,36 @@ RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 
 部署前确认:
 
-- x86 和 Orin 系统时间已同步
+- 两台 AGX Orin 系统时间已同步
 - 防火墙允许 ROS 2 DDS 通信
 - 两台主机位于可互通网络
 - 不存在第二个 `/odom` 或相同 TF child frame publisher
 
-## 5. x86 雷达和 DLIO 部署
+## 5. 雷达和 DLIO 部署
 
-### 5.1 准备环境文件
+### 5.1 选择部署平台
+
+本次测试在机器狗 AGX Orin 上执行:
+
+```bash
+cp .env.orin.lidar-dlio.example .env.orin.lidar-dlio
+export LIDAR_ENV_FILE=.env.orin.lidar-dlio
+export LIDAR_COMPOSE_FILE=compose.orin.lidar-dlio.yaml
+```
+
+使用保留的 x86 方案时执行:
 
 ```bash
 cp .env.x86_64.lidar-dlio.example .env.x86_64.lidar-dlio
+export LIDAR_ENV_FILE=.env.x86_64.lidar-dlio
+export LIDAR_COMPOSE_FILE=compose.x86_64.lidar-dlio.yaml
+```
+
+后续命令通过这两个变量适配两种平台
+
+### 5.2 准备传感器配置
+
+```bash
 cp docker/config/MID360_config.example.json /absolute/path/MID360_config.json
 ```
 
@@ -449,7 +519,7 @@ ODOM_OUTPUT_TOPIC=/odom
 DLIO_CONFIG_FILE=/absolute/path/to/robot_dlio.yaml
 ```
 
-`MID360_CONFIG_FILE` 和 `DLIO_CONFIG_FILE` 必须是 x86 主机上的绝对路径
+`MID360_CONFIG_FILE` 和 `DLIO_CONFIG_FILE` 必须是雷达定位主机上的绝对路径
 
 编辑 `MID360_config.json`:
 
@@ -472,7 +542,7 @@ DLIO_CONFIG_FILE=/absolute/path/to/robot_dlio.yaml
 }
 ```
 
-将 `cmd_data_ip`、`push_msg_ip`、`point_data_ip` 和 `imu_data_ip` 替换为 x86 雷达网卡地址，将 `lidar_configs.ip` 替换为 MID360 地址
+将 `cmd_data_ip`、`push_msg_ip`、`point_data_ip` 和 `imu_data_ip` 替换为雷达定位主机网卡地址，将 `lidar_configs.ip` 替换为 MID360 地址
 
 未采集雷达内部日志时保留 `log_data_ip` 为空，不要随意修改模板端口
 
@@ -483,37 +553,39 @@ ip -4 address
 ping -c 3 192.168.1.12
 ```
 
-### 5.2 验证 Compose
+### 5.3 验证 Compose
 
 ```bash
 docker compose \
-  --env-file .env.x86_64.lidar-dlio \
-  -f compose.x86_64.lidar-dlio.yaml \
+  --env-file "${LIDAR_ENV_FILE}" \
+  -f "${LIDAR_COMPOSE_FILE}" \
   config --quiet
 ```
 
-### 5.3 构建镜像
+### 5.4 构建镜像
+
+必须在目标机器上原生构建，机器狗 AGX Orin 构建 arm64 镜像，x86 主机构建 amd64 镜像
 
 ```bash
 docker compose \
-  --env-file .env.x86_64.lidar-dlio \
-  -f compose.x86_64.lidar-dlio.yaml \
+  --env-file "${LIDAR_ENV_FILE}" \
+  -f "${LIDAR_COMPOSE_FILE}" \
   build lidar localization
 ```
 
-### 5.4 启动和查看日志
+### 5.5 启动和查看日志
 
 首次部署建议先单独启动并验收雷达:
 
 ```bash
 docker compose \
-  --env-file .env.x86_64.lidar-dlio \
-  -f compose.x86_64.lidar-dlio.yaml \
+  --env-file "${LIDAR_ENV_FILE}" \
+  -f "${LIDAR_COMPOSE_FILE}" \
   up -d lidar
 
 docker compose \
-  --env-file .env.x86_64.lidar-dlio \
-  -f compose.x86_64.lidar-dlio.yaml \
+  --env-file "${LIDAR_ENV_FILE}" \
+  -f "${LIDAR_COMPOSE_FILE}" \
   logs -f lidar
 ```
 
@@ -521,19 +593,19 @@ docker compose \
 
 ```bash
 docker compose \
-  --env-file .env.x86_64.lidar-dlio \
-  -f compose.x86_64.lidar-dlio.yaml \
+  --env-file "${LIDAR_ENV_FILE}" \
+  -f "${LIDAR_COMPOSE_FILE}" \
   up -d localization
 
 docker compose \
-  --env-file .env.x86_64.lidar-dlio \
-  -f compose.x86_64.lidar-dlio.yaml \
+  --env-file "${LIDAR_ENV_FILE}" \
+  -f "${LIDAR_COMPOSE_FILE}" \
   logs -f localization
 ```
 
 日常启动可以直接执行 `up -d`，Compose 会等待 `lidar` 健康后启动 `localization`
 
-### 5.5 验收
+### 5.6 验收
 
 ```bash
 ros2 topic hz /livox/lidar
@@ -550,7 +622,7 @@ ros2 run tf2_ros tf2_echo odom base_link
 
 - `/livox/lidar` 类型为 `sensor_msgs/msg/PointCloud2` 且字段中包含 `timestamp`
 - `/livox/imu` 类型为 `sensor_msgs/msg/Imu`
-- 原始点云和 IMU 时间戳同步，时间基准与 x86 系统时间一致
+- 原始点云和 IMU 时间戳同步，时间基准与雷达定位主机系统时间一致
 - 点云和里程计时间戳持续递增
 - `odom -> base_link` 只有一个发布者
 - 运动时轨迹方向和尺度正确
@@ -614,7 +686,7 @@ docker compose \
 
 复用已经完成的实机验收项:
 
-- 能接收 x86 的 `/cloud_registered` 和 `/odom`
+- 能接收雷达定位主机的 `/cloud_registered` 和 `/odom`
 - 轨迹方向和尺度正确
 - 高程图随机器人运动正确更新
 - NavigationGraph 和 Path 正常生成
@@ -752,7 +824,7 @@ ros2 run tf2_ros tf2_echo base_link right_color_optical_frame
 
 ### 7.5 启动 WildOS
 
-相机和 x86 定位输出均正常后启动:
+相机和机器狗 Orin 定位输出均正常后启动:
 
 ```bash
 docker compose \
@@ -845,12 +917,12 @@ docker compose \
 
 ### 8.4 停止服务
 
-x86:
+机器狗 Orin 雷达定位:
 
 ```bash
 docker compose \
-  --env-file .env.x86_64.lidar-dlio \
-  -f compose.x86_64.lidar-dlio.yaml \
+  --env-file .env.orin.lidar-dlio \
+  -f compose.orin.lidar-dlio.yaml \
   down
 ```
 
@@ -871,7 +943,7 @@ docker compose \
 |---|---|
 | `.env.*` 环境配置 | 通常只需重新创建对应服务 |
 | DLIO YAML | 重新创建 `localization` |
-| `Dockerfile.x86_64` 或定位代码 | 重建 `localization` |
+| `Dockerfile.x86_64`、`Dockerfile.orin.lidar-dlio` 或定位代码 | 重建 `lidar` 和 `localization` |
 | 相机入口脚本或相机 Dockerfile | 重建 `cameras` |
 | WildOS Python 或 ROS 代码 | 重建 `wildos` |
 | 模型文件 | 模型通过挂载提供，重启 `wildos` |
@@ -915,7 +987,7 @@ docker compose \
 - `WILDOS_CKPT_DIR` 是否为绝对路径
 - 模型文件是否完整
 - PyTorch 和 CuPy 是否能访问 CUDA
-- `/cloud_registered`、`/odom` 和 TF 是否来自 x86
+- `/cloud_registered`、`/odom` 和 TF 是否来自机器狗 Orin
 
 ### 10.4 跨主机看不到 topic
 
@@ -930,8 +1002,8 @@ docker compose \
 ## 11. 推荐启动顺序
 
 ```text
-1. 启动 x86 LiDAR 和 IMU 驱动
-2. 启动 x86 localization
+1. 启动机器狗 Orin LiDAR 和 IMU 驱动
+2. 启动机器狗 Orin localization
 3. 验证 /cloud_registered、/odom 和 TF
 4. 启动 Orin cameras
 5. 验证三路图像、CameraInfo 和相机 TF

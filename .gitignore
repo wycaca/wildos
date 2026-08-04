@@ -12,6 +12,7 @@ external_references/*
 .venv
 .pytest_cache
 .env
+.env.orin.lidar-dlio
 .env.orin.wildos
 .env.orin.wildos-cameras
 .env.x86_64.lidar-dlio

@@ -125,7 +125,7 @@ profiles:
 
   robot:
     <<: *common_contract
-    description: x86 D-LIO registered cloud profile
+    description: robot AGX Orin D-LIO registered cloud profile
 
     # 通信环境
     ros_domain_id: "2"
