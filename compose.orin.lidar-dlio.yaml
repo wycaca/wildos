@@ -5,7 +5,7 @@ x-orin-lidar-image: &orin-lidar-image
   platform: linux/arm64
   build:
     context: ..
-    dockerfile: nebula2-wildos/docker/Dockerfile.orin.lidar-dlio
+    dockerfile: nebula2-wildos/docker/Dockerfile.lidar-dlio
     args:
       BASE_IMAGE: ${WILDOS_ORIN_LIDAR_BASE_IMAGE:-ros:humble-ros-base-jammy}
 

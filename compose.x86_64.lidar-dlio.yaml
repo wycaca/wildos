@@ -5,7 +5,7 @@ x-x86-image: &x86-image
   platform: linux/amd64
   build:
     context: ..
-    dockerfile: nebula2-wildos/docker/Dockerfile.x86_64
+    dockerfile: nebula2-wildos/docker/Dockerfile.lidar-dlio
     args:
       BASE_IMAGE: ${WILDOS_X86_BASE_IMAGE:-ros:humble-ros-base-jammy}
 

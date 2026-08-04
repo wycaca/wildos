@@ -49,7 +49,7 @@ x86 方案保留用于替代机器狗 AGX Orin，输出 topic 和 TF 契约保�
 - 平台: `linux/amd64`
 - 服务: `lidar`、`localization`
 - 镜像: `wildos-localization`
-- Dockerfile: `docker/Dockerfile.x86_64`
+- Dockerfile: `docker/Dockerfile.lidar-dlio`
 
 职责:
 
@@ -75,7 +75,7 @@ x86 方案保留用于替代机器狗 AGX Orin，输出 topic 和 TF 契约保�
 - 部署位置: 机器狗原有 AGX Orin
 - 服务: `lidar`、`localization`
 - 镜像: `wildos-localization:orin-arm64`
-- Dockerfile: `docker/Dockerfile.orin.lidar-dlio`
+- Dockerfile: `docker/Dockerfile.lidar-dlio`
 
 职责与 x86 雷达定位 Compose 一致:
 
@@ -89,31 +89,7 @@ x86 方案保留用于替代机器狗 AGX Orin，输出 topic 和 TF 契约保�
 - 模板: `.env.orin.lidar-dlio.example`
 - 部署文件: `.env.orin.lidar-dlio`
 
-### 2.3 `compose.orin.wildos.yaml`
-
-平台和模块:
-
-- 平台: `linux/arm64`
-- 服务: `wildos`
-- 镜像: `wildos`
-- Dockerfile: `docker/Dockerfile.orin`
-
-职责:
-
-- 单独部署已经验证过的 WildOS 主链
-- 使用 NVIDIA runtime 运行 PyTorch 和 CuPy
-- 只读挂载模型目录
-- 接收外部 `/cloud_registered`、`/odom`、TF 和相机 topic
-- 固定使用 robot profile、platform localization 和无界面模式
-
-此配置不启动相机驱动，适合相机服务尚未准备好或需要独立调试 WildOS 的情况
-
-配套环境模板:
-
-- 模板: `.env.orin.wildos.example`
-- 部署文件: `.env.orin.wildos`
-
-### 2.4 `compose.orin.wildos-cameras.yaml`
+### 2.3 `compose.orin.wildos-cameras.yaml`
 
 平台和模块:
 
@@ -128,6 +104,7 @@ x86 方案保留用于替代机器狗 AGX Orin，输出 topic 和 TF 契约保�
 - `cameras` 独立管理三台 RealSense
 - `wildos` 运行高程图、图构建、视觉和运动主链
 - 两个服务可单独构建、启动、停止和重启
+- 使用 `--no-deps wildos` 可不启动相机而单独调试 WildOS
 - 相机服务挂载 `/dev/bus/usb` 并使用 host network
 - WildOS 服务使用 NVIDIA runtime
 - Compose 按服务过滤环境变量，相机容器不接收模型和导航配置，WildOS 容器不接收相机序列号
@@ -141,9 +118,9 @@ x86 方案保留用于替代机器狗 AGX Orin，输出 topic 和 TF 契约保�
 
 ### 3.1 镜像定义
 
-#### `docker/Dockerfile.x86_64`
+#### `docker/Dockerfile.lidar-dlio`
 
-x86 雷达定位镜像，只包含 Livox MID360、D-LIO 和定位输出适配所需依赖
+amd64 和 arm64 共用的雷达定位镜像定义，只包含 Livox MID360、D-LIO 和定位输出适配所需依赖
 
 主要操作:
 
@@ -153,21 +130,7 @@ x86 雷达定位镜像，只包含 Livox MID360、D-LIO 和定位输出适配所
 - 编译 `livox_ros_driver2`、`direct_lidar_inertial_odometry` 和 `graph_construction`
 - 安装 MID360 与定位各自的入口脚本和健康检查
 
-该镜像不包含 WildOS 模型、PyTorch、CuPy、高程图和路径规划模块
-
-#### `docker/Dockerfile.orin.lidar-dlio`
-
-机器狗 AGX Orin 雷达定位镜像，平台为 `linux/arm64`
-
-该镜像与 x86 雷达定位镜像使用相同的:
-
-- ROS 2 Humble 基础镜像
-- Livox SDK2、Livox ROS Driver 2 和 D-LIO 固定版本
-- `graph_construction` 定位输出适配
-- MID360 和 localization 入口脚本
-- topic、frame、健康检查和日志约定
-
-该镜像在机器狗 AGX Orin 上原生构建，不需要 NVIDIA runtime 和 CUDA
+平台由 Compose 的 `platform` 明确指定，x86 使用 `linux/amd64`，机器狗 AGX Orin 使用 `linux/arm64`。该镜像不包含 WildOS 模型、PyTorch、CuPy、高程图和路径规划模块，不需要 NVIDIA runtime 和 CUDA
 
 #### `docker/Dockerfile.orin`
 
@@ -200,13 +163,9 @@ AGX Orin 三相机镜像
 
 ### 3.2 Docker 构建上下文过滤
 
-#### `docker/Dockerfile.x86_64.dockerignore`
+#### `docker/Dockerfile.lidar-dlio.dockerignore`
 
-只允许 x86 依赖描述、`graph_construction`、换源脚本、构建脚本和运行脚本进入 x86 构建上下文，避免传输模型和其他模块
-
-#### `docker/Dockerfile.orin.lidar-dlio.dockerignore`
-
-与 x86 雷达定位构建上下文保持相同白名单，只为 arm64 Dockerfile 提供独立过滤入口
+只允许雷达定位依赖描述、`graph_construction`、换源脚本、构建脚本和运行脚本进入 amd64 和 arm64 共用的构建上下文，避免传输模型和其他模块
 
 #### `docker/Dockerfile.orin.dockerignore`
 
@@ -628,14 +587,14 @@ ros2 run tf2_ros tf2_echo odom base_link
 - 运动时轨迹方向和尺度正确
 - 点云可以在 `odom` frame 下稳定显示
 
-## 6. Orin 单 WildOS 部署
+## 6. Orin 单 WildOS 调试
 
-相机容器尚未准备好时使用此方式
+不再维护单独的 WildOS Compose 和环境文件。相机容器尚未准备好时，使用 WildOS 和相机共用配置中的 `wildos` 服务
 
 ### 6.1 准备环境文件
 
 ```bash
-cp .env.orin.wildos.example .env.orin.wildos
+cp .env.orin.wildos-cameras.example .env.orin.wildos-cameras
 ```
 
 至少修改:
@@ -653,32 +612,32 @@ WILDOS_ORIN_BASE_IMAGE=nvcr.io/nvidia/pytorch:24.10-py3-igpu
 
 ```bash
 docker compose \
-  --env-file .env.orin.wildos \
-  -f compose.orin.wildos.yaml \
+  --env-file .env.orin.wildos-cameras \
+  -f compose.orin.wildos-cameras.yaml \
   config --quiet
 
 docker compose \
-  --env-file .env.orin.wildos \
-  -f compose.orin.wildos.yaml \
-  run --rm wildos --check-config
+  --env-file .env.orin.wildos-cameras \
+  -f compose.orin.wildos-cameras.yaml \
+  run --rm --no-deps wildos --check-config
 ```
 
 ### 6.3 构建和启动
 
 ```bash
 docker compose \
-  --env-file .env.orin.wildos \
-  -f compose.orin.wildos.yaml \
+  --env-file .env.orin.wildos-cameras \
+  -f compose.orin.wildos-cameras.yaml \
   build wildos
 
 docker compose \
-  --env-file .env.orin.wildos \
-  -f compose.orin.wildos.yaml \
-  up -d wildos
+  --env-file .env.orin.wildos-cameras \
+  -f compose.orin.wildos-cameras.yaml \
+  up -d --no-deps wildos
 
 docker compose \
-  --env-file .env.orin.wildos \
-  -f compose.orin.wildos.yaml \
+  --env-file .env.orin.wildos-cameras \
+  -f compose.orin.wildos-cameras.yaml \
   logs -f wildos
 ```
 
@@ -943,7 +902,7 @@ docker compose \
 |---|---|
 | `.env.*` 环境配置 | 通常只需重新创建对应服务 |
 | DLIO YAML | 重新创建 `localization` |
-| `Dockerfile.x86_64`、`Dockerfile.orin.lidar-dlio` 或定位代码 | 重建 `lidar` 和 `localization` |
+| `Dockerfile.lidar-dlio` 或定位代码 | 重建 `lidar` 和 `localization` |
 | 相机入口脚本或相机 Dockerfile | 重建 `cameras` |
 | WildOS Python 或 ROS 代码 | 重建 `wildos` |
 | 模型文件 | 模型通过挂载提供，重启 `wildos` |

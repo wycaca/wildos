@@ -21,7 +21,7 @@ require_variable() {
   local variable_name="$1"
   if [[ -z "${!variable_name:-}" ]]; then
     echo "Missing Orin deployment variable: ${variable_name}" >&2
-    echo "Copy .env.orin.wildos.example to .env.orin.wildos and complete it" >&2
+    echo "Copy .env.orin.wildos-cameras.example to .env.orin.wildos-cameras and complete it" >&2
     exit 1
   fi
 }
