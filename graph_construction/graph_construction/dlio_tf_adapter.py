@@ -17,6 +17,7 @@ from rclpy.qos import (
     QoSProfile,
     ReliabilityPolicy,
 )
+from scipy.spatial.transform import Rotation
 from std_msgs.msg import Bool
 from tf2_msgs.msg import TFMessage
 
@@ -385,84 +386,49 @@ def _pose_to_rigid(msg: Odometry) -> RigidTransform:
     orientation = msg.pose.pose.orientation
     return RigidTransform(
         translation=(position.x, position.y, position.z),
-        rotation=_normalize_quaternion(
-            (orientation.x, orientation.y, orientation.z, orientation.w)
+        rotation=tuple(
+            _rotation((orientation.x, orientation.y, orientation.z, orientation.w)).as_quat()
         ),
     )
 
 
 def _compose(parent: RigidTransform, child: RigidTransform) -> RigidTransform:
-    rotated_translation = _rotate_vector(parent.rotation, child.translation)
+    parent_rotation = _rotation(parent.rotation)
+    rotated_translation = parent_rotation.apply(child.translation)
     return RigidTransform(
         translation=tuple(
             parent.translation[index] + rotated_translation[index]
             for index in range(3)
         ),
-        rotation=_normalize_quaternion(
-            _multiply_quaternions(parent.rotation, child.rotation)
-        ),
+        rotation=tuple((parent_rotation * _rotation(child.rotation)).as_quat()),
     )
 
 
 def _inverse(transform: RigidTransform) -> RigidTransform:
-    inverse_rotation = (
-        -transform.rotation[0],
-        -transform.rotation[1],
-        -transform.rotation[2],
-        transform.rotation[3],
+    inverse_rotation = _rotation(transform.rotation).inv()
+    inverse_translation = inverse_rotation.apply(
+        tuple(-value for value in transform.translation)
     )
-    inverse_translation = _rotate_vector(
-        inverse_rotation,
-        tuple(-value for value in transform.translation),
-    )
-    return RigidTransform(inverse_translation, inverse_rotation)
-
-
-def _multiply_quaternions(
-    left: tuple[float, float, float, float],
-    right: tuple[float, float, float, float],
-) -> tuple[float, float, float, float]:
-    lx, ly, lz, lw = left
-    rx, ry, rz, rw = right
-    return (
-        lw * rx + lx * rw + ly * rz - lz * ry,
-        lw * ry - lx * rz + ly * rw + lz * rx,
-        lw * rz + lx * ry - ly * rx + lz * rw,
-        lw * rw - lx * rx - ly * ry - lz * rz,
+    return RigidTransform(
+        tuple(inverse_translation),
+        tuple(inverse_rotation.as_quat()),
     )
 
 
-def _rotate_vector(
+def _rotation(
     rotation: tuple[float, float, float, float],
-    vector: tuple[float, float, float],
-) -> tuple[float, float, float]:
-    qx, qy, qz, qw = rotation
-    vx, vy, vz = vector
-    tx = 2.0 * (qy * vz - qz * vy)
-    ty = 2.0 * (qz * vx - qx * vz)
-    tz = 2.0 * (qx * vy - qy * vx)
-    return (
-        vx + qw * tx + qy * tz - qz * ty,
-        vy + qw * ty + qz * tx - qx * tz,
-        vz + qw * tz + qx * ty - qy * tx,
-    )
-
-
-def _normalize_quaternion(
-    rotation: tuple[float, float, float, float],
-) -> tuple[float, float, float, float]:
-    norm = math.sqrt(sum(value * value for value in rotation))
-    if norm < 1.0e-12:
-        return (0.0, 0.0, 0.0, 1.0)
-    return tuple(value / norm for value in rotation)
+) -> Rotation:
+    """Create a normalized rotation and tolerate an unset ROS quaternion"""
+    if sum(value * value for value in rotation) < 1.0e-24:
+        return Rotation.identity()
+    return Rotation.from_quat(rotation)
 
 
 def _rotation_angle_deg(
     rotation: tuple[float, float, float, float],
 ) -> float:
     """返回单位四元数表示的最小旋转角"""
-    normalized = _normalize_quaternion(rotation)
-    return math.degrees(2.0 * math.acos(min(1.0, abs(normalized[3]))))
+    return math.degrees(_rotation(rotation).magnitude())
 
 
 def _signed_yaw_error_deg(
@@ -476,20 +442,13 @@ def _signed_yaw_error_deg(
 
 
 def _odometry_yaw_deg(msg: Odometry) -> float:
-    orientation = _normalize_quaternion(
-        (
-            msg.pose.pose.orientation.x,
-            msg.pose.pose.orientation.y,
-            msg.pose.pose.orientation.z,
-            msg.pose.pose.orientation.w,
-        )
+    orientation = msg.pose.pose.orientation
+    matrix = _rotation(
+        (orientation.x, orientation.y, orientation.z, orientation.w)
+    ).as_matrix()
+    return math.degrees(
+        math.atan2(matrix[1, 0], matrix[0, 0])
     )
-    x, y, z, w = orientation
-    yaw = math.atan2(
-        2.0 * (w * z + x * y),
-        1.0 - 2.0 * (y * y + z * z),
-    )
-    return math.degrees(yaw)
 
 
 def _normalize_angle_deg(angle_deg: float) -> float:
@@ -519,7 +478,7 @@ def odometry_health_metrics(
     )
     aligned_orientation = aligned.pose.pose.orientation
     reference_orientation = reference.pose.pose.orientation
-    aligned_rotation = _normalize_quaternion(
+    aligned_rotation = _rotation(
         (
             aligned_orientation.x,
             aligned_orientation.y,
@@ -527,7 +486,7 @@ def odometry_health_metrics(
             aligned_orientation.w,
         )
     )
-    reference_rotation = _normalize_quaternion(
+    reference_rotation = _rotation(
         (
             reference_orientation.x,
             reference_orientation.y,
@@ -535,13 +494,9 @@ def odometry_health_metrics(
             reference_orientation.w,
         )
     )
-    dot = abs(
-        sum(
-            aligned_rotation[index] * reference_rotation[index]
-            for index in range(4)
-        )
+    orientation_error = math.degrees(
+        (reference_rotation.inv() * aligned_rotation).magnitude()
     )
-    orientation_error = math.degrees(2.0 * math.acos(min(1.0, dot)))
     return (position_error, orientation_error, speed)
 
 

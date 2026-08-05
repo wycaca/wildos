@@ -137,10 +137,10 @@ def test_robot_platform_launch_skips_registered_cloud_adapter():
     assert "elevation_mapping_node.py" in executables
 
 
-def test_camera_stamp_adapter_can_be_disabled():
+def test_robot_profile_preserves_camera_stamps():
     module = _load_launch_module()
     context = _context_with_defaults(module)
-    context.launch_configurations["camera_stamp_mode"] = "preserve"
+    context.launch_configurations["topic_profile"] = "robot"
 
     actions = module._launch_setup(context)
     executables = {
@@ -150,6 +150,19 @@ def test_camera_stamp_adapter_can_be_disabled():
     }
 
     assert "camera_stamp_adapter" not in executables
+
+
+def test_topic_and_frame_overrides_use_custom_profiles():
+    module = _load_launch_module()
+    argument_names = {
+        action.name
+        for action in module.generate_launch_description().entities
+        if isinstance(action, DeclareLaunchArgument)
+    }
+
+    assert "topic_profile_file" in argument_names
+    assert "pointcloud_input_topic" not in argument_names
+    assert "global_frame" not in argument_names
 
 
 def test_unity_planner_output_is_remapped_to_source_path():

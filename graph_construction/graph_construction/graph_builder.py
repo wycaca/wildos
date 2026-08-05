@@ -1358,7 +1358,6 @@ class SparseGraphBuilder:
         grid: ClassifiedGrid,
         start: tuple[int, int],
         max_radius_cells: int,
-        excluded: np.ndarray | None = None,
     ) -> tuple[int, int] | None:
         """在 anchor 可连接范围内选择无明确障碍隔断的最近 free cell"""
         start_x, start_y = start
@@ -1368,8 +1367,6 @@ class SparseGraphBuilder:
                 next_x = start_x + offset_x
                 next_y = start_y + offset_y
                 if not grid.is_free_index(next_x, next_y):
-                    continue
-                if excluded is not None and excluded[next_y, next_x]:
                     continue
                 distance_sq = offset_x * offset_x + offset_y * offset_y
                 candidates.append((distance_sq, next_x, next_y))

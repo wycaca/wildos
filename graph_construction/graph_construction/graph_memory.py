@@ -5,6 +5,8 @@ from math import ceil, floor, hypot
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 import uuid
 
+from graph_construction.grid_types import bresenham_line
+
 
 Point2 = Tuple[float, float]
 Point3 = Tuple[float, float, float]
@@ -147,23 +149,7 @@ class EdgeSpatialIndex:
         y0 = int(floor(start[1] / self.bucket_size))
         x1 = int(floor(end[0] / self.bucket_size))
         y1 = int(floor(end[1] / self.bucket_size))
-        dx = abs(x1 - x0)
-        dy = abs(y1 - y0)
-        step_x = 1 if x0 < x1 else -1
-        step_y = 1 if y0 < y1 else -1
-        error = dx - dy
-        x, y = x0, y0
-        while True:
-            yield x, y
-            if x == x1 and y == y1:
-                break
-            doubled_error = 2 * error
-            if doubled_error > -dy:
-                error -= dy
-                x += step_x
-            if doubled_error < dx:
-                error += dx
-                y += step_y
+        return bresenham_line(x0, y0, x1, y1)
 
 
 @dataclass
@@ -362,37 +348,19 @@ class GraphState:
     def nearest_node(
         self,
         position: Point3,
-        max_distance: Optional[float] = None,
-        candidates: Optional[Iterable[int]] = None,
+        candidates: Iterable[int],
     ) -> Optional[InternalNode]:
-        """在 XY 平面查找最近节点
-
-        max_distance 用于限制匹配范围, 例如采样新节点时避免过密
-        candidates 用于只在指定节点集合内搜索, 当前第一版暂未大量使用
-        """
-        best_node = None
-        best_distance = float("inf")
-        if candidates is not None:
-            node_ids = candidates
-        elif max_distance is not None:
-            node_ids = self.node_ids_within(position, max_distance)
-        else:
-            node_ids = self.nodes.keys()
-        for node_id in node_ids:
-            node = self.nodes.get(node_id)
-            if node is None:
-                continue
-            distance = node.distance_xy(position)
-            if max_distance is not None and distance > max_distance:
-                continue
-            if distance < best_distance or (
-                distance == best_distance
-                and best_node is not None
-                and node.node_id < best_node.node_id
-            ):
-                best_node = node
-                best_distance = distance
-        return best_node
+        """Return the nearest indexed candidate with stable tie breaking"""
+        nodes = (
+            self.nodes[node_id]
+            for node_id in candidates
+            if node_id in self.nodes
+        )
+        return min(
+            nodes,
+            key=lambda node: (node.distance_xy(position), node.node_id),
+            default=None,
+        )
 
     def _set_edge(self, edge: InternalEdge) -> None:
         """规范化单条边并同步邻接索引"""

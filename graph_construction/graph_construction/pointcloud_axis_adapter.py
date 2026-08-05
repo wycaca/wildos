@@ -70,12 +70,8 @@ def _axis_transform(axis_mode: str) -> Callable[[PointXYZ], PointXYZ]:
     """返回固定轴向变换, 复杂坐标约定集中在这里便于联调"""
     if axis_mode == "identity":
         return lambda point: point
-    if axis_mode in ("isaac_lidar_to_base", "neg_x_forward", "neg_xy_keep_z"):
+    if axis_mode == "isaac_lidar_to_base":
         return lambda point: (-point[0], -point[1], point[2])
-    if axis_mode == "negate_xyz":
-        return lambda point: (-point[0], -point[1], -point[2])
-    if axis_mode in ("isaac_y_forward_to_base", "y_forward"):
-        return lambda point: (point[1], -point[0], point[2])
     raise ValueError(f"Unsupported axis_mode={axis_mode}")
 
 

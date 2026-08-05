@@ -30,39 +30,27 @@ class PipelinePerformanceMonitor(Node):
     """Observe cross-node rates and source-stamp age without changing the pipeline"""
 
     TOPICS = (
-        ("lidar", "raw_lidar_topic", "/livox/lidar", PointCloud2, True),
-        ("imu", "raw_imu_topic", "/livox/imu", Imu, True),
-        ("cloud", "aligned_pointcloud_topic", "/livox/lidar_aligned", PointCloud2, True),
-        ("odom", "odom_topic", "/spot1/odom_for_scoring", Odometry, False),
-        ("map", "grid_map_topic", "/elevation_mapping_node/elevation_map_raw", GridMap, False),
-        ("graph", "nav_graph_topic", "/spot1/nav_graph", NavigationGraph, False),
-        ("scored", "scored_nav_graph_topic", "/spot1/scored_nav_graph", NavigationGraph, False),
-        ("mask", "object_mask_topic", "/spot1/object_mask", ObjectMaskWithTf, False),
-        ("target", "target_estimate_topic", "/spot1/object_target_estimate", TargetEstimate, False),
-        ("goal", "goal_topic", "/spot1/goal_pose", PoseStamped, False),
-        ("path", "path_topic", "/spot1/path", Path, False),
+        ("lidar", "雷达", "raw_lidar_topic", "/livox/lidar", PointCloud2, True),
+        ("imu", "IMU", "raw_imu_topic", "/livox/imu", Imu, True),
+        ("cloud", "对齐点云", "aligned_pointcloud_topic", "/livox/lidar_aligned", PointCloud2, True),
+        ("odom", "里程计", "odom_topic", "/spot1/odom_for_scoring", Odometry, False),
+        ("map", "高程图", "grid_map_topic", "/elevation_mapping_node/elevation_map_raw", GridMap, False),
+        ("graph", "导航图", "nav_graph_topic", "/spot1/nav_graph", NavigationGraph, False),
+        ("scored", "视觉评分图", "scored_nav_graph_topic", "/spot1/scored_nav_graph", NavigationGraph, False),
+        ("mask", "目标Mask", "object_mask_topic", "/spot1/object_mask", ObjectMaskWithTf, False),
+        ("target", "融合目标", "target_estimate_topic", "/spot1/object_target_estimate", TargetEstimate, False),
+        ("goal", "规划目标", "goal_topic", "/spot1/goal_pose", PoseStamped, False),
+        ("path", "规划路径", "path_topic", "/spot1/path", Path, False),
     )
-    TOPIC_LABELS = {
-        "lidar": "雷达",
-        "imu": "IMU",
-        "cloud": "对齐点云",
-        "odom": "里程计",
-        "map": "高程图",
-        "graph": "导航图",
-        "scored": "视觉评分图",
-        "mask": "目标Mask",
-        "target": "融合目标",
-        "goal": "规划目标",
-        "path": "规划路径",
-    }
 
     def __init__(self) -> None:
         super().__init__("pipeline_performance_monitor")
         self._metrics = {
             name: TopicMetrics(EventRate(), TimingWindow())
-            for name, _, _, _, _ in self.TOPICS
+            for name, _, _, _, _, _ in self.TOPICS
         }
-        for name, parameter, default_topic, message_type, sensor_qos in self.TOPICS:
+        self._labels = {name: label for name, label, *_ in self.TOPICS}
+        for name, _, parameter, default_topic, message_type, sensor_qos in self.TOPICS:
             self.declare_parameter(parameter, default_topic)
             topic = str(self.get_parameter(parameter).value)
             if not topic:
@@ -101,14 +89,14 @@ class PipelinePerformanceMonitor(Node):
         if not samples:
             return
         rates = [
-            f"{self.TOPIC_LABELS[name]}={rate:.1f}Hz"
+            f"{self._labels[name]}={rate:.1f}Hz"
             for name, (rate, _) in samples.items()
         ]
         ages = []
         for name, (_, summary) in samples.items():
             if summary.count:
                 ages.append(
-                    f"{self.TOPIC_LABELS[name]}={summary.average_ms:.0f}/"
+                    f"{self._labels[name]}={summary.average_ms:.0f}/"
                     f"{summary.p95_ms:.0f}/{summary.maximum_ms:.0f}ms"
                 )
         self.get_logger().info("链路频率, " + ", ".join(rates))

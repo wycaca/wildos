@@ -109,7 +109,7 @@ WILDOS_TOPIC_PROFILE=unity ./scripts/start_wildos_elevation.sh
 WILDOS_TOPIC_PROFILE=robot ./scripts/start_wildos_elevation.sh
 ```
 
-Individual launch arguments still override profile values, for example `pointcloud_input_topic:=/custom/lidar`.
+Use `topic_profile_file:=/absolute/path/topic_profiles.yaml` for custom topics and frames.
 
 <br>
 

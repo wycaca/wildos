@@ -9,7 +9,7 @@ from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 
 from graph_construction.localization import resolve_localization_wiring
-from graph_construction.topic_profiles import load_topic_profile, profile_key_description
+from graph_construction.topic_profiles import load_topic_profile
 
 
 def generate_launch_description():
@@ -96,27 +96,6 @@ def generate_launch_description():
                 description="Publish an aligned point cloud for elevation mapping",
             ),
             DeclareLaunchArgument(
-                "pointcloud_axis_mode",
-                default_value="",
-                description="Point cloud axis conversion mode, empty uses topic profile",
-            ),
-            _profile_arg("global_frame", "global_frame"),
-            _profile_arg("pointcloud_input_topic", "pointcloud_input_topic"),
-            _profile_arg("pointcloud_output_topic", "aligned_lidar_topic"),
-            _profile_arg("pointcloud_output_frame", "pointcloud_output_frame"),
-            _profile_arg("elevation_grid_map_topic", "elevation_grid_map_topic"),
-            _profile_arg("odom_input_topic", "odom_input_topic"),
-            _profile_arg("odom_output_topic", "odom_output_topic"),
-            _profile_arg("dlio_imu_input_topic", "dlio_imu_input_topic"),
-            _profile_arg("dlio_reference_odom_topic", "dlio_reference_odom_topic"),
-            _profile_arg("dlio_local_frame", "dlio_local_frame"),
-            _profile_arg("dlio_alignment_delay", "dlio_alignment_delay"),
-            _profile_arg("dlio_topic_root", "dlio_topic_root"),
-            _profile_arg("imu_frame", "imu_frame"),
-            _profile_arg("odom_parent_frame", "odom_parent_frame"),
-            _profile_arg("odom_child_frame", "odom_child_frame"),
-            _profile_arg("base_frame", "base_frame"),
-            DeclareLaunchArgument(
                 "odom_stamp_mode",
                 default_value="",
                 description="Adapted odometry stamp mode, empty selects a backend-safe default",
@@ -136,73 +115,21 @@ def generate_launch_description():
                 default_value="false",
                 description="Publish a fallback static transform for the elevation point cloud frame",
             ),
-            _profile_arg("lidar_parent_frame", "lidar_parent_frame"),
-            _profile_arg("lidar_frame", "lidar_frame"),
-            _profile_arg("camera_parent_frame", "camera_parent_frame"),
-            _profile_arg("camera_static_tf_convention", "camera_static_tf_convention"),
-            _profile_arg("camera_image_flip_x", "camera_image_flip_x"),
-            _profile_arg("parent_frame", "parent_frame"),
-            _profile_arg("cam_frame", "cam_frame"),
-            _profile_arg("camera_img_topic", "camera_img_topic"),
-            _profile_arg("camera_info_topic", "camera_info_topic"),
-            _profile_arg("camera_stamp_mode", "camera_stamp_mode"),
-            _profile_arg("nav_graph_topic", "nav_graph_topic"),
-            _profile_arg("graph_construction_viz_topic", "graph_construction_viz_topic"),
-            _profile_arg("scored_nav_graph_topic", "scored_nav_graph_topic"),
-            _profile_arg("planner_path_topic", "planner_path_topic"),
-            _profile_arg("model_viz_topic", "model_viz_topic"),
-            _profile_arg("valid_geofrontiers_topic", "valid_geofrontiers_topic"),
-            _profile_arg("score_ring_topic", "score_ring_topic"),
-            _profile_arg("object_mask_topic", "object_mask_topic"),
-            _profile_arg("object_target_estimate_topic", "object_target_estimate_topic"),
-            _profile_arg("object_target_estimate_viz_topic", "object_target_estimate_viz_topic"),
-            _profile_arg("object_target_particles_topic", "object_target_particles_topic"),
-            _profile_arg("object_reached_topic", "object_reached_topic"),
-            _profile_arg("object_search_completed_topic", "object_search_completed_topic"),
-            _profile_arg("object_search_initial_goal_distance", "object_search_initial_goal_distance"),
-            _profile_arg("object_search_initial_goal_heading_deg", "object_search_initial_goal_heading_deg"),
-            _profile_arg("object_search_mask_threshold", "object_search_mask_threshold"),
-            _profile_arg("object_target_max_depth", "object_target_max_depth"),
-            _profile_arg("visual_frontiers_range", "visual_frontiers_range"),
-            _profile_arg("visual_frontier_threshold", "visual_frontier_threshold"),
-            _profile_arg("object_search_detection_debug_interval", "object_search_detection_debug_interval"),
-            _profile_arg("object_search_goal_publish_rate", "object_search_goal_publish_rate"),
-            _profile_arg("object_search_object_reached_timeout_sec", "object_search_object_reached_timeout_sec"),
-            _profile_arg(
-                "object_search_object_reached_max_target_distance",
-                "object_search_object_reached_max_target_distance",
-            ),
-            _profile_arg("object_search_reached_mask_fraction", "object_search_reached_mask_fraction"),
-            _profile_arg("object_search_reached_min_pixel_count", "object_search_reached_min_pixel_count"),
-            _profile_arg("object_search_reached_confirm_frames", "object_search_reached_confirm_frames"),
-            _profile_arg("object_search_detection_min_peak_score", "object_search_detection_min_peak_score"),
-            _profile_arg(
-                "object_search_detection_confirm_min_peak_score",
-                "object_search_detection_confirm_min_peak_score",
-            ),
-            _profile_arg(
-                "object_search_detection_min_component_pixels",
-                "object_search_detection_min_component_pixels",
-            ),
-            _profile_arg(
-                "object_search_detection_min_component_fraction",
-                "object_search_detection_min_component_fraction",
-            ),
-            _profile_arg("object_search_detection_confirm_frames", "object_search_detection_confirm_frames"),
-            _profile_arg(
-                "object_search_detection_confirm_window_frames",
-                "object_search_detection_confirm_window_frames",
-            ),
-            _profile_arg("object_search_status_topic", "object_search_status_topic"),
-            _profile_arg("planner_odom_topic", "planner_odom_topic"),
-            _profile_arg("goal_pose_topic", "goal_pose_topic"),
             DeclareLaunchArgument(
                 "publish_camera_static_tf",
                 default_value="true",
                 description="Publish fallback static transforms for camera frames",
             ),
-            _profile_arg("ros_domain_id", "ros_domain_id"),
-            _profile_arg("rmw_implementation", "rmw_implementation"),
+            DeclareLaunchArgument(
+                "ros_domain_id",
+                default_value="",
+                description="ROS domain override, empty uses topic profile",
+            ),
+            DeclareLaunchArgument(
+                "rmw_implementation",
+                default_value="",
+                description="RMW override, empty uses topic profile",
+            ),
             DeclareLaunchArgument(
                 "fastdds_profile",
                 default_value="",
@@ -218,9 +145,8 @@ def _launch_setup(context):
     profile_file = _arg(context, "topic_profile_file") or None
     profile = load_topic_profile(profile_name, profile_file)
 
-    localization_profile = _localization_profile_with_overrides(context, profile)
     wiring = resolve_localization_wiring(
-        localization_profile,
+        profile,
         _arg(context, "localization_backend"),
     )
 
@@ -902,25 +828,6 @@ def _dlio_tf_adapter(
     )
 
 
-def _localization_profile_with_overrides(context, profile):
-    """Apply launch topic overrides before resolving backend wiring"""
-    resolved_profile = dict(profile)
-    override_keys = {
-        "pointcloud_input_topic": "pointcloud_input_topic",
-        "pointcloud_output_topic": "aligned_lidar_topic",
-        "odom_input_topic": "odom_input_topic",
-        "dlio_imu_input_topic": "dlio_imu_input_topic",
-        "dlio_reference_odom_topic": "dlio_reference_odom_topic",
-        "dlio_local_frame": "dlio_local_frame",
-        "dlio_alignment_delay": "dlio_alignment_delay",
-    }
-    for arg_name, profile_key in override_keys.items():
-        override = _arg(context, arg_name)
-        if override:
-            resolved_profile[profile_key] = override
-    return resolved_profile
-
-
 def _tf_remappings(ns):
     """Keep DLIO TF separate from simulator ground truth TF"""
     normalized_ns = str(ns).strip("/")
@@ -1050,28 +957,10 @@ def _camera_static_transforms(convention):
             "left": ["0.00", "0.18", "0.20", "0.7071067812", "0.0", "0.0", "-0.7071067812"],
             "right": ["0.00", "-0.18", "0.20", "0.0", "0.7071067812", "-0.7071067812", "0.0"],
         },
-        "y_forward_x_right": {
-            "front": ["0.00", "0.30", "0.20", "0.7071067812", "0.0", "0.0", "-0.7071067812"],
-            "left": ["-0.18", "0.00", "0.20", "0.5", "0.5", "-0.5", "-0.5"],
-            "right": ["0.18", "0.00", "0.20", "0.5", "-0.5", "0.5", "-0.5"],
-        },
-        "negative_y_forward_x_right": {
-            "front": ["0.00", "-0.30", "0.20", "0.0", "0.7071067812", "-0.7071067812", "0.0"],
-            "left": ["-0.18", "0.00", "0.20", "0.5", "0.5", "-0.5", "-0.5"],
-            "right": ["0.18", "0.00", "0.20", "0.5", "-0.5", "0.5", "-0.5"],
-        },
     }
     if convention not in transforms:
         raise ValueError(f"Unsupported camera_static_tf_convention: {convention}")
     return transforms[convention]
-
-
-def _profile_arg(name, profile_key):
-    return DeclareLaunchArgument(
-        name,
-        default_value="",
-        description=f"{profile_key_description(profile_key)}, 留空使用 topic profile",
-    )
 
 
 def _config_override_args(overrides):
@@ -1139,22 +1028,10 @@ def _arg(context, name):
 
 
 def _value(context, profile, arg_name, profile_key):
-    override = _arg(context, arg_name)
+    override = context.launch_configurations.get(arg_name, "")
     if override:
         return override
     return str(profile[profile_key])
-
-
-def _bool_value(context, profile, arg_name, profile_key):
-    raw_value = _value(context, profile, arg_name, profile_key)
-    if isinstance(raw_value, bool):
-        return raw_value
-    normalized = str(raw_value).strip().lower()
-    if normalized in {"true", "1", "yes", "on"}:
-        return True
-    if normalized in {"false", "0", "no", "off"}:
-        return False
-    raise ValueError(f"Invalid boolean value for {arg_name}: {raw_value}")
 
 
 def _float_value(context, profile, arg_name, profile_key):

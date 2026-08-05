@@ -130,7 +130,6 @@ class FrontierDetector:
             )
             owner = graph.nearest_node(
                 frontier_point,
-                max_distance=self.frontier_assign_radius,
                 candidates=owner_candidates,
             )
             if owner is None:

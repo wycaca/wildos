@@ -22,7 +22,6 @@ class GraphMessageCache:
     def __init__(self) -> None:
         self._node_cache: Dict[int, tuple[tuple, Node]] = {}
         self._edge_cache: Dict[Tuple[int, int], tuple[tuple, Edge]] = {}
-        self._node_ids: tuple[int, ...] = ()
 
     def build(
         self,
@@ -36,7 +35,6 @@ class GraphMessageCache:
         msg.trav_classes = [trav_class]
 
         node_ids = tuple(sorted(graph.nodes))
-        self._node_ids = node_ids
         id_to_index = {
             node_id: index
             for index, node_id in enumerate(node_ids)
