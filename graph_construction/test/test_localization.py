@@ -121,7 +121,8 @@ def test_robot_profile_preserves_external_odometry_and_registered_cloud_frame():
 
     assert robot["pointcloud_input_topic"] == "/cloud_registered"
     assert robot["aligned_lidar_topic"] == "/cloud_registered"
-    assert robot["pointcloud_output_frame"] == "dlio_odom"
+    assert robot["pointcloud_output_frame"] == "odom_3D"
+    assert robot["rmw_implementation"] == "rmw_fastrtps_cpp"
     assert robot["use_pointcloud_axis_adapter"] is False
     assert robot["odom_stamp_mode"] == "preserve"
     assert robot["odom_pose_source"] == "message"

@@ -84,7 +84,7 @@ WILDOS_TOPIC_PROFILE=unity \
 
 - `unity`: Unity 仿真
 - `isaac`: Isaac Sim
-- `robot`: 机器狗 Orin D-LIO 和新 Orin WildOS 实机部署
+- `robot`: 机器狗 Orin POINT-LIO 定位和新 Orin WildOS 实机部署
 
 统一集成 launch:
 
@@ -98,7 +98,7 @@ graph_construction/launch/elevation_visual_navigation_sim.launch.py
 |---|---|
 | 平台 topic、frame、ROS domain | `graph_construction/configs/topic_profiles.yaml` |
 | Unity DLIO frame、外参和配准参数 | `graph_construction/configs/dlio/unity.yaml` |
-| 实机 DLIO 参数 | 对应平台 `.env.*.lidar-dlio` 指向的现场 YAML |
+| x86 备用 DLIO 参数 | `.env.x86_64.lidar-dlio` 指向的现场 YAML |
 | 高程图范围、更新率和启动先验 | `graph_construction/configs/elevation_mapping_sim.yaml` |
 | 高程图解码和导航图 ROS 参数 | `graph_construction/configs/graph_construction_elevation.yaml` |
 | 导航图算法默认值 | `GraphBuilderConfig` |

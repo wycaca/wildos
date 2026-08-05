@@ -1,6 +1,6 @@
 # Docker 部署说明
 
-本文档是当前实机 Docker 部署的操作入口，覆盖机器狗 AGX Orin 雷达定位主机、新 AGX Orin 视觉主机和保留的 x86 雷达定位方案
+本文档是当前实机 Docker 部署的操作入口，覆盖新 AGX Orin 视觉主机和保留的 x86 雷达定位备用方案
 
 日期目录下的 Docker 文档作为历史记录保留，当前部署以本文档和当前文件名为准
 
@@ -8,12 +8,8 @@
 
 ```text
 机器狗 AGX Orin
-  lidar 服务
-    -> Livox MID360 驱动
-    -> /livox/lidar
-    -> /livox/imu
-  localization 服务
-    -> D-LIO
+  现有宿主机定位链路
+    -> Livox MID360 + POINT-LIO + global localization
     -> /cloud_registered
     -> /odom
     -> /tf
@@ -33,12 +29,12 @@
 
 保留方案
   x86_64 主机
-    -> 使用相同 lidar 和 localization 服务替代机器狗 AGX Orin
+    -> 使用 lidar 和 localization 服务作为雷达定位备用方案
 ```
 
 两台 AGX Orin 使用 ROS 2 DDS 通信，必须使用相同的 `ROS_DOMAIN_ID` 和 `RMW_IMPLEMENTATION`
 
-x86 方案保留用于替代机器狗 AGX Orin，输出 topic 和 TF 契约保持一致
+机器狗 AGX Orin 不部署本项目的雷达或 D-LIO 容器，x86 方案仅作备用
 
 ## 2. Compose 配置文件
 
@@ -67,29 +63,7 @@ x86 方案保留用于替代机器狗 AGX Orin，输出 topic 和 TF 契约保�
 - 部署文件: `.env.x86_64.lidar-dlio`
 - Compose 只向 `lidar` 和 `localization` 注入各自需要的变量
 
-### 2.2 `compose.orin.lidar-dlio.yaml`
-
-平台和模块:
-
-- 平台: `linux/arm64`
-- 部署位置: 机器狗原有 AGX Orin
-- 服务: `lidar`、`localization`
-- 镜像: `wildos-localization:orin-arm64`
-- Dockerfile: `docker/Dockerfile.lidar-dlio`
-
-职责与 x86 雷达定位 Compose 一致:
-
-- 启动 MID360 驱动和 D-LIO
-- 输出 `/livox/lidar`、`/livox/imu`、`/cloud_registered`、`/odom` 和 `/tf`
-- 使用 host network 与机器狗原导航、新 Orin WildOS 通信
-- 不包含 WildOS 视觉模型、相机驱动和 CUDA 推理依赖
-
-配套环境模板:
-
-- 模板: `.env.orin.lidar-dlio.example`
-- 部署文件: `.env.orin.lidar-dlio`
-
-### 2.3 `compose.orin.wildos-cameras.yaml`
+### 2.2 `compose.orin.wildos-cameras.yaml`
 
 平台和模块:
 
@@ -120,17 +94,17 @@ x86 方案保留用于替代机器狗 AGX Orin，输出 topic 和 TF 契约保�
 
 #### `docker/Dockerfile.lidar-dlio`
 
-amd64 和 arm64 共用的雷达定位镜像定义，只包含 Livox MID360、D-LIO 和定位输出适配所需依赖
+x86 雷达定位备用镜像，只包含 Livox MID360、D-LIO 和定位输出适配所需依赖
 
 主要操作:
 
 - 使用 ROS 2 Humble 基础镜像
-- 安装 Livox SDK2、PCL、Eigen、OpenMP、CycloneDDS 和 colcon 的构建依赖
+- 安装 Livox SDK2、PCL、Eigen、OpenMP、FastDDS、CycloneDDS 和 colcon 的构建依赖
 - 根据 `dependencies/lidar_dlio.repos` 导入固定版本 Livox SDK2、Livox ROS Driver 2 和 D-LIO
 - 编译 `livox_ros_driver2`、`direct_lidar_inertial_odometry` 和 `graph_construction`
 - 安装 MID360 与定位各自的入口脚本和健康检查
 
-平台由 Compose 的 `platform` 明确指定，x86 使用 `linux/amd64`，机器狗 AGX Orin 使用 `linux/arm64`。该镜像不包含 WildOS 模型、PyTorch、CuPy、高程图和路径规划模块，不需要 NVIDIA runtime 和 CUDA
+该镜像平台为 `linux/amd64`，不包含 WildOS 模型、PyTorch、CuPy、高程图和路径规划模块，不需要 NVIDIA runtime 和 CUDA
 
 #### `docker/Dockerfile.orin`
 
@@ -155,7 +129,7 @@ AGX Orin 三相机镜像
 
 - 使用 ROS 2 Humble arm64 基础镜像
 - 安装 `realsense2_camera`
-- 安装图像传输、CycloneDDS 和 TF 工具
+- 安装图像传输、DDS 和 TF 工具
 - 使用 `entrypoint.camera.orin.sh` 启动三台相机
 - 使用 `healthcheck.camera.orin.sh` 检查三路 CameraInfo
 
@@ -165,7 +139,7 @@ AGX Orin 三相机镜像
 
 #### `docker/Dockerfile.lidar-dlio.dockerignore`
 
-只允许雷达定位依赖描述、`graph_construction`、换源脚本、构建脚本和运行脚本进入 amd64 和 arm64 共用的构建上下文，避免传输模型和其他模块
+只允许雷达定位依赖描述、`graph_construction`、换源脚本、构建脚本和运行脚本进入 x86 构建上下文，避免传输模型和其他模块
 
 #### `docker/Dockerfile.orin.dockerignore`
 
@@ -179,7 +153,7 @@ AGX Orin 三相机镜像
 
 #### `docker/entrypoint.lidar.mid360.sh`
 
-用于 x86 和机器狗 Orin 的 `lidar` 服务
+用于 x86 备用方案的 `lidar` 服务
 
 启动前检查:
 
@@ -192,7 +166,7 @@ AGX Orin 三相机镜像
 
 #### `docker/entrypoint.localization.sh`
 
-用于 x86 和机器狗 Orin 的 `localization` 服务
+用于 x86 备用方案的 `localization` 服务
 
 启动前检查:
 
@@ -279,7 +253,7 @@ AGX Orin 三相机镜像
 
 #### `docker/build_lidar_dlio.sh`
 
-在 amd64 或 arm64 镜像中构建雷达定位工作空间:
+在 amd64 镜像中构建雷达定位工作空间:
 
 - 使用 CMake 编译并安装 Livox SDK2
 - 将 Livox ROS Driver 2 切换到 ROS 2 package 描述
@@ -385,7 +359,7 @@ Orin 相机自动部署脚本:
 
 ### 4.1 仓库位置
 
-三个 Compose 的构建上下文都是仓库父目录，建议保持以下结构:
+两个 Compose 的构建上下文都是仓库父目录，建议保持以下结构:
 
 ```text
 wildos_ws/src/
@@ -400,12 +374,10 @@ wildos_ws/src/
 
 机器狗 AGX Orin:
 
-- Docker Engine 和 Docker Compose v2
-- 连接 Livox MID360 的有线网卡已设置静态 IPv4 地址
-- 主机网卡 IP、MID360 IP 与驱动 JSON 位于同一子网
-- 防火墙允许 JSON 中的 Livox UDP 端口
-- 已准备现场 DLIO 参数文件
-- 原有导航算法与容器使用相同 ROS domain 和 RMW
+- 保持现有 Livox、POINT-LIO、global localization 和原导航宿主机链路
+- 稳定发布 `/cloud_registered`、`/odom`、`/tf` 和 `/tf_static`
+- ROS domain 为 `2`，RMW 为 `rmw_fastrtps_cpp`
+- 不启动本项目的雷达、D-LIO 或 WildOS 容器
 
 新 AGX Orin:
 
@@ -415,7 +387,7 @@ wildos_ws/src/
 - 三台 RealSense 可通过 `/dev/bus/usb` 访问
 - WildOS 模型目录完整
 
-保留的 x86 方案需要满足与机器狗 AGX Orin 相同的雷达网卡、MID360 和 DLIO 参数要求
+保留的 x86 方案需要单独准备雷达网卡、MID360 和 DLIO 参数
 
 ### 4.3 DDS 和时间同步
 
@@ -424,7 +396,7 @@ wildos_ws/src/
 ```dotenv
 ROS_DOMAIN_ID=2
 ROS_LOCALHOST_ONLY=0
-RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 ```
 
 部署前确认:
@@ -434,27 +406,17 @@ RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 - 两台主机位于可互通网络
 - 不存在第二个 `/odom` 或相同 TF child frame publisher
 
-## 5. 雷达和 DLIO 部署
+## 5. x86 备用雷达和 DLIO 部署
 
-### 5.1 选择部署平台
+### 5.1 准备环境文件
 
-本次测试在机器狗 AGX Orin 上执行:
-
-```bash
-cp .env.orin.lidar-dlio.example .env.orin.lidar-dlio
-export LIDAR_ENV_FILE=.env.orin.lidar-dlio
-export LIDAR_COMPOSE_FILE=compose.orin.lidar-dlio.yaml
-```
-
-使用保留的 x86 方案时执行:
+本节仅用于 x86 备用主机:
 
 ```bash
 cp .env.x86_64.lidar-dlio.example .env.x86_64.lidar-dlio
 export LIDAR_ENV_FILE=.env.x86_64.lidar-dlio
 export LIDAR_COMPOSE_FILE=compose.x86_64.lidar-dlio.yaml
 ```
-
-后续命令通过这两个变量适配两种平台
 
 ### 5.2 准备传感器配置
 
@@ -523,7 +485,7 @@ docker compose \
 
 ### 5.4 构建镜像
 
-必须在目标机器上原生构建，机器狗 AGX Orin 构建 arm64 镜像，x86 主机构建 amd64 镜像
+必须在 x86 备用主机上原生构建 amd64 镜像
 
 ```bash
 docker compose \
@@ -601,6 +563,7 @@ cp .env.orin.wildos-cameras.example .env.orin.wildos-cameras
 
 ```dotenv
 ROS_DOMAIN_ID=2
+RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 POINTCLOUD_INPUT_TOPIC=/cloud_registered
 ODOM_INPUT_TOPIC=/odom
 WILDOS_CKPT_DIR=/absolute/path/to/nebula2-wildos/ckpts
@@ -876,16 +839,7 @@ docker compose \
 
 ### 8.4 停止服务
 
-机器狗 Orin 雷达定位:
-
-```bash
-docker compose \
-  --env-file .env.orin.lidar-dlio \
-  -f compose.orin.lidar-dlio.yaml \
-  down
-```
-
-Orin:
+新 Orin:
 
 ```bash
 docker compose \
@@ -961,9 +915,9 @@ docker compose \
 ## 11. 推荐启动顺序
 
 ```text
-1. 启动机器狗 Orin LiDAR 和 IMU 驱动
-2. 启动机器狗 Orin localization
-3. 验证 /cloud_registered、/odom 和 TF
+1. 启动机器狗现有 Livox、POINT-LIO 和 global localization
+2. 验证 /cloud_registered、/odom 和 TF
+3. 在新 Orin 验证 Domain 2 和 FastDDS 跨机通信
 4. 启动 Orin cameras
 5. 验证三路图像、CameraInfo 和相机 TF
 6. 启动 Orin wildos

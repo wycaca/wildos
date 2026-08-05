@@ -8,7 +8,7 @@
 |---|---|---|
 | `graph_construction/configs/topic_profiles.yaml` | 更换平台或通信环境 | 外部 topic、frame、RMW、内部 topic 契约 |
 | `graph_construction/configs/dlio/unity.yaml` | 调整 Unity 内置 DLIO | 传感器 frame、外参、去畸变、IMU 和 GICP 参数 |
-| 现场 DLIO YAML | 调整实机 DLIO | 通过对应平台 `.env.*.lidar-dlio` 的 `DLIO_CONFIG_FILE` 挂载 |
+| x86 备用 DLIO YAML | 调整备用实机 DLIO | 通过 `.env.x86_64.lidar-dlio` 的 `DLIO_CONFIG_FILE` 挂载 |
 | `graph_construction/configs/elevation_mapping_sim.yaml` | 更换地图范围或传感器量程 | GridMap 尺寸、更新率、启动安全先验 |
 | `graph_construction/configs/graph_construction_elevation.yaml` | 更换机器人尺寸或图密度要求 | 地图分类、净空、节点和边参数 |
 | `visual_navigation/configs/wildos_nav_sim_conf.yaml` | 更换视觉模型或相机性能要求 | 模型、同步、评分和目标检测参数 |
@@ -35,12 +35,12 @@
 
 真机通常不订阅 `/clock`, 使用 `use_sim_time:=false`
 
-新 Orin 与雷达定位主机使用 CycloneDDS 通信。启动两台主机上的 ROS 2 容器或调试节点前必须使用相同环境:
+新 Orin 与机器狗 Orin 现有定位链路使用 FastDDS 通信。启动两台主机上的 ROS 2 容器或调试节点前必须使用相同环境:
 
 ```bash
 export ROS_DOMAIN_ID=2
 export ROS_LOCALHOST_ONLY=0
-export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 ```
 
 修改 RMW 后必须重启相关 ROS 2 进程，已经运行的进程不会切换中间件
@@ -52,7 +52,7 @@ export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 /odom -> odom frame adapter -> /spot1/odom_for_scoring
 ```
 
-当前机器狗 Orin D-LIO 默认让 `/cloud_registered` 保留 `dlio_odom` frame，通过 `/tf` 提供 `odom -> dlio_odom -> base_link`
+当前机器狗 Orin 由 POINT-LIO 发布 `odom_3D` frame 下的 `/cloud_registered`，global localization 和 transform fusion 提供 `map -> odom_3D`、`map -> odom -> base_link` 和传感器 TF
 
 `/cloud_registered` 已经是注册点云，robot profile 不再启动 Python pointcloud adapter。elevation mapping 保留点云原始 frame 和字段，再通过 TF 转换到全局 `odom`
 
@@ -62,7 +62,7 @@ export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 ros2 topic echo /cloud_registered --field header --once
 ros2 topic echo /odom --once
 ros2 run tf2_ros tf2_echo odom base_link
-ros2 run tf2_ros tf2_echo odom dlio_odom
+ros2 run tf2_ros tf2_echo odom odom_3D
 ```
 
 不得只修改点云 header 来冒充坐标变换

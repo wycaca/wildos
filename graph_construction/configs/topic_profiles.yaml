@@ -125,11 +125,11 @@ profiles:
 
   robot:
     <<: *common_contract
-    description: robot AGX Orin D-LIO registered cloud profile
+    description: robot POINT-LIO and global localization profile
 
     # 通信环境
     ros_domain_id: "2"
-    rmw_implementation: rmw_cyclonedds_cpp
+    rmw_implementation: rmw_fastrtps_cpp
 
     # frame 和外参 owner, 真机部署前必须核对
     global_frame: odom
@@ -142,7 +142,7 @@ profiles:
     lidar_parent_frame: base_link
     lidar_frame: lidar_link
     pointcloud_axis_mode: identity
-    pointcloud_output_frame: dlio_odom
+    pointcloud_output_frame: odom_3D
     use_pointcloud_axis_adapter: false
 
     # 外部输入, registered cloud 直接通过现有 TF 转换到 odom

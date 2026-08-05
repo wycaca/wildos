@@ -17,7 +17,7 @@ x-x86-runtime: &x86-runtime
 x-dds-environment: &dds-environment
   ROS_DOMAIN_ID: "${ROS_DOMAIN_ID:?Set ROS_DOMAIN_ID}"
   ROS_LOCALHOST_ONLY: "${ROS_LOCALHOST_ONLY:-0}"
-  RMW_IMPLEMENTATION: "${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
+  RMW_IMPLEMENTATION: "${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}"
 
 services:
   lidar:

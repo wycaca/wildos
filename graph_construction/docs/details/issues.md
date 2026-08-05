@@ -557,7 +557,7 @@ DLIO 自动化测试已通过, 但与 Unity 参考 odom 约 10 至 16.6 度的�
 - 算法参数保留在所属模块配置, 固定实现值改为代码常量
 - 启动脚本阻止重复启动第二套同名主链路
 - 运行前确认加载的是主 workspace 的最新 install tree
-- 机器狗 Orin 运行 LiDAR、IMU、DLIO 和现有导航算法
+- 机器狗 Orin 保持现有 Livox、POINT-LIO、global localization 和导航链路
 - 新 Orin 运行三相机、高程图、导航图、视觉和 Planner
 - 两台主机使用相同 ROS domain、RMW 和系统时间
 - 三台相机按序列号绑定 front、left、right, 不依赖 `/dev/videoN`
@@ -643,7 +643,7 @@ flowchart TD
 | 目标定位 | 多视角软权重、物理门控和 LiDAR 连续性保护 | Mask 延迟、LiDAR 精修率和外参精度 |
 | 最终完成 | 最终观察、换位和 `REACHED` 门控 | Unity 端到端闭环 |
 | DLIO | 主链接入、TF 隔离和健康暂停恢复 | 累计方向差来源 |
-| 部署 | 双 Orin 拆分方案、x86 备用方案和容器健康检查 | 现场相机、时钟、DDS 带宽和持续负载 |
+| 部署 | 机器狗现有定位 + 新 Orin WildOS、x86 备用方案和容器健康检查 | 现场相机、时钟、DDS 带宽和持续负载 |
 
 ## 17. 总结
 

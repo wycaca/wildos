@@ -147,7 +147,7 @@ DLIO 的输入点云直接使用 `pointcloud_input_topic`, 不需要单独配置
 
 坐标对齐、外参方向、TF 发布权和方向差诊断见 [DLIO 坐标与 TF](dlio.md)
 
-雷达定位 Compose 使用独立 `dlio_localization.launch.py`，内部 topic 位于 `/wildos/dlio/*`，只向 WildOS Orin 暴露 `/cloud_registered`、`/odom` 和 `/tf`
+x86 备用雷达定位 Compose 使用独立 `dlio_localization.launch.py`，内部 topic 位于 `/wildos/dlio/*`，只向 WildOS Orin 暴露 `/cloud_registered`、`/odom` 和 `/tf`
 
 ## 6. 适配层和 Canonical Topic
 
@@ -283,11 +283,11 @@ WildOS 每 30 s 输出一次 DEBUG 诊断, 包括:
 
 `{}` 展开为 `front`、`left`、`right`
 
-`robot` profile 使用机器狗 Orin D-LIO 的 `/cloud_registered` 和 `/odom`，默认 frame 链为 `odom -> dlio_odom -> base_link`
+`robot` profile 使用机器狗 Orin POINT-LIO 的 `/cloud_registered` 和 transform fusion 的 `/odom`。注册点云 frame 为 `odom_3D`，TF 链包含 `map -> odom_3D` 和 `map -> odom -> base_link`
 
 robot profile 将注册点云直接交给 elevation mapping，不经过 Python 点云转发
 
-新 Orin 和雷达定位主机统一使用 `rmw_cyclonedds_cpp`。两端 RMW 不一致时可能只能发现 endpoint，无法持续收到点云数据
+新 Orin 和机器狗 Orin 统一使用 `rmw_fastrtps_cpp`。两端 RMW 不一致时可能只能发现 endpoint，无法持续收到点云数据
 
 三相机输入已固定为 `/spot1/realsense/{front,left,right}/color/image_raw/compressed` 和对应的 `camera_info`
 

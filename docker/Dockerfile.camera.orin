@@ -19,6 +19,7 @@ RUN chmod +x /tmp/configure_apt_mirrors.sh \
       ros-humble-image-transport \
       ros-humble-realsense2-camera \
       ros-humble-rmw-cyclonedds-cpp \
+      ros-humble-rmw-fastrtps-cpp \
       ros-humble-tf2-ros \
       usbutils \
     && /tmp/configure_apt_mirrors.sh https \
