@@ -16,7 +16,7 @@
 | 目标定位 | `docs/details/target_localization.md` |
 | Topic 契约 | `docs/details/topics.md` |
 | 环境切换配置 | `docs/details/environment.md` |
-| 双主机 Docker 拆分部署 | `docs/2026-07-29/2026-07-29-split-docker-deployment.md` |
+| 双主机 Docker 拆分部署 | `docs/details/docker_deployment.md` |
 | 当前 TODO | 本文第 6.1 节 |
 
 ## 2. 文档维护规则
@@ -161,7 +161,7 @@ Pose Graph 更新后:
 
 文档记录的最新分模块测试:
 
-- `graph_construction` 完整 151 项测试通过
+- `graph_construction` 完整 155 项测试通过
 - 粒子滤波 9 项通过
 - 目标链路 54 项通过, 1 项环境相关测试跳过
 - Goal Mux 29 项通过
@@ -246,7 +246,7 @@ Pose Graph 更新后:
 
 | 配置范围 | 文件 |
 |---|---|
-| topic、frame、ROS domain | `graph_construction/configs/topic_profiles.yaml` |
+| topic、frame、ROS domain 和传感器或场景阈值 | `graph_construction/configs/topic_profiles.yaml` |
 | DLIO frame、外参和配准参数 | `graph_construction/configs/dlio/<profile>.yaml` |
 | 高程图范围、更新率和启动先验 | `graph_construction/configs/elevation_mapping_sim.yaml` |
 | 高程图解码和 graph ROS 参数 | `graph_construction/configs/graph_construction_elevation.yaml` |

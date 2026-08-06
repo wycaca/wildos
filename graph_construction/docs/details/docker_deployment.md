@@ -186,6 +186,7 @@ AGX Orin 三相机镜像
 - 加载 ROS 和工作空间环境
 - 把环境变量转换为 ROS launch 参数
 - 固定使用 robot profile、platform localization、无仿真时间和无 RViz 模式
+- topic 和 frame 直接读取内置 robot profile
 - 固定禁止 Orin 启动第二套 D-LIO 和相机静态 TF
 - 默认选择实机 `wildos_nav_conf.yaml`，可通过 `WILDOS_VISUAL_CONFIG` 覆盖
 - 调用 `verify_runtime.py` 检查模型和 GPU
@@ -564,8 +565,6 @@ cp .env.orin.wildos-cameras.example .env.orin.wildos-cameras
 ```dotenv
 ROS_DOMAIN_ID=2
 RMW_IMPLEMENTATION=rmw_fastrtps_cpp
-POINTCLOUD_INPUT_TOPIC=/cloud_registered
-ODOM_INPUT_TOPIC=/odom
 WILDOS_CKPT_DIR=/absolute/path/to/nebula2-wildos/ckpts
 WILDOS_ORIN_IMAGE_TAG=orin-jp62
 WILDOS_ORIN_BASE_IMAGE=nvcr.io/nvidia/pytorch:24.10-py3-igpu

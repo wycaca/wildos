@@ -49,14 +49,6 @@ done
 
 append_launch_arguments DO_OBJECT_SEARCH do_object_search
 append_launch_arguments WILDOS_LOG_LEVEL log_level
-append_launch_arguments GLOBAL_FRAME \
-  global_frame parent_frame odom_parent_frame
-append_launch_arguments BASE_FRAME odom_child_frame base_frame
-append_launch_arguments POINTCLOUD_INPUT_TOPIC pointcloud_input_topic
-append_launch_arguments ODOM_INPUT_TOPIC odom_input_topic
-append_launch_arguments LIDAR_FRAME lidar_frame
-append_launch_arguments CAMERA_IMG_TOPIC camera_img_topic
-append_launch_arguments CAMERA_INFO_TOPIC camera_info_topic
 launch_arguments+=(
   "topic_profile:=robot"
   "use_sim_time:=false"
@@ -64,7 +56,6 @@ launch_arguments+=(
   "localization_backend:=platform"
   "launch_dlio:=false"
   "publish_camera_static_tf:=false"
-  "cam_frame:={}_color_optical_frame"
   "visual_config:=${WILDOS_VISUAL_CONFIG:-wildos_nav_conf.yaml}"
 )
 

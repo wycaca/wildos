@@ -96,7 +96,7 @@ graph_construction/launch/elevation_visual_navigation_sim.launch.py
 
 | 配置内容 | 文件 |
 |---|---|
-| 平台 topic、frame、ROS domain | `graph_construction/configs/topic_profiles.yaml` |
+| 平台 topic、frame、ROS domain 和传感器或场景阈值 | `graph_construction/configs/topic_profiles.yaml` |
 | Unity DLIO frame、外参和配准参数 | `graph_construction/configs/dlio/unity.yaml` |
 | x86 备用 DLIO 参数 | `.env.x86_64.lidar-dlio` 指向的现场 YAML |
 | 高程图范围、更新率和启动先验 | `graph_construction/configs/elevation_mapping_sim.yaml` |

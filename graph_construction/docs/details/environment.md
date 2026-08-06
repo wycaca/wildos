@@ -6,7 +6,7 @@
 
 | 文件 | 修改时机 | 内容 |
 |---|---|---|
-| `graph_construction/configs/topic_profiles.yaml` | 更换平台或通信环境 | 外部 topic、frame、RMW、内部 topic 契约 |
+| `graph_construction/configs/topic_profiles.yaml` | 更换平台、通信环境、传感器或场景 | 外部 topic、frame、RMW、内部 topic 契约和场景阈值 |
 | `graph_construction/configs/dlio/unity.yaml` | 调整 Unity 内置 DLIO | 传感器 frame、外参、去畸变、IMU 和 GICP 参数 |
 | x86 备用 DLIO YAML | 调整备用实机 DLIO | 通过 `.env.x86_64.lidar-dlio` 的 `DLIO_CONFIG_FILE` 挂载 |
 | `graph_construction/configs/elevation_mapping_sim.yaml` | 更换地图范围或传感器量程 | GridMap 尺寸、更新率、启动安全先验 |

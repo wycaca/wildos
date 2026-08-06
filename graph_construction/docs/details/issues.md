@@ -553,8 +553,8 @@ DLIO 自动化测试已通过, 但与 Unity 参考 odom 约 10 至 16.6 度的�
 ### 解决办法
 
 - 默认入口统一为 `scripts/start_wildos_elevation.sh`
-- 平台差异集中到 `topic_profiles.yaml`
-- 算法参数保留在所属模块配置, 固定实现值改为代码常量
+- 平台差异和传感器或场景相关阈值集中到 `topic_profiles.yaml`
+- 不随平台变化的算法参数保留在所属模块配置, 固定实现值改为代码常量
 - 启动脚本阻止重复启动第二套同名主链路
 - 运行前确认加载的是主 workspace 的最新 install tree
 - 机器狗 Orin 保持现有 Livox、POINT-LIO、global localization 和导航链路
