@@ -8,6 +8,7 @@ ENV_FILE="${REPO_ROOT}/.env.orin.wildos-cameras"
 ENV_TEMPLATE="${REPO_ROOT}/.env.orin.wildos-cameras.example"
 COMPOSE_FILE="${REPO_ROOT}/compose.orin.wildos-cameras.yaml"
 INVENTORY_FILE=""
+ASSIGN_ROLE=""
 PREPARE_ONLY=false
 START_CAMERA=false
 REQUIRE_TRANSFORMS=false
@@ -18,7 +19,8 @@ Usage: deploy_orin_cameras.sh [options]
 
 Options:
   --env-file PATH             Generated Compose environment file
-  --inventory-file PATH       Read serial|model|usb_path records instead of udev
+  --inventory-file PATH       Read serial|model|usb_path records instead of librealsense
+  --assign ROLE               Register one connected camera as front, left, or right
   --prepare-only              Generate and validate configuration without building
   --up                        Start the cameras service after building
   --require-transforms        Reject missing calibrated transforms
@@ -34,6 +36,11 @@ while [[ $# -gt 0 ]]; do
       ;;
     --inventory-file)
       INVENTORY_FILE="${2:?Missing path for --inventory-file}"
+      shift 2
+      ;;
+    --assign)
+      ASSIGN_ROLE="${2:?Missing role for --assign}"
+      ASSIGN_ROLE="${ASSIGN_ROLE,,}"
       shift 2
       ;;
     --prepare-only)
@@ -70,6 +77,11 @@ set -a
 source "${ENV_FILE}"
 set +a
 
+if [[ -n "${ASSIGN_ROLE}" && ! "${ASSIGN_ROLE}" =~ ^(front|left|right)$ ]]; then
+  echo "Unsupported camera role: ${ASSIGN_ROLE}" >&2
+  exit 1
+fi
+
 declare -A CAMERA_MODELS=()
 declare -A CAMERA_PATHS=()
 declare -A ASSIGNED_SERIALS=()
@@ -94,31 +106,42 @@ load_inventory_file() {
   done < "${INVENTORY_FILE}"
 }
 
-# Deduplicate the many video nodes exported by each physical RealSense device
-discover_udev_cameras() {
-  local device
-  local properties
+# Use the same librealsense serial number consumed by the ROS camera driver
+discover_realsense_cameras() {
+  local camera_image="wildos-cameras:${WILDOS_CAMERA_IMAGE_TAG:?Set WILDOS_CAMERA_IMAGE_TAG}"
+  local inventory
+  local line
   local serial
   local model
   local usb_path
-  local vendor_id
 
-  if ! command -v udevadm >/dev/null 2>&1; then
-    echo "Missing udevadm" >&2
+  if command -v rs-enumerate-devices >/dev/null 2>&1; then
+    inventory="$(rs-enumerate-devices)"
+  elif docker image inspect "${camera_image}" >/dev/null 2>&1; then
+    inventory="$(docker run --rm --privileged \
+      -v /dev/bus/usb:/dev/bus/usb \
+      "${camera_image}" \
+      bash -lc 'source /opt/ros/humble/setup.bash; rs-enumerate-devices')"
+  else
+    echo "Missing ${camera_image}, build the cameras image before assigning roles" >&2
     exit 1
   fi
 
-  while IFS= read -r device; do
-    properties="$(udevadm info --query=property --name="${device}" 2>/dev/null || true)"
-    vendor_id="$(sed -n 's/^ID_VENDOR_ID=//p' <<<"${properties}" | head -n 1)"
-    [[ "${vendor_id,,}" == "8086" ]] || continue
-    serial="$(sed -n 's/^ID_SERIAL_SHORT=//p' <<<"${properties}" | head -n 1)"
-    model="$(sed -n 's/^ID_MODEL=//p' <<<"${properties}" | head -n 1)"
-    usb_path="$(sed -n 's/^ID_PATH=//p' <<<"${properties}" | head -n 1)"
-    usb_path="${usb_path%-video-index*}"
-    usb_path="${usb_path%:*}"
-    add_camera "${serial}" "${model}" "${usb_path}"
-  done < <(find /dev -maxdepth 1 -type c -name 'video*' -print | sort -V)
+  while IFS= read -r line; do
+    case "${line}" in
+      *"Name"*":"*) model="${line#*:}" ;;
+      *"Serial Number"*":"*) serial="${line#*:}" ;;
+      *"Physical Port"*":"*)
+        usb_path="${line#*:}"
+        model="$(xargs <<<"${model:-}")"
+        serial="$(xargs <<<"${serial:-}")"
+        usb_path="$(xargs <<<"${usb_path}")"
+        add_camera "${serial}" "${model}" "${usb_path}"
+        serial=""
+        model=""
+        ;;
+    esac
+  done <<<"${inventory}"
 }
 
 if [[ -n "${INVENTORY_FILE}" ]]; then
@@ -128,10 +151,13 @@ if [[ -n "${INVENTORY_FILE}" ]]; then
   }
   load_inventory_file
 else
-  discover_udev_cameras
+  discover_realsense_cameras
 fi
 
-if [[ ${#CAMERA_MODELS[@]} -ne 3 ]]; then
+if [[ -n "${ASSIGN_ROLE}" && ${#CAMERA_MODELS[@]} -lt 1 ]]; then
+  echo "Expected at least 1 Intel RealSense device, found 0" >&2
+  exit 1
+elif [[ -z "${ASSIGN_ROLE}" && ${#CAMERA_MODELS[@]} -ne 3 ]]; then
   echo "Expected exactly 3 Intel RealSense devices, found ${#CAMERA_MODELS[@]}" >&2
   exit 1
 fi
@@ -170,13 +196,11 @@ find_serial_by_usb_path() {
   printf '%s\n' "${match}"
 }
 
-find_unique_front_model() {
+find_only_unassigned_camera() {
   local serial
-  local model
   local match=""
   for serial in "${CAMERA_SERIALS[@]}"; do
-    model="${CAMERA_MODELS[${serial}]^^}"
-    [[ "${model}" == *"D435IF"* ]] || continue
+    [[ -z "${ASSIGNED_SERIALS[${serial}]:-}" ]] || continue
     [[ -z "${match}" ]] || return 1
     match="${serial}"
   done
@@ -196,14 +220,14 @@ select_camera() {
     serial="${configured_serial}"
   elif serial="$(find_serial_by_usb_path "${usb_path}" 2>/dev/null)"; then
     :
-  elif [[ "${role}" == "FRONT" ]] \
-    && serial="$(find_unique_front_model 2>/dev/null)"; then
+  elif serial="$(find_only_unassigned_camera 2>/dev/null)"; then
     :
   elif [[ -t 0 ]]; then
     print_inventory >&2
     while true; do
-      read -r -p "Select ${role} camera [1-3]: " selection
-      if [[ "${selection}" =~ ^[1-3]$ ]]; then
+      read -r -p "Select ${role} camera [1-${#CAMERA_SERIALS[@]}]: " selection
+      if [[ "${selection}" =~ ^[0-9]+$ ]] \
+        && ((selection >= 1 && selection <= ${#CAMERA_SERIALS[@]})); then
         serial="${CAMERA_SERIALS[$((selection - 1))]}"
         if [[ -n "${ASSIGNED_SERIALS[${serial}]:-}" ]]; then
           echo "Camera ${serial} is already assigned to ${ASSIGNED_SERIALS[${serial}]}" >&2
@@ -225,12 +249,26 @@ select_camera() {
   SELECTED_SERIAL="${serial}"
 }
 
-select_camera FRONT "${FRONT_CAMERA_SERIAL:-}" "${FRONT_CAMERA_USB_PATH:-}"
-FRONT_CAMERA_SERIAL="${SELECTED_SERIAL}"
-select_camera LEFT "${LEFT_CAMERA_SERIAL:-}" "${LEFT_CAMERA_USB_PATH:-}"
-LEFT_CAMERA_SERIAL="${SELECTED_SERIAL}"
-select_camera RIGHT "${RIGHT_CAMERA_SERIAL:-}" "${RIGHT_CAMERA_USB_PATH:-}"
-RIGHT_CAMERA_SERIAL="${SELECTED_SERIAL}"
+if [[ -n "${ASSIGN_ROLE}" ]]; then
+  roles=("${ASSIGN_ROLE^^}")
+  for role in FRONT LEFT RIGHT; do
+    [[ "${role}" == "${roles[0]}" ]] && continue
+    serial_variable="${role}_CAMERA_SERIAL"
+    serial="${!serial_variable:-}"
+    if [[ -n "${serial}" && -n "${CAMERA_MODELS[${serial}]:-}" ]]; then
+      ASSIGNED_SERIALS["${serial}"]="${role}"
+    fi
+  done
+else
+  roles=(FRONT LEFT RIGHT)
+fi
+
+for role in "${roles[@]}"; do
+  serial_variable="${role}_CAMERA_SERIAL"
+  usb_path_variable="${role}_CAMERA_USB_PATH"
+  select_camera "${role}" "${!serial_variable:-}" "${!usb_path_variable:-}"
+  printf -v "${serial_variable}" '%s' "${SELECTED_SERIAL}"
+done
 
 # Update one dotenv key while preserving unrelated deployment settings
 update_config_value() {
@@ -259,7 +297,7 @@ update_config_value() {
   mv "${temporary_file}" "${target_file}"
 }
 
-for role in FRONT LEFT RIGHT; do
+for role in "${roles[@]}"; do
   serial_variable="${role}_CAMERA_SERIAL"
   transform_variable="${role}_CAMERA_TRANSFORM"
   usb_path_variable="${role}_CAMERA_USB_PATH"
@@ -272,7 +310,7 @@ for role in FRONT LEFT RIGHT; do
 done
 chmod 0600 "${ENV_FILE}"
 
-for role in FRONT LEFT RIGHT; do
+for role in "${roles[@]}"; do
   transform_variable="${role}_CAMERA_TRANSFORM"
   if [[ -z "${!transform_variable:-}" ]]; then
     if [[ "${REQUIRE_TRANSFORMS}" == "true" ]]; then
@@ -285,9 +323,15 @@ done
 
 print_inventory
 echo "Camera assignments:"
-echo "  front=${FRONT_CAMERA_SERIAL}"
-echo "  left=${LEFT_CAMERA_SERIAL}"
-echo "  right=${RIGHT_CAMERA_SERIAL}"
+for role in "${roles[@]}"; do
+  serial_variable="${role}_CAMERA_SERIAL"
+  echo "  ${role,,}=${!serial_variable}"
+done
+
+if [[ -n "${ASSIGN_ROLE}" ]]; then
+  echo "Registered ${ASSIGN_ROLE} camera in ${ENV_FILE}"
+  exit 0
+fi
 
 compose=(docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}")
 "${compose[@]}" config --quiet

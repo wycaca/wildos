@@ -348,8 +348,8 @@ WildOS 启动前检查:
 
 Orin 相机自动部署脚本:
 
-- 通过 udev 自动发现并去重三台 Intel RealSense
-- 首次选择 front、left、right 后保存 USB 物理路径
+- 通过 librealsense 自动发现三台 Intel RealSense
+- 按 front、left、right 逐台登记并保存 USB 物理路径
 - 自动复制 `.env.orin.wildos-cameras.example`
 - 自动写入相机序列号和 USB 物理路径
 - 复用同一 `.env` 中的相机标定外参
@@ -613,24 +613,40 @@ docker compose \
 - NavigationGraph 和 Path 正常生成
 - 运动执行链能够消费正确路径
 
-## 7. Orin WildOS 和三相机部署
+## 7. Orin WildOS 和相机部署
 
 ### 7.1 自动发现、配置和构建
 
-连接三台相机后，在 Orin 仓库根目录执行:
+三相机运行架构保持不变，安装时按 front、left、right 逐台登记，避免混淆物理角色
+
+当前只连接作为前相机的 D435if，在 Orin 仓库根目录执行:
 
 ```bash
-bash scripts/deploy_orin_cameras.sh
+bash scripts/deploy_orin_cameras.sh --assign front
 ```
 
 脚本会自动:
 
-1. 从 `/dev/video*` 和 udev 属性读取三台 RealSense 的序列号、型号和 USB 物理路径
-2. 首次运行时通过编号选择 front、left、right，不需要手动复制序列号
+1. 通过 librealsense 读取当前 RealSense 的驱动序列号、型号和 USB 物理路径
+2. 将当前设备登记到 `--assign` 指定的角色
 3. 保存角色与 USB 物理端口的映射，后续运行无需再次选择
 4. 从 `.env.orin.wildos-cameras.example` 创建 `.env.orin.wildos-cameras`
-5. 写入三个相机序列号和安装位外参
-6. 验证 Compose 并构建 `cameras` 镜像
+5. 检查该角色的外参配置
+
+确认下一台相机的安装方向后继续登记:
+
+```bash
+bash scripts/deploy_orin_cameras.sh --assign left
+bash scripts/deploy_orin_cameras.sh --assign right
+```
+
+`--assign` 只更新配置，不构建或启动容器，三台全部连接后再执行完整构建:
+
+```bash
+bash scripts/deploy_orin_cameras.sh --up
+```
+
+相机镜像、健康检查和 WildOS 视觉模型始终要求 front、left、right 三路输入
 
 首次运行会自动创建 `.env.orin.wildos-cameras`
 
@@ -664,7 +680,7 @@ bash scripts/deploy_orin_cameras.sh --require-transforms --up
 rs-enumerate-devices
 ```
 
-记录三台设备序列号，并固定 front、left、right 角色，不使用 `/dev/videoN` 作为身份
+记录设备序列号，并固定 front、left、right 角色，不使用 `/dev/videoN` 作为身份
 
 ```bash
 cp .env.orin.wildos-cameras.example .env.orin.wildos-cameras
@@ -689,6 +705,13 @@ RIGHT_CAMERA_TRANSFORM="x y z qx qy qz qw"
 外参表示 `base_link -> <name>_link`
 
 外参暂时留空时可以验证图像，但不能完成视觉评分和三维目标定位验收
+
+每台相机安装固定后需要完成以下项目:
+
+- 记录序列号、逻辑方向和稳定 USB 物理路径
+- 标定 `base_link -> <name>_link` 的平移和旋转
+- 确认彩色图像方向、遮挡、视场重叠和 15 Hz 输出
+- 三台接入后再验证时间同步、三路视觉推理和三维目标定位
 
 同时确认:
 
@@ -726,7 +749,7 @@ docker compose \
   logs -f cameras
 ```
 
-检查三路相机:
+三台接入完成后检查三路相机，当前安装阶段先检查前相机:
 
 ```bash
 ros2 topic hz /spot1/realsense/front/color/image_raw
