@@ -82,6 +82,10 @@ def test_profiles_share_internal_topic_contract():
     }
 
     assert set(config["profiles"]) == {"isaac", "unity", "robot"}
+    assert all(
+        key == "namespace" or key.endswith("_topic")
+        for key in common_contract
+    )
     for profile in config["profiles"].values():
         assert {
             key: profile[key]

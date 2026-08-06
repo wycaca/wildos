@@ -2,8 +2,6 @@
 # common_contract 是内部稳定契约, 新环境通常只新增 profile
 common_contract: &common_contract
   namespace: spot1
-  camera_static_tf_convention: x_forward_y_left
-  camera_image_flip_x: "false"
 
   # 内部 canonical topic, 除非整套系统改 namespace 否则不要修改
   odom_output_topic: /spot1/odom_for_scoring
@@ -24,26 +22,9 @@ common_contract: &common_contract
   object_search_completed_topic: /spot1/object_search_completed
   object_search_status_topic: /spot1/object_search_status
 
-  # 公共目标搜索参数, 只有传感器或任务定义变化时才调整
-  object_search_initial_goal_distance: "30.0"
-  object_search_initial_goal_heading_deg: "0.0"
-  object_search_detection_min_peak_score: "0.12"
-  object_search_detection_confirm_min_peak_score: "0.110"
-  object_search_detection_min_component_pixels: "300"
-  object_search_detection_min_component_fraction: "0.0005"
-  object_search_detection_confirm_frames: "2"
-  object_search_detection_confirm_window_frames: "3"
-  object_search_detection_debug_interval: "20"
-  object_search_goal_publish_rate: "5.0"
-  object_search_object_reached_max_target_distance: "2.0"
-  object_search_reached_mask_fraction: "0.01"
-  object_search_reached_min_pixel_count: "1200"
-  object_search_reached_confirm_frames: "2"
-
 profiles:
   isaac:
     <<: *common_contract
-    description: Isaac Sim 5.1 Go2 profile
 
     # 通信环境
     ros_domain_id: "3"
@@ -80,7 +61,6 @@ profiles:
 
   unity:
     <<: *common_contract
-    description: Unity simulation profile
 
     # 通信环境
     ros_domain_id: "89"
@@ -125,7 +105,6 @@ profiles:
 
   robot:
     <<: *common_contract
-    description: robot POINT-LIO and global localization profile
 
     # 通信环境
     ros_domain_id: "2"

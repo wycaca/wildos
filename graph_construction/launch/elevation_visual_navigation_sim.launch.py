@@ -21,7 +21,6 @@ def generate_launch_description():
                 default_value="",
                 description="Optional absolute path to a custom topic profile YAML",
             ),
-            DeclareLaunchArgument("ns", default_value="", description="Robot namespace, empty uses topic profile"),
             DeclareLaunchArgument(
                 "elevation_config",
                 default_value="elevation_mapping_sim.yaml",
@@ -91,21 +90,6 @@ def generate_launch_description():
                 description="Publish odom with frame ids expected by WildOS",
             ),
             DeclareLaunchArgument(
-                "launch_pointcloud_axis_adapter",
-                default_value="true",
-                description="Publish an aligned point cloud for elevation mapping",
-            ),
-            DeclareLaunchArgument(
-                "odom_stamp_mode",
-                default_value="",
-                description="Adapted odometry stamp mode, empty selects a backend-safe default",
-            ),
-            DeclareLaunchArgument(
-                "odom_pose_source",
-                default_value="",
-                description="Adapted odometry pose source, empty selects a backend-safe default",
-            ),
-            DeclareLaunchArgument(
                 "odom_fallback_to_message",
                 default_value="false",
                 description="Fallback to source odom pose if TF pose is unavailable",
@@ -150,7 +134,7 @@ def _launch_setup(context):
         _arg(context, "localization_backend"),
     )
 
-    ns = _value(context, profile, "ns", "namespace")
+    ns = str(profile["namespace"])
     elevation_config = _arg(context, "elevation_config")
     graph_config = _arg(context, "graph_config")
     visual_config = _arg(context, "visual_config")
@@ -240,76 +224,13 @@ def _launch_setup(context):
                 "visual_frontier_threshold",
                 "visual_frontier_threshold",
             ),
-            "object_search_config.detection_debug_interval": _value(
-                context,
-                profile,
-                "object_search_detection_debug_interval",
-                "object_search_detection_debug_interval",
-            ),
-            "object_search_config.detection_min_peak_score": _value(
-                context,
-                profile,
-                "object_search_detection_min_peak_score",
-                "object_search_detection_min_peak_score",
-            ),
-            "object_search_config.detection_confirm_min_peak_score": _value(
-                context,
-                profile,
-                "object_search_detection_confirm_min_peak_score",
-                "object_search_detection_confirm_min_peak_score",
-            ),
-            "object_search_config.detection_min_component_pixels": _value(
-                context,
-                profile,
-                "object_search_detection_min_component_pixels",
-                "object_search_detection_min_component_pixels",
-            ),
-            "object_search_config.detection_min_component_fraction": _value(
-                context,
-                profile,
-                "object_search_detection_min_component_fraction",
-                "object_search_detection_min_component_fraction",
-            ),
-            "object_search_config.detection_confirm_frames": _value(
-                context,
-                profile,
-                "object_search_detection_confirm_frames",
-                "object_search_detection_confirm_frames",
-            ),
-            "object_search_config.detection_confirm_window_frames": _value(
-                context,
-                profile,
-                "object_search_detection_confirm_window_frames",
-                "object_search_detection_confirm_window_frames",
-            ),
-            "object_search_config.reached_mask_fraction": _value(
-                context,
-                profile,
-                "object_search_reached_mask_fraction",
-                "object_search_reached_mask_fraction",
-            ),
-            "object_search_config.reached_min_pixel_count": _value(
-                context,
-                profile,
-                "object_search_reached_min_pixel_count",
-                "object_search_reached_min_pixel_count",
-            ),
-            "object_search_config.reached_confirm_frames": _value(
-                context,
-                profile,
-                "object_search_reached_confirm_frames",
-                "object_search_reached_confirm_frames",
-            ),
-            "camera_image_flip_x": _value(context, profile, "camera_image_flip_x", "camera_image_flip_x"),
         }
     )
 
     use_sim_time = LaunchConfiguration("use_sim_time")
     log_level = LaunchConfiguration("log_level")
     camera_parent_frame = _value(context, profile, "camera_parent_frame", "camera_parent_frame")
-    camera_transforms = _camera_static_transforms(
-        _value(context, profile, "camera_static_tf_convention", "camera_static_tf_convention")
-    )
+    camera_transforms = _camera_static_transforms()
     planner_odom_topic = _value(context, profile, "planner_odom_topic", "planner_odom_topic")
     goal_pose_topic = _value(context, profile, "goal_pose_topic", "goal_pose_topic")
     scored_nav_graph_topic = _value(context, profile, "scored_nav_graph_topic", "scored_nav_graph_topic")
@@ -375,8 +296,8 @@ def _launch_setup(context):
             {"output_topic": odom_output_topic},
             {"parent_frame": _value(context, profile, "odom_parent_frame", "odom_parent_frame")},
             {"child_frame": _value(context, profile, "odom_child_frame", "odom_child_frame")},
-            {"stamp_mode": _odom_stamp_mode(context, profile, wiring.backend)},
-            {"pose_source": _odom_pose_source(context, profile, wiring.backend)},
+            {"stamp_mode": _odom_stamp_mode(profile, wiring.backend)},
+            {"pose_source": _odom_pose_source(profile, wiring.backend)},
             {"fallback_to_message": LaunchConfiguration("odom_fallback_to_message")},
         ],
         remappings=isolated_tf_remappings,
@@ -395,7 +316,6 @@ def _launch_setup(context):
             {"output_frame": pointcloud_output_frame},
             {"axis_mode": pointcloud_axis_mode},
         ],
-        condition=IfCondition(LaunchConfiguration("launch_pointcloud_axis_adapter")),
     )
 
     camera_stamp_adapter = Node(
@@ -495,43 +415,11 @@ def _launch_setup(context):
             {"scored_nav_graph_topic": scored_nav_graph_topic},
             {"frame_id": global_frame},
             {
-                "publish_rate": _float_value(
-                    context,
-                    profile,
-                    "object_search_goal_publish_rate",
-                    "object_search_goal_publish_rate",
-                )
-            },
-            {
-                "initial_goal_distance": _float_value(
-                    context,
-                    profile,
-                    "object_search_initial_goal_distance",
-                    "object_search_initial_goal_distance",
-                )
-            },
-            {
-                "initial_goal_heading_deg": _float_value(
-                    context,
-                    profile,
-                    "object_search_initial_goal_heading_deg",
-                    "object_search_initial_goal_heading_deg",
-                )
-            },
-            {
                 "object_reached_timeout_sec": _float_value(
                     context,
                     profile,
                     "object_search_object_reached_timeout_sec",
                     "object_search_object_reached_timeout_sec",
-                )
-            },
-            {
-                "object_reached_max_target_distance": _float_value(
-                    context,
-                    profile,
-                    "object_search_object_reached_max_target_distance",
-                    "object_search_object_reached_max_target_distance",
                 )
             },
         ],
@@ -839,10 +727,7 @@ def _tf_remappings(ns):
     ]
 
 
-def _odom_stamp_mode(context, profile, backend):
-    override = _arg(context, "odom_stamp_mode")
-    if override:
-        return override
+def _odom_stamp_mode(profile, backend):
     if backend == "dlio":
         return "preserve"
     return str(profile.get("odom_stamp_mode", "now"))
@@ -854,10 +739,7 @@ def _scoring_odom_input_topic(wiring):
     return wiring.odom_input_topic
 
 
-def _odom_pose_source(context, profile, backend):
-    override = _arg(context, "odom_pose_source")
-    if override:
-        return override
+def _odom_pose_source(profile, backend):
     if backend == "dlio":
         return "message"
     return str(profile.get("odom_pose_source", "tf"))
@@ -949,18 +831,13 @@ def _camera_static_tf(name, parent_frame, transform_args, condition, tf_remappin
     )
 
 
-def _camera_static_transforms(convention):
-    """按仿真 profile 选择相机 optical frame 外参"""
-    transforms = {
-        "x_forward_y_left": {
-            "front": ["0.30", "0.00", "0.20", "0.5", "-0.5", "0.5", "-0.5"],
-            "left": ["0.00", "0.18", "0.20", "0.7071067812", "0.0", "0.0", "-0.7071067812"],
-            "right": ["0.00", "-0.18", "0.20", "0.0", "0.7071067812", "-0.7071067812", "0.0"],
-        },
+def _camera_static_transforms():
+    """返回仿真相机 optical frame 外参"""
+    return {
+        "front": ["0.30", "0.00", "0.20", "0.5", "-0.5", "0.5", "-0.5"],
+        "left": ["0.00", "0.18", "0.20", "0.7071067812", "0.0", "0.0", "-0.7071067812"],
+        "right": ["0.00", "-0.18", "0.20", "0.0", "0.7071067812", "-0.7071067812", "0.0"],
     }
-    if convention not in transforms:
-        raise ValueError(f"Unsupported camera_static_tf_convention: {convention}")
-    return transforms[convention]
 
 
 def _config_override_args(overrides):

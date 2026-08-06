@@ -163,6 +163,10 @@ def test_topic_and_frame_overrides_use_custom_profiles():
     assert "topic_profile_file" in argument_names
     assert "pointcloud_input_topic" not in argument_names
     assert "global_frame" not in argument_names
+    assert "ns" not in argument_names
+    assert "launch_pointcloud_axis_adapter" not in argument_names
+    assert "odom_stamp_mode" not in argument_names
+    assert "odom_pose_source" not in argument_names
 
 
 def test_unity_planner_output_is_remapped_to_source_path():
@@ -179,13 +183,12 @@ def test_unity_planner_output_is_remapped_to_source_path():
 
 def test_dlio_odom_adapter_defaults_to_message_pose():
     module = _load_launch_module()
-    context = _context_with_defaults(module)
     unity = module.load_topic_profile("unity")
     robot = module.load_topic_profile("robot")
 
-    assert module._odom_pose_source(context, unity, "dlio") == "message"
-    assert module._odom_pose_source(context, unity, "platform") == "tf"
-    assert module._odom_pose_source(context, robot, "platform") == "message"
+    assert module._odom_pose_source(unity, "dlio") == "message"
+    assert module._odom_pose_source(unity, "platform") == "tf"
+    assert module._odom_pose_source(robot, "platform") == "message"
 
 
 def test_dlio_scoring_uses_globally_aligned_odom():

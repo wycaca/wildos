@@ -141,9 +141,9 @@ DLIO odom、aligned odom、健康状态、deskewed 点云和隔离 TF 都从 `dl
 - `camera_info_topic`
 - `cam_frame`
 - `camera_parent_frame`
-- `camera_static_tf_convention`
-- `camera_image_flip_x`
 - `camera_stamp_mode`
+
+图像水平翻转由 WildOS 配置中的 `camera_image_flip_x` 控制
 
 `camera_stamp_mode=preserve` 表示驱动时间已经与 LiDAR、odom 和 TF 同步
 

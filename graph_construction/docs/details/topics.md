@@ -291,7 +291,7 @@ robot profile 将注册点云直接交给 elevation mapping，不经过 Python �
 
 三相机输入已固定为 `/spot1/realsense/{front,left,right}/color/image_raw/compressed` 和对应的 `camera_info`
 
-`common_contract` 保存内部稳定 topic 和公共搜索参数, 不代表可启动的 profile
+`common_contract` 只保存内部稳定 namespace 和 topic, 不代表可启动的 profile
 
 ## 12. 常用检查命令
 
