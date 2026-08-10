@@ -121,7 +121,7 @@ def test_unity_dlio_launch_owns_dlio_and_skips_xyz_adapter():
     ) in remappings
 
 
-def test_robot_platform_launch_skips_registered_cloud_adapter():
+def test_robot_platform_launch_relays_registered_cloud_locally():
     module = _load_launch_module()
     context = _context_with_defaults(module)
     context.launch_configurations["topic_profile"] = "robot"
@@ -133,7 +133,7 @@ def test_robot_platform_launch_skips_registered_cloud_adapter():
         if isinstance(action, Node)
     }
 
-    assert "pointcloud_axis_adapter" not in executables
+    assert "pointcloud_axis_adapter" in executables
     assert "elevation_mapping_node.py" in executables
 
 

@@ -15,6 +15,7 @@ services:
       args:
         BASE_IMAGE: ${WILDOS_CAMERA_BASE_IMAGE:-ros:humble-ros-base-jammy}
     network_mode: host
+    ipc: host
     privileged: true
     restart: unless-stopped
     stop_grace_period: 20s
@@ -44,8 +45,8 @@ services:
       args:
         BASE_IMAGE: ${WILDOS_ORIN_BASE_IMAGE:?Set WILDOS_ORIN_BASE_IMAGE}
     network_mode: host
+    ipc: host
     runtime: nvidia
-    shm_size: 2gb
     restart: unless-stopped
     stop_grace_period: 30s
     depends_on:

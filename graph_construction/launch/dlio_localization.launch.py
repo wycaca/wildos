@@ -31,6 +31,8 @@ def generate_launch_description() -> LaunchDescription:
         executable="dlio_odom_node",
         name="dlio_odom_node",
         output="screen",
+        respawn=True,
+        respawn_delay=2.0,
         parameters=[
             LaunchConfiguration("dlio_config_file"),
             {

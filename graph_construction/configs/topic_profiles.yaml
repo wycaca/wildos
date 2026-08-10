@@ -122,11 +122,11 @@ profiles:
     lidar_frame: lidar_link
     pointcloud_axis_mode: identity
     pointcloud_output_frame: odom_3D
-    use_pointcloud_axis_adapter: false
+    use_pointcloud_axis_adapter: true
 
-    # 外部输入, registered cloud 直接通过现有 TF 转换到 odom
+    # 外部点云只跨机订阅一次, 再转发给本机节点
     pointcloud_input_topic: /cloud_registered
-    aligned_lidar_topic: /cloud_registered
+    aligned_lidar_topic: /spot1/cloud_registered_local
     odom_input_topic: /odom
     odom_stamp_mode: preserve
     odom_pose_source: message

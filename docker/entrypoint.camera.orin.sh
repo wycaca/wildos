@@ -67,6 +67,7 @@ start_camera() {
     enable_gyro:=false \
     enable_accel:=false \
     rgb_camera.color_profile:="${camera_width}x${camera_height}x${camera_fps}" \
+    rgb_camera.power_line_frequency:=1 \
     publish_tf:=true &
   camera_pids+=("$!")
 }

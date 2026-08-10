@@ -27,6 +27,7 @@ RUN chmod +x /tmp/configure_apt_mirrors.sh \
       libpcl-dev \
       python3-colcon-common-extensions \
       python3-pip \
+      python3-scipy \
       python3-vcstool \
       ros-humble-ament-cmake-auto \
       ros-humble-pcl-conversions \
@@ -52,11 +53,18 @@ RUN vcs import /opt/wildos_localization_ws/src < /tmp/lidar_dlio.repos \
 COPY nebula2-wildos/graph_construction \
   /opt/wildos_localization_ws/src/graph_construction
 
+COPY nebula2-wildos/docker/patches/dlio-livox-timestamp-precision.patch \
+  /tmp/dlio-livox-timestamp-precision.patch
+COPY nebula2-wildos/docker/patches/dlio-publish-path-on-demand.patch \
+  /tmp/dlio-publish-path-on-demand.patch
 COPY nebula2-wildos/docker/build_lidar_dlio.sh \
   /tmp/build_lidar_dlio.sh
 RUN chmod +x /tmp/build_lidar_dlio.sh \
     && /tmp/build_lidar_dlio.sh \
-    && rm /tmp/build_lidar_dlio.sh \
+    && rm \
+      /tmp/build_lidar_dlio.sh \
+      /tmp/dlio-publish-path-on-demand.patch \
+      /tmp/dlio-livox-timestamp-precision.patch \
     && rm -rf /opt/wildos_localization_ws/src/Livox-SDK2
 
 COPY nebula2-wildos/docker/entrypoint.localization.sh \

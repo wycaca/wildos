@@ -55,12 +55,12 @@ def test_unity_dlio_localization_uses_raw_lidar_and_imu():
     assert wiring.isolate_platform_tf is True
 
 
-def test_robot_platform_uses_registered_cloud_directly():
+def test_robot_platform_relays_registered_cloud_locally():
     wiring = resolve_localization_wiring(_robot_profile(), "platform")
 
     assert wiring.pointcloud_input_topic == "/cloud_registered"
-    assert wiring.mapping_pointcloud_topic == "/cloud_registered"
-    assert wiring.use_pointcloud_axis_adapter is False
+    assert wiring.mapping_pointcloud_topic == "/spot1/cloud_registered_local"
+    assert wiring.use_pointcloud_axis_adapter is True
 
 
 def test_unity_profile_normalizes_camera_stamps():
@@ -124,10 +124,10 @@ def test_robot_profile_preserves_external_odometry_and_registered_cloud_frame():
     robot = _robot_profile()
 
     assert robot["pointcloud_input_topic"] == "/cloud_registered"
-    assert robot["aligned_lidar_topic"] == "/cloud_registered"
+    assert robot["aligned_lidar_topic"] == "/spot1/cloud_registered_local"
     assert robot["pointcloud_output_frame"] == "odom_3D"
     assert robot["rmw_implementation"] == "rmw_fastrtps_cpp"
-    assert robot["use_pointcloud_axis_adapter"] is False
+    assert robot["use_pointcloud_axis_adapter"] is True
     assert robot["odom_stamp_mode"] == "preserve"
     assert robot["odom_pose_source"] == "message"
     assert robot["cam_frame"] == "{}_color_optical_frame"

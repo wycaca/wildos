@@ -20,7 +20,7 @@ pointcloud_fields="$(
     --once \
     --field fields
 )"
-grep -q "name: timestamp" <<<"${pointcloud_fields}"
+grep -Eq "name(: |=)'?timestamp" <<<"${pointcloud_fields}"
 timeout 4 ros2 topic echo "${imu_topic}" \
   --qos-reliability best_effort \
   --once >/dev/null

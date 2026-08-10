@@ -1,0 +1,12 @@
+diff --git a/src/dlio/odom.cc b/src/dlio/odom.cc
+index 7f72c4f..e7be7d3 100755
+--- a/src/dlio/odom.cc
++++ b/src/dlio/odom.cc
+@@ -397,6 +397,7 @@ void dlio::OdomNode::publishPose() {
+ 
+ void dlio::OdomNode::publishToROS(pcl::PointCloud<PointType>::ConstPtr published_cloud, Eigen::Matrix4f T_cloud) {
+   this->publishCloud(published_cloud, T_cloud);
++  if (this->path_pub->get_subscription_count() == 0) { return; }
+ 
+   // nav_msgs::msg::Path
+   this->path_ros.header.stamp = this->imu_stamp;
