@@ -58,6 +58,8 @@ processing_rate_hz: 10.0
 qos_history_depth: 1
 syncsub_queue_size: 2
 syncsub_slop: 0.2
+odometry_match_max_delta_sec: 3.0
+navigation_graph_max_age_sec: 6.0
 
 # Object Search Config
 object_search_config:

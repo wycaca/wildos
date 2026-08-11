@@ -47,7 +47,7 @@ class TFLookupSubscriber(Node, ABC):
         "wait_for_oldest": False,  # whether to wait when buffer is full
         "clear_buffer_on_process": False,  # whether to clear buffer after processing
         "spin_thread": False,     # whether to spin tf listener in a separate thread
-        "allow_latest_tf_on_past_extrapolation": True,  # fallback for sim time startup jitter
+        "allow_latest_tf_on_past_extrapolation": True,  # fallback for sensor time skew
     }
 
     def __init__(
@@ -76,7 +76,7 @@ class TFLookupSubscriber(Node, ABC):
         self.timer_duration = config.timer_duration
         self.lookup_timeout = config.lookup_timeout
         self.clear_buffer_on_process = config.clear_buffer_on_process
-        self.allow_latest_tf_on_past_extrapolation = self._config_bool(
+        self.allow_latest_tf_on_extrapolation = self._config_bool(
             config.allow_latest_tf_on_past_extrapolation
         )
 
@@ -126,7 +126,7 @@ class TFLookupSubscriber(Node, ABC):
                     except Exception as e:
                         self._log_tf_missing(edge, old_msg_stamp, e)
                         if not found_one_valid_ts:
-                            if self._is_past_extrapolation(e):
+                            if self._is_extrapolation(e):
                                 self.get_logger().warn(
                                     f"Dropping stale message at time {old_msg_tm}, "
                                     "TF buffer cannot serve older data"
@@ -192,10 +192,11 @@ class TFLookupSubscriber(Node, ABC):
         }
 
     @staticmethod
-    def _is_past_extrapolation(error: Exception) -> bool:
+    def _is_extrapolation(error: Exception) -> bool:
         msg = str(error)
         return (
             "extrapolation into the past" in msg
+            or "extrapolation into the future" in msg
             or "only time" in msg and "is in the buffer" in msg
         )
 
@@ -221,8 +222,8 @@ class TFLookupSubscriber(Node, ABC):
             )
         except Exception as exc:
             if (
-                not self.allow_latest_tf_on_past_extrapolation
-                or not self._is_past_extrapolation(exc)
+                not self.allow_latest_tf_on_extrapolation
+                or not self._is_extrapolation(exc)
             ):
                 raise
             try:
@@ -241,7 +242,7 @@ class TFLookupSubscriber(Node, ABC):
         self._tf_latest_fallback_count += 1
         if self._tf_latest_fallback_count == 1:
             self.get_logger().warn(
-                f"TF 时间略早于缓存, 已回退 latest TF, source={edge.source_frame}, "
+                f"TF 时间超出缓存, 已回退 latest TF, source={edge.source_frame}, "
                 f"time={stamp}, error={error}"
             )
         elif self._tf_latest_fallback_count % 100 == 0:

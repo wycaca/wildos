@@ -1001,7 +1001,7 @@ class WildOS_Nav(TFLookupSubscriber):
                 if count > 0
             ) or "无"
             self._input_rejections.clear()
-        self.get_logger().debug(
+        self.get_logger().info(
             "WildOS 输入诊断, 频率="
             f"图像前/左/右={rates['image_front']:.1f}/"
             f"{rates['image_left']:.1f}/{rates['image_right']:.1f}Hz, "

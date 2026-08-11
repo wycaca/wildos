@@ -2,7 +2,7 @@ from builtin_interfaces.msg import Time
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, ReliabilityPolicy
 
 from visual_navigation.utils.buffer import MessageBuffer
-from visual_navigation.utils.tf_lookup_sub import dynamic_tf_qos
+from visual_navigation.utils.tf_lookup_sub import TFLookupSubscriber, dynamic_tf_qos
 
 
 def test_dynamic_tf_qos_matches_unity_and_dlio_publishers():
@@ -20,3 +20,12 @@ def test_message_buffer_keeps_latest_when_full():
     buffer.add_msg({"frame": 2}, Time(sec=2))
 
     assert buffer.get_oldest_msg()["frame"] == 2
+
+
+def test_tf_extrapolation_detects_both_time_directions():
+    assert TFLookupSubscriber._is_extrapolation(
+        RuntimeError("Lookup would require extrapolation into the past")
+    )
+    assert TFLookupSubscriber._is_extrapolation(
+        RuntimeError("Lookup would require extrapolation into the future")
+    )

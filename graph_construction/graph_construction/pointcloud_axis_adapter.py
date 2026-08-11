@@ -33,13 +33,18 @@ class PointCloudAxisAdapter(Node):
         self.transform_point = _axis_transform(self.axis_mode)
         self._logged_first_cloud = False
 
-        sensor_qos = QoSProfile(
+        input_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
             depth=5,
             reliability=ReliabilityPolicy.BEST_EFFORT,
         )
-        self.publisher = self.create_publisher(PointCloud2, self.output_topic, sensor_qos)
-        self.create_subscription(PointCloud2, self.input_topic, self._on_cloud, sensor_qos)
+        output_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=5,
+            reliability=ReliabilityPolicy.RELIABLE,
+        )
+        self.publisher = self.create_publisher(PointCloud2, self.output_topic, output_qos)
+        self.create_subscription(PointCloud2, self.input_topic, self._on_cloud, input_qos)
 
         self.get_logger().info(
             f"PointCloud axis adapter started, input={self.input_topic}, "

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import deque
 from dataclasses import fields
 import math
 from pathlib import Path
@@ -109,6 +110,7 @@ class GraphConstructionNode(Node):
 
         self.latest_grid = None
         self.latest_odom = None
+        self._odom_cache = deque(maxlen=100)
         self._input_freshness = InputFreshnessGate()
         self._latest_grid_sequence = 0
         self._processed_grid_sequence = 0
@@ -207,6 +209,7 @@ class GraphConstructionNode(Node):
             )
             return
         self.latest_odom = msg
+        self._odom_cache.append((stamp_ns, msg))
         if not self._logged_first_odom:
             position = msg.pose.pose.position
             self.get_logger().info(
@@ -382,25 +385,30 @@ class GraphConstructionNode(Node):
 
     def _take_latest_inputs(self):
         """每个新 GridMap 只处理一次, 并等待时间匹配的 odom 快照"""
-        if self.latest_grid is None or self.latest_odom is None:
+        if self.latest_grid is None or not self._odom_cache:
             return None
         if self._latest_grid_sequence == self._processed_grid_sequence:
             return None
 
-        time_delta = self._input_freshness.time_delta_seconds()
+        grid_stamp_ns = self._input_freshness.grid_stamp_ns
+        odom_stamp_ns, odom_msg = min(
+            self._odom_cache,
+            key=lambda item: abs(item[0] - grid_stamp_ns),
+        )
+        time_delta = abs(grid_stamp_ns - odom_stamp_ns) / 1.0e9
         max_time_delta = float(self.config["max_grid_odom_time_delta_sec"])
-        if time_delta is None or time_delta > max_time_delta:
+        if time_delta > max_time_delta:
             self._warn_input_freshness(
                 "等待时间匹配的 GridMap 和 odom",
-                f"地图={_nanoseconds_to_seconds(self._input_freshness.grid_stamp_ns):.6f}s, "
-                f"里程计={_nanoseconds_to_seconds(self._input_freshness.odom_stamp_ns):.6f}s, "
+                f"地图={_nanoseconds_to_seconds(grid_stamp_ns):.6f}s, "
+                f"里程计={_nanoseconds_to_seconds(odom_stamp_ns):.6f}s, "
                 f"差值={time_delta * 1000.0:.1f}ms, "
                 f"上限={max_time_delta * 1000.0:.1f}ms",
             )
             return None
 
         self._processed_grid_sequence = self._latest_grid_sequence
-        return self.latest_grid, self.latest_odom
+        return self.latest_grid, odom_msg
 
     def _warn_input_freshness(
         self,

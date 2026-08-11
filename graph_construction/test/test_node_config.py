@@ -1,3 +1,4 @@
+from collections import deque
 from pathlib import Path
 
 import pytest
@@ -102,11 +103,13 @@ def test_deployment_config_searches_beyond_dilated_startup_prior():
 def test_take_latest_inputs_processes_each_grid_once():
     node = GraphConstructionNode.__new__(GraphConstructionNode)
     node.config = {"max_grid_odom_time_delta_sec": 0.5}
+    node._odom_cache = deque()
     node._input_freshness = InputFreshnessGate()
     node._input_freshness.accept_grid(1_000_000_000)
     node._input_freshness.accept_odom(1_100_000_000)
     node.latest_grid = object()
     node.latest_odom = object()
+    node._odom_cache.append((1_100_000_000, node.latest_odom))
     node._latest_grid_sequence = 1
     node._processed_grid_sequence = 0
 
@@ -137,11 +140,13 @@ def test_input_freshness_gate_rejects_duplicate_and_older_stamps():
 def test_take_latest_inputs_waits_for_matching_odom_stamp():
     node = GraphConstructionNode.__new__(GraphConstructionNode)
     node.config = {"max_grid_odom_time_delta_sec": 0.5}
+    node._odom_cache = deque()
     node._input_freshness = InputFreshnessGate()
     node._input_freshness.accept_grid(10_000_000_000)
     node._input_freshness.accept_odom(8_000_000_000)
     node.latest_grid = object()
     node.latest_odom = object()
+    node._odom_cache.append((8_000_000_000, node.latest_odom))
     node._latest_grid_sequence = 1
     node._processed_grid_sequence = 0
     node._warn_input_freshness = lambda *args: None
@@ -149,6 +154,8 @@ def test_take_latest_inputs_waits_for_matching_odom_stamp():
     assert node._take_latest_inputs() is None
     assert node._processed_grid_sequence == 0
 
+    matching_odom = object()
     node._input_freshness.accept_odom(9_800_000_000)
+    node._odom_cache.append((9_800_000_000, matching_odom))
 
-    assert node._take_latest_inputs() == (node.latest_grid, node.latest_odom)
+    assert node._take_latest_inputs() == (node.latest_grid, matching_odom)

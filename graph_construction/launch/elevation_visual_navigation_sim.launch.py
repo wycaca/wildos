@@ -43,6 +43,11 @@ def generate_launch_description():
                 description="Launch the paper-style RViz view and lightweight point cloud",
             ),
             DeclareLaunchArgument(
+                "launch_performance_monitor",
+                default_value="true",
+                description="Launch the pipeline performance monitor",
+            ),
+            DeclareLaunchArgument(
                 "paper_rviz_config",
                 default_value="wildos_paper.rviz",
                 description="RViz config name installed by graph_construction or an absolute path",
@@ -449,6 +454,7 @@ def _launch_setup(context):
         executable="pipeline_performance_monitor",
         output="screen",
         **python_node_extra_args,
+        condition=IfCondition(LaunchConfiguration("launch_performance_monitor")),
         parameters=[
             {"use_sim_time": use_sim_time},
             {"raw_lidar_topic": wiring.pointcloud_input_topic},

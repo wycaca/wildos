@@ -53,6 +53,7 @@ launch_arguments+=(
   "topic_profile:=robot"
   "use_sim_time:=false"
   "launch_paper_rviz:=false"
+  "launch_performance_monitor:=false"
   "localization_backend:=platform"
   "launch_dlio:=false"
   "publish_camera_static_tf:=false"
