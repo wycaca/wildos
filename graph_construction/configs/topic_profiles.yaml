@@ -121,7 +121,7 @@ profiles:
     lidar_parent_frame: base_link
     lidar_frame: lidar_link
     pointcloud_axis_mode: identity
-    pointcloud_output_frame: odom_3D
+    pointcloud_output_frame: dlio_odom
     use_pointcloud_axis_adapter: true
 
     # 外部点云只跨机订阅一次, 再转发给本机节点
