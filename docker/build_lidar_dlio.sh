@@ -26,6 +26,12 @@ grep -Fq \
 grep -Fq \
   'if (this->path_pub->get_subscription_count() == 0) { return; }' \
   "${dlio_source}/src/dlio/odom.cc"
+grep -Fq \
+  'for (int i = 0; i < this->original_scan->points.size(); i++) {' \
+  "${dlio_source}/src/dlio/odom.cc"
+grep -Fq \
+  'if (original_scan_->empty()) { return; }' \
+  "${dlio_source}/src/dlio/odom.cc"
 
 cmake \
   -S "${sdk_source}" \

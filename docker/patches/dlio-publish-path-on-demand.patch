@@ -10,3 +10,29 @@ index 7f72c4f..e7be7d3 100755
  
    // nav_msgs::msg::Path
    this->path_ros.header.stamp = this->imu_stamp;
+@@ -504,3 +505,7 @@ void dlio::OdomNode::getScanFromROS(const sensor_msgs::msg::PointCloud2::SharedP
+   // Crop Box Filter
+   this->crop.setInputCloud(original_scan_);
+   this->crop.filter(*original_scan_);
++
++  this->scan_header_stamp = pc->header.stamp;
++  this->original_scan = original_scan_;
++  if (original_scan_->empty()) { return; }
+@@ -530,3 +535,0 @@ void dlio::OdomNode::getScanFromROS(const sensor_msgs::msg::PointCloud2::SharedP
+-  this->scan_header_stamp = pc->header.stamp;
+-  this->original_scan = original_scan_;
+-
+@@ -774,3 +776,7 @@ void dlio::OdomNode::callbackPointCloud(const sensor_msgs::msg::PointCloud2::Sha
+   // Convert incoming scan into DLIO format
+   this->getScanFromROS(pc);
++
++  if (this->original_scan->empty()) {
++    this->main_loop_running = false;
++    return;
++  }
+@@ -1427,4 +1433,4 @@ void dlio::OdomNode::computeSpaciousness() {
+-  for (int i = 0; i <= this->original_scan->points.size(); i++) {
++  for (int i = 0; i < this->original_scan->points.size(); i++) {
+     float d = std::sqrt(pow(this->original_scan->points[i].x, 2) +
+                         pow(this->original_scan->points[i].y, 2));
+     ds.push_back(d);
