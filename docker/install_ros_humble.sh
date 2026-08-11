@@ -85,6 +85,7 @@ apt-get install -y --no-install-recommends \
   ros-humble-ros-base \
   ros-humble-rosbag2-py \
   ros-humble-rviz2 \
+  ros-humble-grid-map-rviz-plugin \
   ros-humble-sensor-msgs-py \
   ros-humble-tf-transformations \
   ros-humble-tf2-eigen \
