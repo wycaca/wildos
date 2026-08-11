@@ -40,8 +40,8 @@ class DlioOutputGuard(Node):
         )
         self.health_topic = str(self.get_parameter("health_topic").value)
         sensor_qos = QoSProfile(
-            depth=10,
-            reliability=ReliabilityPolicy.RELIABLE,
+            depth=1,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
         )
         health_qos = QoSProfile(
