@@ -22,7 +22,7 @@ index 7f72c4f..e7be7d3 100755
 -  this->scan_header_stamp = pc->header.stamp;
 -  this->original_scan = original_scan_;
 -
-@@ -774,3 +776,7 @@ void dlio::OdomNode::callbackPointCloud(const sensor_msgs::msg::PointCloud2::Sha
+@@ -774,2 +776,7 @@ void dlio::OdomNode::callbackPointCloud(const sensor_msgs::msg::PointCloud2::Sha
    // Convert incoming scan into DLIO format
    this->getScanFromROS(pc);
 +
@@ -30,7 +30,7 @@ index 7f72c4f..e7be7d3 100755
 +    this->main_loop_running = false;
 +    return;
 +  }
-@@ -1427,4 +1433,4 @@ void dlio::OdomNode::computeSpaciousness() {
+@@ -1427,4 +1434,4 @@ void dlio::OdomNode::computeSpaciousness() {
 -  for (int i = 0; i <= this->original_scan->points.size(); i++) {
 +  for (int i = 0; i < this->original_scan->points.size(); i++) {
      float d = std::sqrt(pow(this->original_scan->points[i].x, 2) +
