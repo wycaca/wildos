@@ -49,8 +49,8 @@ done
 
 append_launch_arguments DO_OBJECT_SEARCH do_object_search
 append_launch_arguments WILDOS_LOG_LEVEL log_level
+export WILDOS_TOPIC_PROFILE=robot
 launch_arguments+=(
-  "topic_profile:=robot"
   "use_sim_time:=false"
   "launch_paper_rviz:=false"
   "launch_performance_monitor:=false"
