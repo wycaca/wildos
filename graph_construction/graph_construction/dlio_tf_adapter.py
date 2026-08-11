@@ -16,6 +16,7 @@ from rclpy.qos import (
     HistoryPolicy,
     QoSProfile,
     ReliabilityPolicy,
+    qos_profile_sensor_data,
 )
 from scipy.spatial.transform import Rotation
 from std_msgs.msg import Bool
@@ -668,7 +669,7 @@ class DlioTfAdapter(Node):
             Odometry,
             self.input_odom_topic,
             self._on_odom,
-            10,
+            qos_profile_sensor_data,
         )
         self.create_subscription(
             TFMessage,
