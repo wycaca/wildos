@@ -41,7 +41,7 @@ services:
         - CMD
         - /usr/local/bin/wildos-mid360-healthcheck
       interval: 10s
-      timeout: 12s
+      timeout: 15s
       start_period: 20s
       retries: 3
 

@@ -37,6 +37,7 @@ def generate_launch_description() -> LaunchDescription:
             LaunchConfiguration("dlio_config_file"),
             {
                 "use_sim_time": False,
+                "adaptive": False,
                 "frames/odom": LaunchConfiguration("local_frame"),
                 "frames/baselink": LaunchConfiguration("base_frame"),
                 "frames/lidar": LaunchConfiguration("lidar_frame"),
