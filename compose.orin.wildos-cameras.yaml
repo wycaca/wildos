@@ -4,6 +4,8 @@ x-dds-environment: &dds-environment
   ROS_DOMAIN_ID: "${ROS_DOMAIN_ID:?Set ROS_DOMAIN_ID}"
   ROS_LOCALHOST_ONLY: "${ROS_LOCALHOST_ONLY:-0}"
   RMW_IMPLEMENTATION: "${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}"
+  FASTDDS_DEFAULT_PROFILES_FILE: /etc/wildos/fastdds.xml
+  FASTRTPS_DEFAULT_PROFILES_FILE: /etc/wildos/fastdds.xml
 
 services:
   cameras:
@@ -34,6 +36,7 @@ services:
       RIGHT_CAMERA_TRANSFORM: "${RIGHT_CAMERA_TRANSFORM:-}"
     volumes:
       - /dev/bus/usb:/dev/bus/usb
+      - ./docker/fastdds.wildos.xml:/etc/wildos/fastdds.xml:ro
       - camera_ros_logs:/root/.ros/log
 
   wildos:
@@ -59,6 +62,7 @@ services:
       WILDOS_VISUAL_CONFIG: "${WILDOS_VISUAL_CONFIG:-wildos_nav_conf.yaml}"
     volumes:
       - wildos_ros_logs:/root/.ros/log
+      - ./docker/fastdds.wildos.xml:/etc/wildos/fastdds.xml:ro
       - ${WILDOS_CKPT_DIR:?Set WILDOS_CKPT_DIR}:/opt/wildos_ws/src/nebula2-wildos/ckpts:ro
     ulimits:
       memlock: -1

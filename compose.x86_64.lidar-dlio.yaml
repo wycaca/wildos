@@ -19,6 +19,8 @@ x-dds-environment: &dds-environment
   ROS_DOMAIN_ID: "${ROS_DOMAIN_ID:?Set ROS_DOMAIN_ID}"
   ROS_LOCALHOST_ONLY: "${ROS_LOCALHOST_ONLY:-0}"
   RMW_IMPLEMENTATION: "${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}"
+  FASTDDS_DEFAULT_PROFILES_FILE: /etc/wildos/fastdds.xml
+  FASTRTPS_DEFAULT_PROFILES_FILE: /etc/wildos/fastdds.xml
 
 services:
   lidar:
@@ -28,6 +30,7 @@ services:
     stop_grace_period: 15s
     volumes:
       - lidar_ros_logs:/root/.ros/log
+      - ./docker/fastdds.wildos.xml:/etc/wildos/fastdds.xml:ro
       - ${MID360_CONFIG_FILE:?Set MID360_CONFIG_FILE in the Compose environment}:/config/mid360.json:ro
     environment:
       <<: *dds-environment
@@ -53,6 +56,7 @@ services:
         condition: service_healthy
     volumes:
       - localization_ros_logs:/root/.ros/log
+      - ./docker/fastdds.wildos.xml:/etc/wildos/fastdds.xml:ro
       - ${DLIO_CONFIG_FILE:?Set DLIO_CONFIG_FILE in the Compose environment}:/config/dlio.yaml:ro
     environment:
       <<: *dds-environment
