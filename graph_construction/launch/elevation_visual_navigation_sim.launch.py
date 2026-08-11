@@ -457,7 +457,11 @@ def _launch_setup(context):
         condition=IfCondition(LaunchConfiguration("launch_performance_monitor")),
         parameters=[
             {"use_sim_time": use_sim_time},
-            {"raw_lidar_topic": wiring.pointcloud_input_topic},
+            {
+                "raw_lidar_topic": ""
+                if wiring.use_pointcloud_axis_adapter
+                else wiring.pointcloud_input_topic
+            },
             {"raw_imu_topic": wiring.dlio_imu_input_topic},
             {"aligned_pointcloud_topic": aligned_lidar_topic},
             {"odom_topic": odom_output_topic},

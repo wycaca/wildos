@@ -7,6 +7,7 @@ from launch import LaunchContext
 from launch.actions import DeclareLaunchArgument, TimerAction
 from launch.utilities import perform_substitutions
 from launch_ros.actions import Node
+from launch_ros.utilities import evaluate_parameters
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -127,14 +128,28 @@ def test_robot_platform_launch_relays_registered_cloud_locally():
     context.launch_configurations["topic_profile"] = "robot"
     context.launch_configurations["localization_backend"] = "platform"
 
+    actions = module._launch_setup(context)
     executables = {
         _expanded(context, action.node_executable)
-        for action in module._launch_setup(context)
+        for action in actions
         if isinstance(action, Node)
+    }
+    monitor = next(
+        action
+        for action in actions
+        if isinstance(action, Node)
+        and _expanded(context, action.node_executable) == "pipeline_performance_monitor"
+    )
+    monitor_parameters = {
+        key: value
+        for parameters in evaluate_parameters(context, monitor._Node__parameters)
+        for key, value in parameters.items()
     }
 
     assert "pointcloud_axis_adapter" in executables
     assert "elevation_mapping_node.py" in executables
+    assert monitor_parameters["raw_lidar_topic"] == ""
+    assert monitor_parameters["aligned_pointcloud_topic"] == "/spot1/cloud_registered_local"
 
 
 def test_robot_profile_preserves_camera_stamps():

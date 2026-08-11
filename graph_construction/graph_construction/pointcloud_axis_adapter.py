@@ -35,13 +35,13 @@ class PointCloudAxisAdapter(Node):
 
         input_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
-            depth=5,
+            depth=1,
             reliability=ReliabilityPolicy.BEST_EFFORT,
         )
         output_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
-            depth=5,
-            reliability=ReliabilityPolicy.RELIABLE,
+            depth=1,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
         )
         self.publisher = self.create_publisher(PointCloud2, self.output_topic, output_qos)
         self.create_subscription(PointCloud2, self.input_topic, self._on_cloud, input_qos)
