@@ -2,37 +2,33 @@ diff --git a/src/dlio/odom.cc b/src/dlio/odom.cc
 index 7f72c4f..e7be7d3 100755
 --- a/src/dlio/odom.cc
 +++ b/src/dlio/odom.cc
-@@ -397,6 +397,7 @@ void dlio::OdomNode::publishPose() {
- 
- void dlio::OdomNode::publishToROS(pcl::PointCloud<PointType>::ConstPtr published_cloud, Eigen::Matrix4f T_cloud) {
+@@ -364,2 +364,3 @@
    this->publishCloud(published_cloud, T_cloud);
 +  if (this->path_pub->get_subscription_count() == 0) { return; }
  
-   // nav_msgs::msg::Path
-   this->path_ros.header.stamp = this->imu_stamp;
-@@ -504,3 +505,7 @@ void dlio::OdomNode::getScanFromROS(const sensor_msgs::msg::PointCloud2::SharedP
-   // Crop Box Filter
-   this->crop.setInputCloud(original_scan_);
-   this->crop.filter(*original_scan_);
-+
+@@ -507,2 +508,6 @@
+ 
 +  this->scan_header_stamp = pc->header.stamp;
 +  this->original_scan = original_scan_;
 +  if (original_scan_->empty()) { return; }
-@@ -530,3 +535,0 @@ void dlio::OdomNode::getScanFromROS(const sensor_msgs::msg::PointCloud2::SharedP
++
+   // automatically detect sensor type
+@@ -529,5 +534,2 @@
+ 
 -  this->scan_header_stamp = pc->header.stamp;
 -  this->original_scan = original_scan_;
 -
-@@ -774,2 +776,7 @@ void dlio::OdomNode::callbackPointCloud(const sensor_msgs::msg::PointCloud2::Sha
-   // Convert incoming scan into DLIO format
-   this->getScanFromROS(pc);
-+
+ }
+@@ -776,2 +778,7 @@
+ 
 +  if (this->original_scan->empty()) {
 +    this->main_loop_running = false;
 +    return;
 +  }
-@@ -1427,4 +1434,4 @@ void dlio::OdomNode::computeSpaciousness() {
++
+   // Preprocess points
+@@ -1425,3 +1432,3 @@
+ 
 -  for (int i = 0; i <= this->original_scan->points.size(); i++) {
 +  for (int i = 0; i < this->original_scan->points.size(); i++) {
      float d = std::sqrt(pow(this->original_scan->points[i].x, 2) +
-                         pow(this->original_scan->points[i].y, 2));
-     ds.push_back(d);
