@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import time
 from typing import Callable, Iterable, Tuple
 
 import rclpy
@@ -25,12 +26,17 @@ class PointCloudAxisAdapter(Node):
         self.declare_parameter("output_topic", "/livox/lidar_aligned")
         self.declare_parameter("output_frame", "base_link")
         self.declare_parameter("axis_mode", "isaac_lidar_to_base")
+        self.declare_parameter("max_output_rate_hz", 0.0)
 
         self.input_topic = self.get_parameter("input_topic").value
         self.output_topic = self.get_parameter("output_topic").value
         self.output_frame = self.get_parameter("output_frame").value
         self.axis_mode = self.get_parameter("axis_mode").value
+        self.max_output_rate_hz = float(
+            self.get_parameter("max_output_rate_hz").value
+        )
         self.transform_point = _axis_transform(self.axis_mode)
+        self._last_publish_time_ns = None
         self._logged_first_cloud = False
 
         input_qos = QoSProfile(
@@ -53,6 +59,14 @@ class PointCloudAxisAdapter(Node):
 
     def _on_cloud(self, msg: PointCloud2) -> None:
         """转换 XYZ 并丢弃非几何字段, elevation mapping 只需要点坐标"""
+        now_ns = time.monotonic_ns()
+        if not _publish_due(
+            now_ns,
+            self._last_publish_time_ns,
+            self.max_output_rate_hz,
+        ):
+            return
+        self._last_publish_time_ns = now_ns
         if self.axis_mode == "identity":
             aligned_msg = _identity_cloud(msg, self.output_frame)
         else:
@@ -69,6 +83,13 @@ class PointCloudAxisAdapter(Node):
                 f"output_frame={aligned_msg.header.frame_id}"
             )
             self._logged_first_cloud = True
+
+
+def _publish_due(now_ns: int, last_ns: int | None, max_rate_hz: float) -> bool:
+    """限制高开销下游的点云输入速率"""
+    if max_rate_hz <= 0.0 or last_ns is None:
+        return True
+    return now_ns - last_ns >= 1.0e9 / max_rate_hz
 
 
 def _axis_transform(axis_mode: str) -> Callable[[PointXYZ], PointXYZ]:

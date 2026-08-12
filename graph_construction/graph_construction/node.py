@@ -110,7 +110,8 @@ class GraphConstructionNode(Node):
 
         self.latest_grid = None
         self.latest_odom = None
-        self._odom_cache = deque(maxlen=100)
+        # 覆盖100 Hz里程计下约5秒的高程图处理延迟
+        self._odom_cache = deque(maxlen=500)
         self._input_freshness = InputFreshnessGate()
         self._latest_grid_sequence = 0
         self._processed_grid_sequence = 0

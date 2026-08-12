@@ -127,6 +127,7 @@ profiles:
     # 外部点云只跨机订阅一次, 再转发给本机节点
     pointcloud_input_topic: /cloud_registered
     aligned_lidar_topic: /spot1/cloud_registered_local
+    pointcloud_output_rate_hz: 2.0
     odom_input_topic: /odom
     odom_stamp_mode: preserve
     odom_pose_source: message

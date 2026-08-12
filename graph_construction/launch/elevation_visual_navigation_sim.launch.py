@@ -320,6 +320,11 @@ def _launch_setup(context):
             {"output_topic": aligned_lidar_topic},
             {"output_frame": pointcloud_output_frame},
             {"axis_mode": pointcloud_axis_mode},
+            {
+                "max_output_rate_hz": float(
+                    profile.get("pointcloud_output_rate_hz", 0.0)
+                )
+            },
         ],
     )
 
