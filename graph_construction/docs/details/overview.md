@@ -1,144 +1,83 @@
-# WildOS 系统概览
+# WildOS 实机系统概览
 
-> 本文只说明当前主线, 历史方案请查看按日期归档的文档
+> 本文只描述 `sim2real` 分支当前小推车实机主线
 
-## 1. 系统要做什么
+## 1. 系统目标
 
-WildOS 让机器人在不知道目标坐标时完成以下任务:
+WildOS 在未知环境中使用 LiDAR、IMU 和三路相机完成定位、局部高程建图、持久导航图、视觉探索、目标定位和路径规划
 
-1. 使用 LiDAR 和 IMU 估计机器人位置
-2. 从局部高程图判断哪里能走
-3. 把走过的区域保存成稀疏导航图
-4. 使用三路相机给未知区域打分
-5. 发现目标后估计目标的三维位置
-6. 规划到目标附近并完成近距离确认
+## 2. 主机分工
 
-## 2. 当前主链路
+| 主机 | 容器 | 职责 |
+|---|---|---|
+| x86 | `lidar` | MID360 驱动, 发布原始点云和 IMU |
+| x86 | `localization` | D-LIO, 发布注册点云、odom 和 TF |
+| 相机 AGX | `cameras` | 2 台 D435i 和 1 台 D435if |
+| 相机 AGX | `wildos` | 点云适配、高程图、导航图、视觉、目标融合和 Planner |
+
+## 3. 当前主链路
 
 ```mermaid
 flowchart LR
-    A["LiDAR + IMU"] --> B["DLIO 或平台定位"]
-    A --> C["高程图"]
-    B --> C
-    C --> D["稀疏导航图"]
-    E["三路相机"] --> F["WildOS 视觉推理"]
-    D --> F
-    F --> G["带视觉分数的导航图"]
-    G --> H["Graph Planner"]
-    F --> I["目标 Mask"]
-    I --> J["目标三维定位"]
-    J --> K["Goal Mux"]
-    K --> H
-    H --> L["Path"]
+    A["MID360"] --> B["x86 Livox 驱动"]
+    B --> C["x86 D-LIO"]
+    C --> D["/cloud_registered + /odom + /tf"]
+    D --> E["相机 AGX 点云适配"]
+    E --> F["elevation GridMap"]
+    F --> G["NavigationGraph"]
+    H["三路 RealSense"] --> I["WildOS 视觉"]
+    G --> I
+    I --> J["Scored NavigationGraph"]
+    J --> K["Graph Planner"]
+    K --> L["Path"]
+    I --> M["Object Mask"]
+    D --> N["LiDAR 目标精修"]
+    M --> N
+    N --> O["TargetEstimate"]
 ```
 
-当前唯一几何地图输入是 elevation `GridMap`, 不再支持旧的 2D `OccupancyGrid` 后端
+唯一几何地图输入是 elevation `GridMap`
 
-## 3. 模块职责
+## 4. 关键内部数据
 
-| 模块 | 负责什么 | 不负责什么 |
+| 数据 | Topic | 作用 |
 |---|---|---|
-| `elevation_mapping_cupy` | 生成局部高程和可通行地图 | 长期保存探索路线 |
-| `graph_construction` | 把局部地图更新成持久导航图 | 视觉推理和路径搜索 |
-| WildOS | 视觉评分、目标 Mask 和近距离视觉证据 | 目标三维坐标和最终完成判定 |
-| `object_target_fusion` | 融合多视角 Mask 和 LiDAR | 决定机器人是否停止 |
-| `TargetParticleFilter` | 计算目标位置、方差和置信度 | ROS topic 和导航状态 |
-| `ObjectSearchGoalMux` | 统一选择探索、观察、目标接近和停止状态 | 计算 graph 路径 |
-| `graphnav_planner` | 在导航图上计算可执行路径 | 底盘运动控制 |
+| 注册点云 | `/cloud_registered` | x86 到相机 AGX 的跨机输入 |
+| 本地点云 | `/spot1/cloud_registered_local` | 高程图和目标融合输入 |
+| canonical odom | `/spot1/odom_for_scoring` | 图、视觉和 Planner 共用位姿 |
+| 高程图 | `/elevation_mapping_node/elevation_map_raw` | 当前局部地面 |
+| 导航图 | `/spot1/nav_graph` | 长期安全拓扑 |
+| 评分图 | `/spot1/scored_nav_graph` | Planner 输入 |
+| 路径 | `/spot1/graphnav_planner/path` | 仓库外运动执行输入 |
 
-`ObjectSearchGoalMux` 是高层目标和任务完成状态的唯一 owner
+## 5. 当前启动
 
-## 4. 当前数据分层
+x86 和相机 AGX 分别使用仓库根目录的两个 Compose 文件:
 
-```text
-局部高程图
-  -> 只描述机器人附近的当前地面
+- `compose.x86_64.lidar-dlio.yaml`
+- `compose.orin.wildos-cameras.yaml`
 
-持久导航图
-  -> 保存走过的安全节点、边和当前 Frontier
+部署步骤见 [Docker 部署](docker_deployment.md)
 
-视觉评分图
-  -> 在导航图上增加视觉方向分数
+## 6. 配置入口
 
-目标估计
-  -> 保存目标位置、误差范围和融合状态
-
-规划路径
-  -> 当前需要执行的节点序列
-```
-
-## 5. 默认启动
-
-```bash
-./scripts/start_wildos_elevation.sh
-```
-
-启用目标搜索:
-
-```bash
-WILDOS_TOPIC_PROFILE=unity \
-  ./scripts/start_wildos_elevation.sh do_object_search:=true
-```
-
-默认 profile 是 `unity`, 可用 profile 为:
-
-- `unity`: Unity 仿真
-- `isaac`: Isaac Sim
-- `robot`: 机器狗 Orin POINT-LIO 定位和新 Orin WildOS 实机部署
-
-统一集成 launch:
-
-```text
-graph_construction/launch/elevation_visual_navigation_sim.launch.py
-```
-
-## 6. 配置放在哪里
-
-| 配置内容 | 文件 |
+| 内容 | 文件 |
 |---|---|
-| 平台 topic、frame、ROS domain 和传感器或场景阈值 | `graph_construction/configs/topic_profiles.yaml` |
-| Unity DLIO frame、外参和配准参数 | `graph_construction/configs/dlio/unity.yaml` |
-| x86 备用 DLIO 参数 | `.env.x86_64.lidar-dlio` 指向的现场 YAML |
-| 高程图范围、更新率和启动先验 | `graph_construction/configs/elevation_mapping_sim.yaml` |
-| 高程图解码和导航图 ROS 参数 | `graph_construction/configs/graph_construction_elevation.yaml` |
-| 导航图算法默认值 | `GraphBuilderConfig` |
-| WildOS 模型和视觉阈值 | `visual_navigation/configs/wildos_nav_*.yaml` |
-| 目标搜索状态机 | `visual_navigation/configs/object_search_goal_mux.yaml` |
-| Planner | `graphnav_planner/config/planner.yaml` |
+| 实机 topic 和 frame | `graph_construction/configs/topic_profiles.yaml` 的 `robot` profile |
+| D-LIO | `graph_construction/configs/dlio/mid360.yaml` |
+| 高程图 | `graph_construction/configs/elevation_mapping_sim.yaml` |
+| 图构建 | `graph_construction/configs/graph_construction_elevation.yaml` |
+| 视觉 | `visual_navigation/configs/wildos_nav_conf.yaml` |
+| 相机与镜像 | `.env.orin.wildos-cameras` |
+| 雷达与定位 | `.env.x86_64.lidar-dlio` |
 
-修改平台差异时优先修改 profile, 不复制新的集成 launch
+带 `sim` 的 launch 和配置名称是历史兼容命名, 当前 Docker 实机入口仍使用这些文件
 
-## 7. 详细说明
+## 7. 当前风险
 
-- [导航图更新](graph_update.md)
-- [目标搜索与探索路线](target_exploration.md)
-- [目标定位与视觉雷达融合](target_localization.md)
-- [Topic 契约](topics.md)
-- [环境配置](environment.md)
-- [实现原则](principles.md)
-
-## 8. 当前未完成事项
-
-当前主链路已经可以运行, 但以下内容仍需完成:
-
-- 导航图优化后的 Unity 10 分钟性能回归
-- 用新日志确认普通探索路线的回头和切换频率
-- 验证同步和队列改造后约 1.2 s 的目标 Mask 延迟是否下降
-- 验证近距离 LiDAR 目标精修成功率是否提高
-- 验证稳定目标经过最终观察后能在完整场景进入 `REACHED`
-- 排查 DLIO 与 Unity 参考里程计的累计方向差
-- 完成多场景和无目标场景验收
-
-最终观察、横向换位和 `REACHED` 门控已经完成代码与自动化测试, 当前缺口是 Unity 端到端验收
-
-详细进度见 `docs/2026-07-23/2026-07-23-todo.md`
-
-## 9. 不属于当前主线
-
-以下内容保留用于研究对照, 默认集成 launch 不启动:
-
-- LRN、ImgFrontier 和 GeoFrontier
-- ExploRFM 训练代码
-- GPS 记录和可视化工具
-- `path_follower_node` 实验适配器
-- 历史 2D 建图和旧 triangulation 演示
+- MID360 安装倾斜 7 度, 外参仍需精确测量
+- 三相机外参目前为近似值
+- `/cloud_registered` 跨机传输是主要带宽和延迟风险
+- 高程启动先验需要继续验证墙边和狭窄通道不会越界
+- D-LIO 需要完成转弯、震动和长时间运动测试
+- 目标搜索仍需完成实机端到端验收

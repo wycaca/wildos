@@ -1,304 +1,123 @@
-# 环境配置
-
-> 本文只列出更换仿真器、机器人、LiDAR、IMU 或相机时需要检查的配置
+# 实机环境配置
 
 ## 1. 配置文件职责
 
-| 文件 | 修改时机 | 内容 |
-|---|---|---|
-| `graph_construction/configs/topic_profiles.yaml` | 更换平台、通信环境、传感器或场景 | 外部 topic、frame、RMW、内部 topic 契约和场景阈值 |
-| `graph_construction/configs/dlio/unity.yaml` | 调整 Unity 内置 DLIO | 传感器 frame、外参、去畸变、IMU 和 GICP 参数 |
-| x86 备用 DLIO YAML | 调整备用实机 DLIO | 通过 `.env.x86_64.lidar-dlio` 的 `DLIO_CONFIG_FILE` 挂载 |
-| `graph_construction/configs/elevation_mapping_sim.yaml` | 更换地图范围或传感器量程 | GridMap 尺寸、更新率、启动安全先验 |
-| `graph_construction/configs/graph_construction_elevation.yaml` | 更换机器人尺寸或图密度要求 | 地图分类、净空、节点和边参数 |
-| `visual_navigation/configs/wildos_nav_sim_conf.yaml` | 更换视觉模型或相机性能要求 | 模型、同步、评分和目标检测参数 |
-| `visual_navigation/configs/object_search_goal_mux.yaml` | 更换搜索任务策略 | 观察距离、超时、粗目标和到达条件 |
-| `graphnav_planner/config/planner.yaml` | 更换运动执行特性 | 路径稳定、进展超时和目标半径 |
+| 文件 | 内容 |
+|---|---|
+| `graph_construction/configs/topic_profiles.yaml` | `robot` profile 的 topic、frame 和 DDS |
+| `graph_construction/configs/dlio/mid360.yaml` | x86 D-LIO 参数和传感器外参 |
+| `graph_construction/configs/elevation_mapping_sim.yaml` | 小推车高程图和启动先验 |
+| `graph_construction/configs/graph_construction_elevation.yaml` | 实机地图分类、盲区和图参数 |
+| `visual_navigation/configs/wildos_nav_conf.yaml` | 三相机视觉配置 |
+| `.env.x86_64.lidar-dlio` | x86 传感器路径和容器变量 |
+| `.env.orin.wildos-cameras` | 相机 AGX 序列号、外参和模型路径 |
 
-内部 topic 的完整发布者和消费者见 [Topic 契约](topics.md)
+带 `sim` 的文件名是历史兼容命名, 当前实机 Docker 入口仍加载这些文件
 
-## 2. 新环境最少修改项
+## 2. DDS 和网络
 
-建议复制一个现有 profile 并改名, 不要直接把 `unity` 改成另一套平台
+两台主机统一设置:
 
-### 2.1 通信
-
-在 `topic_profiles.yaml` 中检查:
-
-- `ros_domain_id`
-- `rmw_implementation`
-- `namespace`
-- launch 参数 `use_sim_time`
-- 使用 FastDDS 时的 `fastdds_profile`
-
-仿真通常需要 `/clock` 和 `use_sim_time:=true`
-
-真机通常不订阅 `/clock`, 使用 `use_sim_time:=false`
-
-新 Orin 与机器狗 Orin 现有定位链路使用 FastDDS 通信。启动两台主机上的 ROS 2 容器或调试节点前必须使用相同环境:
-
-```bash
-export ROS_DOMAIN_ID=2
-export ROS_LOCALHOST_ONLY=0
-export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+```dotenv
+ROS_DOMAIN_ID=2
+ROS_LOCALHOST_ONLY=0
+RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 ```
 
-修改 RMW 后必须重启相关 ROS 2 进程，已经运行的进程不会切换中间件
+x86 和相机 AGX 通过 `192.168.50.0/24` 有线网络通信
 
-`robot` profile 默认使用 platform 定位:
+修改 RMW、Domain 或 FastDDS profile 后必须重启相关 ROS 进程
+
+## 3. x86 传感器和定位
+
+x86 环境文件至少配置:
+
+```dotenv
+POINTCLOUD_INPUT_TOPIC=/livox/lidar
+IMU_INPUT_TOPIC=/livox/imu
+POINTCLOUD_OUTPUT_TOPIC=/cloud_registered
+ODOM_OUTPUT_TOPIC=/odom
+GLOBAL_FRAME=odom
+BASE_FRAME=base_link
+LIDAR_FRAME=lidar_link
+IMU_FRAME=imu_link
+MID360_CONFIG_FILE=/absolute/path/to/MID360_config.json
+DLIO_CONFIG_FILE=/absolute/path/to/graph_construction/configs/dlio/mid360.yaml
+```
+
+MID360 JSON 中主机网卡地址和雷达地址必须与现场网络一致
+
+## 4. 相机 AGX `robot` profile
 
 ```text
-/cloud_registered -> elevation mapping
-/odom -> odom frame adapter -> /spot1/odom_for_scoring
+/cloud_registered
+  -> pointcloud_axis_adapter
+  -> /spot1/cloud_registered_local, 2 Hz, frame=dlio_odom
+  -> elevation mapping
+
+/odom
+  -> odom_frame_adapter
+  -> /spot1/odom_for_scoring
 ```
 
-当前机器狗 Orin 由 POINT-LIO 发布 `odom_3D` frame 下的 `/cloud_registered`，global localization 和 transform fusion 提供 `map -> odom_3D`、`map -> odom -> base_link` 和传感器 TF
+不得只修改点云 header 来代替坐标变换
 
-`/cloud_registered` 已经是注册点云，robot profile 不再启动 Python pointcloud adapter。elevation mapping 保留点云原始 frame 和字段，再通过 TF 转换到全局 `odom`
+当前 `pointcloud_axis_mode=identity`, adapter 的主要作用是限制跨机大点云的本机扇出和输出频率
 
-部署前必须检查原始消息:
+## 5. TF
 
-```bash
-ros2 topic echo /cloud_registered --field header --once
-ros2 topic echo /odom --once
-ros2 run tf2_ros tf2_echo odom base_link
-ros2 run tf2_ros tf2_echo odom odom_3D
-```
-
-不得只修改点云 header 来冒充坐标变换
-
-### 2.2 Frame
-
-必须形成一条无冲突的 TF 链:
+必须存在连续且无冲突的链路:
 
 ```text
-global_frame
-  -> odom or dlio_local_frame
-  -> base_frame
-  -> lidar_frame
-  -> imu_frame
-  -> camera frames
+odom -> dlio_odom -> base_link -> lidar_link
+                             -> imu_link
+                             -> front_link -> front_color_optical_frame
+                             -> left_link  -> left_color_optical_frame
+                             -> right_link -> right_color_optical_frame
 ```
 
-需要检查的 profile 字段:
+三相机 `base_link -> <name>_link` 当前使用近似值, 结构固定后必须重新标定
 
-- `global_frame`
-- `parent_frame`
-- `odom_parent_frame`
-- `odom_child_frame`
-- `base_frame`
-- `lidar_parent_frame`
-- `lidar_frame`
-- `imu_frame`
-- `camera_parent_frame`
-- `cam_frame`
-- `pointcloud_output_frame`
+## 6. 高程图和图构建
 
-传感器驱动已经发布静态 TF 时, 关闭对应 fallback:
+当前小推车参数:
 
-```text
-publish_lidar_static_tf:=false
-publish_camera_static_tf:=false
-```
+| 参数 | 当前值 | 说明 |
+|---|---:|---|
+| `resolution` | 0.2 m | 高程图分辨率 |
+| `map_length` | 30 m | rolling map 边长 |
+| `max_height_range` | 1.0 m | 排除天花板 |
+| `initialize_tf_offset` | -0.90 m | 雷达到地面高度 |
+| `initialize_tf_grid_size` | 1.0 m | 初始锚点方形边长 |
+| `dilation_size_initialize` | 2 cell | 初始化膨胀 |
+| `robot_blind_zone_radius` | 0.8 m | 脚下种子半径 |
+| `robot_blind_zone_elevation_search_radius` | 2.0 m | 最大连通搜索半径 |
+| `robot_ground_height_offset` | 0.90 m | odom 原点到地面 |
 
-同一个 child frame 只能有一个 TF owner
+调整启动先验时必须同时检查人工区域是否连接真实地面、是否越过墙体以及是否覆盖近场障碍
 
-### 2.3 外部输入 Topic
+## 7. 三相机
 
-所有定位模式必须配置:
+- 前相机 D435if
+- 左右相机 D435i
+- 驱动彩色流 640 × 480, 15 Hz
+- WildOS 处理 10 Hz
+- 图像 topic 使用压缩传输
+- 相机时间戳保持驱动原值
 
-- `pointcloud_input_topic`
-- `camera_img_topic`
-- `camera_info_topic`
-- `goal_pose_topic`
+外参为空时只能验证图像, 不能验收视觉评分、LiDAR 投影和三维目标定位
 
-platform 模式还必须配置:
-
-- `aligned_lidar_topic`
-- `odom_input_topic`
-
-DLIO 模式还必须配置:
-
-- `dlio_imu_input_topic`
-- `dlio_reference_odom_topic`
-- `dlio_topic_root`
-- `dlio_local_frame`
-- `dlio_alignment_delay`
-
-`pointcloud_input_topic` 是唯一原始点云入口, platform adapter 和 DLIO 共用
-
-DLIO odom、aligned odom、健康状态、deskewed 点云和隔离 TF 都从 `dlio_topic_root` 自动生成, 不需要逐个配置
-
-`dlio_reference_odom_topic` 在仿真中用于启动对齐和误差诊断
-
-真机没有外部全局参考时可以留空, 但必须确认系统如何确定 DLIO 到全局 frame 的初始变换
-
-### 2.4 相机
-
-检查:
-
-- `camera_img_topic`
-- `camera_info_topic`
-- `cam_frame`
-- `camera_parent_frame`
-- `camera_stamp_mode`
-
-图像水平翻转由 WildOS 配置中的 `camera_image_flip_x` 控制
-
-`camera_stamp_mode=preserve` 表示驱动时间已经与 LiDAR、odom 和 TF 同步
-
-`camera_stamp_mode=now` 只用于仿真相机时间不在当前 ROS 时钟域的情况
-
-更换分辨率或镜头后还要重新检查:
-
-- `object_search_detection_min_component_pixels`
-- `object_search_detection_min_component_fraction`
-- `object_search_reached_min_pixel_count`
-- `object_search_reached_mask_fraction`
-- `visual_frontiers_range`
-- `visual_frontier_threshold`
-
-## 3. DLIO 环境参数
-
-### 3.1 必须按硬件修改
-
-Unity 在 `configs/dlio/unity.yaml` 中检查，实机在 `DLIO_CONFIG_FILE` 指向的现场 YAML 中检查:
-
-| 参数 | 含义 |
-|---|---|
-| `frames/odom` | DLIO 局部 odom frame |
-| `frames/baselink` | 机器人本体 frame |
-| `frames/lidar` | 点云 header frame |
-| `frames/imu` | IMU header frame |
-| `extrinsics/baselink2lidar/t` | base 到 LiDAR 平移, 单位 m |
-| `extrinsics/baselink2lidar/R` | base 到 LiDAR 旋转矩阵 |
-| `extrinsics/baselink2imu/t` | base 到 IMU 平移, 单位 m |
-| `extrinsics/baselink2imu/R` | base 到 IMU 旋转矩阵 |
-| `odom/gravity` | 当前环境重力加速度 |
-| `pointcloud/deskew` | 是否使用逐点时间去畸变 |
-
-启用 `pointcloud/deskew` 前必须确认点云包含 DLIO 支持的逐点时间字段, 单位正确且单帧内单调
-
-### 3.2 根据数据质量调整
-
-以下参数不是 topic 接入参数, 只有日志或轨迹表明存在问题时才调整:
-
-- `odom/preprocessing/voxelFilter/res`
-- `odom/preprocessing/cropBoxFilter/size`
-- `odom/keyframe/threshD`
-- `odom/keyframe/threshR`
-- `odom/submap/keyframe/knn`
-- `odom/gicp/minNumPoints`
-- `odom/gicp/kCorrespondences`
-- `odom/gicp/maxCorrespondenceDistance`
-- `odom/gicp/maxIterations`
-- `odom/geo/*`
-
-不要用调 GICP 或 observer 增益掩盖错误外参、错误 frame、时间不同步或点云轴向错误
-
-## 4. 高程图和图构建
-
-更换场景或 LiDAR 后检查高程图:
-
-| 参数 | 何时修改 |
-|---|---|
-| `resolution` | 地图精度和计算量需要变化 |
-| `map_length` | 局部可见范围变化 |
-| `min_valid_distance` | LiDAR 近场盲区变化 |
-| `max_height_range` | 场景垂直范围变化 |
-| `max_ray_length` | LiDAR 有效距离变化 |
-| `initialize_tf_offset` | base_link 到地面高度变化 |
-| `initialize_tf_grid_size` | 启动盲区尺寸变化 |
-
-更换机器人尺寸后检查图构建:
-
-| 参数 | 何时修改 |
-|---|---|
-| `min_obstacle_clearance` | 机器人安全净空变化 |
-| `robot_ground_height_offset` | odom 原点到地面高度变化 |
-| `robot_ground_elevation_tolerance` | 可接受地面高度误差变化 |
-| `max_free_radius` | 稀疏节点覆盖尺度变化 |
-| `edge_radius` | 最大局部连边距离变化 |
-
-启动先验搜索半径必须大于膨胀后人工区域的半宽
-
-当前 Unity 参数中, 12 m 初始化方形经过两轮 5-cell 膨胀后约为 16 m 宽, 因此图层搜索半径使用 12 m
-
-## 5. 内部输出 Topic
-
-`common_contract` 中的内部 topic 通常不随环境改变:
-
-- `/spot1/odom_for_scoring`
-- `/elevation_mapping_node/elevation_map_raw`
-- `/spot1/nav_graph`
-- `/spot1/scored_nav_graph`
-- `/spot1/graphnav_planner/path`
-- `/spot1/object_mask`
-- `/spot1/object_target_estimate`
-
-`goal_pose_topic` 既可以由目标搜索 Goal Mux 输出, 也可以由外部任务系统输入, 因此保留在各环境 profile 中
-
-如果必须修改 namespace 或内部 topic, 应在 `common_contract` 中统一修改, 并同步检查:
-
-- graph construction
-- WildOS
-- object target fusion
-- object search goal mux
-- Planner
-- performance monitor
-- RViz
-- 仓库外运动执行适配层
-
-不要只修改某一个节点的 fallback YAML
-
-## 6. 启动方式
-
-使用内置 profile:
-
-```bash
-./scripts/start_wildos_elevation.sh \
-  topic_profile:=unity \
-  localization_backend:=dlio \
-  launch_dlio:=true \
-  do_object_search:=true
-```
-
-使用自定义环境文件:
-
-```bash
-./scripts/start_wildos_elevation.sh \
-  topic_profile:=my_robot \
-  topic_profile_file:=/absolute/path/topic_profiles.yaml \
-  localization_backend:=dlio \
-  dlio_config_file:=/absolute/path/dlio.yaml \
-  elevation_config:=/absolute/path/elevation.yaml \
-  graph_config:=/absolute/path/graph.yaml
-```
-
-相对配置名从对应 ROS package 的安装目录解析, 自定义文件建议使用绝对路径
-
-## 7. 上线前检查
+## 8. 上线检查
 
 ```bash
 ros2 topic list -t
-ros2 topic hz <pointcloud_topic>
-ros2 topic hz <imu_topic>
-ros2 topic hz <odom_topic>
-ros2 topic echo <pointcloud_topic> --once
-ros2 topic echo <imu_topic> --once
-ros2 run tf2_ros tf2_echo <global_frame> <base_frame>
-ros2 node info /spot1/graph_construction
+ros2 topic hz /cloud_registered
+ros2 topic hz /odom
+ros2 topic hz /spot1/realsense/front/color/image_raw/compressed
+ros2 topic hz /spot1/realsense/left/color/image_raw/compressed
+ros2 topic hz /spot1/realsense/right/color/image_raw/compressed
+ros2 run tf2_ros tf2_echo odom base_link
+ros2 run tf2_ros tf2_echo base_link front_color_optical_frame
 ```
 
-检查顺序:
-
-1. 时钟和 ROS domain
-2. 原始传感器 topic
-3. frame 和静态外参
-4. odom 与 canonical TF
-5. 高程图
-6. 导航图和 scored graph
-7. Planner Path
-8. 运动执行适配层输出
-
-只有 topic、时间和 TF 契约正确后, 才开始调整算法阈值
+按源数据、时间、TF、高程图、导航图、视觉、Path 的顺序排查
