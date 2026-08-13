@@ -26,12 +26,13 @@ elevation_mapping_node:
     enable_pointcloud_publishing: false
 
     # 小推车 base_link 位于雷达中心, 实测雷达到地面约 0.90m
+    # 实机仅初始化脚下局部地面, 避免人工平面越过墙体
     use_initializer_at_start: true
     initialize_method: linear
     initialize_frame_id: ["base_link"]
     initialize_tf_offset: [-0.90]
-    dilation_size_initialize: 5
-    initialize_tf_grid_size: 12.0
+    dilation_size_initialize: 2
+    initialize_tf_grid_size: 1.0
 
     # 服务命名空间和发布内容通常不随环境修改
     service_namespace: /elevation_mapping_cupy
