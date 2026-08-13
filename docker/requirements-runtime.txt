@@ -24,3 +24,5 @@ regex
 tqdm
 transforms3d>=0.4.2
 simple-parsing>=0.1.8
+ruamel.yaml==0.18.11
+shapely==2.1.2
