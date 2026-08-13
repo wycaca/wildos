@@ -23,3 +23,4 @@ ftfy
 regex
 tqdm
 transforms3d>=0.4.2
+simple-parsing>=0.1.8
