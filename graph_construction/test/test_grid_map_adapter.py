@@ -126,10 +126,12 @@ def test_grid_map_postprocess_fills_elevation_for_small_free_hole():
     assert grid.stats["elevation_filled"] == 1
 
 
-def test_grid_map_treats_unscored_initializer_cells_as_unknown():
+def test_grid_map_treats_aged_initializer_cells_as_unknown():
     traversability = np.zeros((5, 5), dtype=np.float32)
     elevation = np.zeros((5, 5), dtype=np.float32)
-    variance = np.full((5, 5), 10.0, dtype=np.float32)
+    variance = np.full((5, 5), 10.42, dtype=np.float32)
+    variance[0, 0] = 1000.5
+    variance[4, 4] = 0.1
     msg = _grid_map_message(
         traversability,
         elevation=elevation,
@@ -156,9 +158,9 @@ def test_grid_map_treats_unscored_initializer_cells_as_unknown():
     )
 
     assert not np.any(grid.free)
-    assert not np.any(grid.obstacle)
-    assert np.all(grid.unknown)
-    assert grid.stats["initializer_prior"] == 25
+    assert grid.obstacle[4, 4]
+    assert np.count_nonzero(grid.unknown) == 24
+    assert grid.stats["initializer_prior"] == 24
 
 
 def _assert_round_trip(grid):

@@ -57,7 +57,7 @@ def classify_grid_map(
         initializer_prior = (
             valid
             & np.isfinite(variance)
-            & np.isclose(variance, float(initializer_variance), atol=1.0e-3)
+            & (variance >= float(initializer_variance))
         )
         valid &= ~initializer_prior
 
