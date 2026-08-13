@@ -7,7 +7,7 @@ from setuptools import find_packages, setup
 package_name = "graph_construction"
 launch_files = [
     "launch/dlio_localization.launch.py",
-    "launch/elevation_visual_navigation_sim.launch.py",
+    "launch/elevation_visual_navigation.launch.py",
 ]
 
 setup(
@@ -40,12 +40,11 @@ setup(
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
-            "camera_stamp_adapter = graph_construction.camera_stamp_adapter:main",
             "dlio_output_guard = graph_construction.dlio_output_guard:main",
             "dlio_tf_adapter = graph_construction.dlio_tf_adapter:main",
             "graph_construction = graph_construction.node:main",
             "pipeline_performance_monitor = graph_construction.pipeline_performance_monitor:main",
-            "pointcloud_axis_adapter = graph_construction.pointcloud_axis_adapter:main",
+            "pointcloud_relay = graph_construction.pointcloud_relay:main",
         ],
     },
 )

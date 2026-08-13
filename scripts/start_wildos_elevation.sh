@@ -44,7 +44,7 @@ set -u
 
 INSTALL_ROOT="$(cd "$(dirname "${INSTALL_SETUP}")" && pwd)"
 export PYTHONNOUSERSITE="${PYTHONNOUSERSITE:-1}"
-export WILDOS_TOPIC_PROFILE="${WILDOS_TOPIC_PROFILE:-unity}"
+export WILDOS_TOPIC_PROFILE="${WILDOS_TOPIC_PROFILE:-robot}"
 if [[ -n "${PYTHONPATH:-}" ]]; then
   export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH}"
 else
@@ -86,20 +86,6 @@ launch_arg_enabled() {
   return 1
 }
 
-launch_arg_value() {
-  local name="$1"
-  local default_value="$2"
-  local arg
-  shift 2
-  for arg in "$@"; do
-    if [[ "${arg}" == "${name}:="* ]]; then
-      echo "${arg#*:=}"
-      return 0
-    fi
-  done
-  echo "${default_value}"
-}
-
 ensure_installed_executable() {
   local executable="$1"
   local package="$2"
@@ -129,7 +115,7 @@ ensure_object_search_interfaces() {
 }
 
 ensure_no_existing_wildos_launch() {
-  local launch_pattern="[r]os2 launch graph_construction elevation_visual_navigation_sim.launch.py"
+  local launch_pattern="[r]os2 launch graph_construction elevation_visual_navigation.launch.py"
   if ! pgrep -f "${launch_pattern}" >/dev/null; then
     return 0
   fi
@@ -162,27 +148,9 @@ if launch_arg_enabled "launch_paper_rviz" "$@"; then
   fi
 fi
 
-LOCALIZATION_BACKEND="$(launch_arg_value "localization_backend" "platform" "$@")"
-case "${LOCALIZATION_BACKEND}" in
-  platform|dlio)
-    ;;
-  *)
-    echo "未知 localization backend: ${LOCALIZATION_BACKEND}" >&2
-    exit 1
-    ;;
-esac
+echo "启动 WildOS elevation/2.5D, profile=${WILDOS_TOPIC_PROFILE}, python=${PYTHON_BIN}"
 
-if [[ "${LOCALIZATION_BACKEND}" == "dlio" ]] && launch_arg_enabled "launch_dlio" "$@"; then
-  if ! ros2 pkg prefix direct_lidar_inertial_odometry >/dev/null 2>&1; then
-    echo "缺少 direct_lidar_inertial_odometry, 无法由主 launch 启动 DLIO" >&2
-    echo "请先按 dependencies/dlio.repos 导入并构建固定版本 DLIO" >&2
-    exit 1
-  fi
-fi
-
-echo "启动 WildOS elevation/2.5D, profile=${WILDOS_TOPIC_PROFILE}, localization=${LOCALIZATION_BACKEND}, python=${PYTHON_BIN}"
-
-exec ros2 launch graph_construction elevation_visual_navigation_sim.launch.py \
+exec ros2 launch graph_construction elevation_visual_navigation.launch.py \
   topic_profile:="${WILDOS_TOPIC_PROFILE}" \
   wildos_python_executable:="${PYTHON_BIN}" \
   "${ROS_DOMAIN_LAUNCH_ARG[@]}" \

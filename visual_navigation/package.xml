@@ -12,10 +12,7 @@
   <test_depend>ament_pep257</test_depend>
   <test_depend>python3-pytest</test_depend>
 
-  <exec_depend>grid_map_msgs</exec_depend>
-  <exec_depend>grid_map_ros</exec_depend>
   <exec_depend>triangulation3d</exec_depend>
-  <exec_depend>gps_visualization</exec_depend>
   <exec_depend>object_search_msgs</exec_depend>
   <exec_depend>graphnav_msgs</exec_depend>
   <exec_depend>nav_msgs</exec_depend>

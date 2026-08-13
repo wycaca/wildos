@@ -85,9 +85,9 @@ docker compose \
   up -d
 ```
 
-容器外调试入口仍为 `scripts/start_wildos_elevation.sh`, 实机必须显式使用 `robot` profile 和 `use_sim_time:=false`
+容器外调试入口仍为 `scripts/start_wildos_elevation.sh`, 默认使用 `robot` profile 和 ROS 系统时钟
 
-`elevation_visual_navigation_sim.launch.py`、`elevation_mapping_sim.yaml` 等名称是历史兼容命名, 当前 Docker 实机链路仍会加载它们
+实机主 launch 为 `elevation_visual_navigation.launch.py`, 默认读取 `robot` profile 和 ROS 系统时钟
 
 ## 5. 模块职责
 
@@ -107,7 +107,7 @@ docker compose \
 - x86 发布 `/cloud_registered`、`/odom` 和 `/tf`
 - `/cloud_registered` 的 frame 为 `dlio_odom`
 - 相机 AGX 只跨机订阅一次 `/cloud_registered`
-- `pointcloud_axis_adapter` 以 2 Hz 发布 `/spot1/cloud_registered_local`
+- `pointcloud_relay` 以 2 Hz 发布 `/spot1/cloud_registered_local`
 - elevation mapping 消费 `/spot1/cloud_registered_local`
 - canonical odom 为 `/spot1/odom_for_scoring`
 
@@ -166,7 +166,7 @@ docker compose \
 |---|---|
 | 实机 topic、frame 和 DDS | `graph_construction/configs/topic_profiles.yaml` 的 `robot` profile |
 | x86 D-LIO | `graph_construction/configs/dlio/mid360.yaml` |
-| 高程图 | `graph_construction/configs/elevation_mapping_sim.yaml` |
+| 高程图 | `graph_construction/configs/elevation_mapping.yaml` |
 | 图构建 | `graph_construction/configs/graph_construction_elevation.yaml` |
 | 实机视觉 | `visual_navigation/configs/wildos_nav_conf.yaml` |
 | x86 Compose 环境 | `.env.x86_64.lidar-dlio` |

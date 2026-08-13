@@ -31,17 +31,10 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'lrn = visual_navigation.lrn.nav:main',
-            'gps_viz = visual_navigation.gps.gps_viz:main',
-            'gps_save = visual_navigation.gps.save_gps_path:main',
-            'metrics_save = visual_navigation.gps.save_metrics:main',
-            'img_frontier_nav = visual_navigation.imgfrontier_nav.nav:main',
-            'geo_frontier_nav = visual_navigation.geofrontier_nav.nav:main',
             'wildos = visual_navigation.wildos.nav:main',
             'odom_frame_adapter = visual_navigation.utils.odom_frame_adapter:main',
             'object_search_goal_mux = visual_navigation.object_search_goal_mux:main',
             'object_target_fusion = visual_navigation.object_target_fusion:main',
-            'viz_net = visual_navigation.imgfrontier_nav.viz_net:main',
         ],
     },
 )

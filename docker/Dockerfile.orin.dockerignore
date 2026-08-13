@@ -16,10 +16,13 @@
 **/install
 **/log
 nebula2-wildos/external_references
+nebula2-wildos/explorfm/prototyping
+nebula2-wildos/explorfm_trainer
+nebula2-wildos/nvidia_radio/examples
+nebula2-wildos/nvidia_radio/mmseg
 nebula2-wildos/test
 nebula2-wildos/ckpts
 nebula2-wildos/**/*.md
 nebula2-wildos/**/test
 nebula2-wildos/**/tests
 nebula2-wildos/test_*.py
-nebula2-wildos/nvidia_radio/test_*.py

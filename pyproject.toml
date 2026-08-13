@@ -16,25 +16,19 @@ dependencies = [
   "wheel",
   # core
   "torch==2.7.0",
-  "torchaudio==2.7.0",
   "torchvision==0.22.0",
   # vision
   "timm==1.0.15",
   "open-clip-torch==2.32.0",
   "transformers==4.51.3",
   "einops==0.8.1",
-  "fairscale==0.4.4",
   "scikit-image",
   "onnx",
   "opencv-python",
   "matplotlib",
   "numpy>=1.23,<2",
   # config
-  "ruamel.yaml==0.18.11",
   "omegaconf",
-  # gps utils
-  "folium",
-  "selenium",
   # common runtime helpers
   "pillow",
   "scipy",
@@ -44,10 +38,8 @@ dependencies = [
   "regex",
   "tqdm",
   "cupy-cuda12x>=13.6.0",
-  "simple-parsing>=0.1.8",
   "ros2-numpy>=0.0.5",
   "transforms3d>=0.4.2",
-  "shapely>=2.1.2",
 ]
 
 [dependency-groups]

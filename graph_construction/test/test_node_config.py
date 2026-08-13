@@ -96,8 +96,8 @@ def test_deployment_config_searches_beyond_dilated_startup_prior():
 
     builder_config = _builder_config(_load_config(str(config_path)))
 
-    assert builder_config.robot_blind_zone_radius == 4.0
-    assert builder_config.robot_blind_zone_elevation_search_radius == 12.0
+    assert builder_config.robot_blind_zone_radius == 0.8
+    assert builder_config.robot_blind_zone_elevation_search_radius == 2.0
 
 
 def test_take_latest_inputs_processes_each_grid_once():

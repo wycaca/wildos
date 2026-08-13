@@ -37,9 +37,9 @@ class GraphBuilderConfig:
     grid_map_max_surface_step: float = 0.35
 
     # 启动安全先验的种子半径和最大连通盲区搜索半径
-    robot_blind_zone_radius: float = 4.0
-    robot_blind_zone_elevation_search_radius: float = 12.0
-    robot_ground_height_offset: float = 0.22
+    robot_blind_zone_radius: float = 0.8
+    robot_blind_zone_elevation_search_radius: float = 2.0
+    robot_ground_height_offset: float = 0.90
     robot_ground_elevation_tolerance: float = 0.5
 
     node_sample_count: int = 1000

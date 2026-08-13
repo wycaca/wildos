@@ -11,7 +11,6 @@ DEPENDENCY_PACKAGES=(
   graaf_vendor
   graphnav_msgs
   object_search_msgs
-  gps_visualization
   triangulation3d
 )
 APPLICATION_PACKAGES=(

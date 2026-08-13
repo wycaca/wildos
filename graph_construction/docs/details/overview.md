@@ -65,7 +65,7 @@ x86 和相机 AGX 分别使用仓库根目录的两个 Compose 文件:
 |---|---|
 | 实机 topic 和 frame | `graph_construction/configs/topic_profiles.yaml` 的 `robot` profile |
 | D-LIO | `graph_construction/configs/dlio/mid360.yaml` |
-| 高程图 | `graph_construction/configs/elevation_mapping_sim.yaml` |
+| 高程图 | `graph_construction/configs/elevation_mapping.yaml` |
 | 图构建 | `graph_construction/configs/graph_construction_elevation.yaml` |
 | 视觉 | `visual_navigation/configs/wildos_nav_conf.yaml` |
 | 相机与镜像 | `.env.orin.wildos-cameras` |

@@ -6,7 +6,7 @@
 |---|---|
 | `graph_construction/configs/topic_profiles.yaml` | `robot` profile 的 topic、frame 和 DDS |
 | `graph_construction/configs/dlio/mid360.yaml` | x86 D-LIO 参数和传感器外参 |
-| `graph_construction/configs/elevation_mapping_sim.yaml` | 小推车高程图和启动先验 |
+| `graph_construction/configs/elevation_mapping.yaml` | 小推车高程图和启动先验 |
 | `graph_construction/configs/graph_construction_elevation.yaml` | 实机地图分类、盲区和图参数 |
 | `visual_navigation/configs/wildos_nav_conf.yaml` | 三相机视觉配置 |
 | `.env.x86_64.lidar-dlio` | x86 传感器路径和容器变量 |
@@ -51,7 +51,7 @@ MID360 JSON 中主机网卡地址和雷达地址必须与现场网络一致
 
 ```text
 /cloud_registered
-  -> pointcloud_axis_adapter
+  -> pointcloud_relay
   -> /spot1/cloud_registered_local, 2 Hz, frame=dlio_odom
   -> elevation mapping
 
@@ -62,7 +62,7 @@ MID360 JSON 中主机网卡地址和雷达地址必须与现场网络一致
 
 不得只修改点云 header 来代替坐标变换
 
-当前 `pointcloud_axis_mode=identity`, adapter 的主要作用是限制跨机大点云的本机扇出和输出频率
+`pointcloud_relay` 不修改点坐标和字段, 只限制跨机大点云的本机扇出和输出频率
 
 ## 5. TF
 

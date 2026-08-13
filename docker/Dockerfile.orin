@@ -40,7 +40,6 @@ COPY elevation_mapping_cupy /opt/wildos_ws/src/elevation_mapping_cupy
 COPY graaf_vendor /opt/wildos_ws/src/graaf_vendor
 COPY nebula2-wildos/graphnav_msgs /opt/wildos_ws/src/nebula2-wildos/graphnav_msgs
 COPY nebula2-wildos/object_search_msgs /opt/wildos_ws/src/nebula2-wildos/object_search_msgs
-COPY nebula2-wildos/gps_visualization /opt/wildos_ws/src/nebula2-wildos/gps_visualization
 COPY nebula2-wildos/triangulation3d /opt/wildos_ws/src/nebula2-wildos/triangulation3d
 COPY nebula2-wildos/docker/build_workspace.sh /tmp/build_workspace.sh
 

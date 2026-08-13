@@ -33,7 +33,6 @@ RUN chmod +x /tmp/configure_apt_mirrors.sh \
       ros-humble-pcl-conversions \
       ros-humble-pcl-ros \
       ros-humble-rclcpp-components \
-      ros-humble-rmw-cyclonedds-cpp \
       ros-humble-rmw-fastrtps-cpp \
       ros-humble-rosidl-default-generators \
       ros-humble-sensor-msgs-py \

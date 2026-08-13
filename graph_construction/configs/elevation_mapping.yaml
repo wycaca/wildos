@@ -19,7 +19,7 @@ elevation_mapping_node:
     map_acquire_fps: 5.0
     publish_statistics_fps: 1.0
 
-    # 静态仿真不清理射线遮挡后的旧地面
+    # 实机点云配准和遮挡会短时抖动, 暂不清理射线后的旧地面
     enable_visibility_cleanup: false
     enable_drift_compensation: false
     enable_drift_corrected_TF_publishing: false

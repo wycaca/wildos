@@ -52,7 +52,7 @@ def test_graph_builder_defaults_match_paper_geometry():
     config = GraphBuilderConfig()
 
     assert config.node_sample_count == 1000
-    assert config.robot_blind_zone_elevation_search_radius == 12.0
+    assert config.robot_blind_zone_elevation_search_radius == 2.0
     assert config.max_free_radius == 4.0
     assert config.min_obstacle_clearance == 0.5
     assert config.edge_radius == 8.0
@@ -766,7 +766,7 @@ def test_blind_zone_preserves_slope_step_pit_and_obstacle_surfaces():
 
     result = builder.update(
         grid,
-        robot_position=(robot_xy[0], robot_xy[1], expected_ground + 0.22),
+        robot_position=(robot_xy[0], robot_xy[1], expected_ground + 0.90),
         stamp_seconds=1.0,
     )
 
@@ -898,8 +898,8 @@ def test_graph_builder_samples_outer_free_component_after_blind_zone_repair():
     )
 
 
-def test_default_blind_zone_connects_across_five_metre_lidar_gap():
-    """默认 4 m 种子必须填满 5 m 盲区并连接真实点云区域"""
+def test_large_blind_zone_connects_across_five_metre_lidar_gap():
+    """显式扩大盲区时必须连接 5 m 外的点云区域"""
     resolution = 0.2
     size = 81
     center = 40
@@ -923,7 +923,13 @@ def test_default_blind_zone_connects_across_five_metre_lidar_gap():
         stats={},
     )
     robot_xy = ((center + 0.5) * resolution, (center + 0.5) * resolution)
-    builder = SparseGraphBuilder(GraphBuilderConfig())
+    builder = SparseGraphBuilder(
+        GraphBuilderConfig(
+            robot_blind_zone_radius=4.0,
+            robot_blind_zone_elevation_search_radius=12.0,
+            robot_ground_height_offset=0.22,
+        )
+    )
 
     result = builder.update(
         grid,
@@ -973,7 +979,13 @@ def test_blind_zone_fill_starts_from_existing_large_startup_island_boundary():
         stats={},
     )
     robot_xy = ((center + 0.5) * resolution, (center + 0.5) * resolution)
-    builder = SparseGraphBuilder(GraphBuilderConfig())
+    builder = SparseGraphBuilder(
+        GraphBuilderConfig(
+            robot_blind_zone_radius=4.0,
+            robot_blind_zone_elevation_search_radius=12.0,
+            robot_ground_height_offset=0.22,
+        )
+    )
 
     result = builder.update(
         grid,
@@ -1031,7 +1043,13 @@ def test_dilated_source_prior_connects_to_outer_pointcloud_component():
         (center + 0.5) * resolution,
         (center + 0.5) * resolution,
     )
-    builder = SparseGraphBuilder(GraphBuilderConfig())
+    builder = SparseGraphBuilder(
+        GraphBuilderConfig(
+            robot_blind_zone_radius=4.0,
+            robot_blind_zone_elevation_search_radius=12.0,
+            robot_ground_height_offset=0.22,
+        )
+    )
 
     result = builder.update(
         make_grid(),

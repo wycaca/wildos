@@ -1,44 +1,17 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, TextSubstitution
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
 def generate_launch_description():
-    use_sim_time = LaunchConfiguration("use_sim_time")
-    namespace = LaunchConfiguration("ns")
     config = LaunchConfiguration("config")
     do_object_search = LaunchConfiguration("do_object_search")
     log_level = LaunchConfiguration("log_level")
 
-    tf_remappings = [
-        (
-            "/tf",
-            PathJoinSubstitution(
-                [TextSubstitution(text="/"), namespace, TextSubstitution(text="tf")]
-            ),
-        ),
-        (
-            "/tf_static",
-            PathJoinSubstitution(
-                [TextSubstitution(text="/"), namespace, TextSubstitution(text="tf_static")]
-            ),
-        ),
-    ]
-
     return LaunchDescription(
         [
-            DeclareLaunchArgument(
-                "use_sim_time",
-                default_value="false",
-                description="Use simulation clock if true",
-            ),
-            DeclareLaunchArgument(
-                "ns",
-                default_value="",
-                description="Robot namespace",
-            ),
             DeclareLaunchArgument(
                 "config",
                 default_value="wildos_nav_conf.yaml",
@@ -67,16 +40,14 @@ def generate_launch_description():
                     "--log-level",
                     log_level,
                 ],
-                parameters=[{"use_sim_time": use_sim_time}],
-                remappings=tf_remappings,
+                parameters=[{"use_sim_time": False}],
             ),
             Node(
                 package="visual_navigation",
                 executable="object_target_fusion",
                 output="screen",
                 arguments=["--ros-args", "--log-level", log_level],
-                parameters=[{"use_sim_time": use_sim_time}],
-                remappings=tf_remappings,
+                parameters=[{"use_sim_time": False}],
                 condition=IfCondition(do_object_search),
             ),
         ]

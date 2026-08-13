@@ -78,9 +78,7 @@ apt-get install -y --no-install-recommends \
   ros-humble-grid-map-ros \
   ros-humble-image-transport \
   ros-humble-message-filters \
-  ros-humble-rmw-cyclonedds-cpp \
   ros-humble-rmw-fastrtps-cpp \
-  ros-humble-rmw-zenoh-cpp \
   ros-humble-robot-state-publisher \
   ros-humble-ros-base \
   ros-humble-rosbag2-py \
