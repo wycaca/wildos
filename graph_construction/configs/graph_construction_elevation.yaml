@@ -22,7 +22,7 @@ grid_map_fill_elevation_radius_cells: 5
 # 12 m 源头方形经膨胀后约 16 m 宽, 搜索半径必须越过人工区域边界
 robot_blind_zone_radius: 4.0
 robot_blind_zone_elevation_search_radius: 12.0
-robot_ground_height_offset: 0.22
+robot_ground_height_offset: 0.90
 robot_ground_elevation_tolerance: 0.5
 
 # 论文 Algorithm 3 随机采样和 Algorithm 5 半径图

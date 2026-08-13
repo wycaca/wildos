@@ -9,7 +9,8 @@ elevation_mapping_node:
     resolution: 0.2
     map_length: 30.0
     min_valid_distance: 0.3
-    max_height_range: 2.0
+    # 雷达上方 1m 外视为天花板, 避免高程图积累顶棚
+    max_height_range: 1.0
     max_ray_length: 20.0
 
     # 更新频率
@@ -24,11 +25,11 @@ elevation_mapping_node:
     enable_drift_corrected_TF_publishing: false
     enable_pointcloud_publishing: false
 
-    # 启动安全先验, offset 需要匹配 base_link 到地面的高度
+    # 小推车 base_link 位于雷达中心, 实测雷达到地面约 0.90m
     use_initializer_at_start: true
     initialize_method: linear
     initialize_frame_id: ["base_link"]
-    initialize_tf_offset: [-0.22]
+    initialize_tf_offset: [-0.90]
     dilation_size_initialize: 5
     initialize_tf_grid_size: 12.0
 
