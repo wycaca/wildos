@@ -40,6 +40,7 @@ profiles:
     valid_geofrontiers_topic: /spot1/within_range_geofrontiers
     score_ring_topic: /spot1/score_rings
     object_mask_topic: /spot1/object_mask
+    object_search_target_topic: /spot1/object_search_target
     object_target_estimate_topic: /spot1/object_target_estimate
     object_target_estimate_viz_topic: /spot1/object_target_estimate_viz
     object_target_particles_topic: /spot1/object_target_particles

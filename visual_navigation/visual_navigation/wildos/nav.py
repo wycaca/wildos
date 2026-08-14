@@ -6,7 +6,7 @@ from nav_msgs.msg import Odometry
 from sensor_msgs.msg import CompressedImage, Image as ImageMsg, CameraInfo
 from message_filters import ApproximateTimeSynchronizer, Subscriber
 from graphnav_msgs.msg import NavigationGraph, KeyValue
-from std_msgs.msg import Bool, Header
+from std_msgs.msg import Bool, Header, String
 from visualization_msgs.msg import MarkerArray
 from cv_bridge import CvBridge
 from object_search_msgs.msg import ObjectMaskWithTf
@@ -33,6 +33,7 @@ from visual_navigation.utils.object_search_utils import (
 from visual_navigation.object_detection_filter import analyze_object_detection_mask
 from visual_navigation.object_detection_confirmation import DetectionConfirmationWindow
 from visual_navigation.object_reached_evidence import VisualReachedEvidence
+from visual_navigation.object_search_types import normalize_object_search_target
 from visual_navigation.utils.paths import repository_root
 from visual_navigation.utils.performance_stats import EventRate, TimingWindow
 from visual_navigation.utils.publish_gate import PeriodicPublishGate
@@ -109,6 +110,7 @@ class WildOS_Nav(TFLookupSubscriber):
         "object_mask_topic": "/spot1/object_mask",
         "object_reached_topic": "/spot1/object_search_reached",
         "object_completed_topic": "/spot1/object_search_completed",
+        "object_search_target_topic": "/spot1/object_search_target",
         "visualization_publish_period_sec": 2.0,
         "visualization_require_subscribers": True,
         "processing_rate_hz": None,
@@ -558,6 +560,12 @@ class WildOS_Nav(TFLookupSubscriber):
             config.qos_history_depth,
         )
         if self.object_search_mode:
+            self.object_target_sub = self.create_subscription(
+                String,
+                config.object_search_target_topic,
+                self._on_object_search_target,
+                10,
+            )
             self.object_completed_sub = self.create_subscription(
                 Bool,
                 config.object_completed_topic,
@@ -1139,6 +1147,35 @@ class WildOS_Nav(TFLookupSubscriber):
             return
         self.object_search_completed = True
         self.get_logger().info("目标搜索任务已由 Mux 确认完成, 停止后续目标检测")
+
+    def _on_object_search_target(self, msg: String) -> None:
+        """切换文本特征并清除只属于旧目标的视觉状态"""
+        target = normalize_object_search_target(msg.data)
+        if target is None:
+            self.get_logger().warn("收到空搜索目标, 已忽略")
+            return
+        if list(self.text_queries) == [target]:
+            return
+
+        self.get_logger().info(f"开始切换搜索目标, target={target!r}")
+        try:
+            with torch.inference_mode():
+                text_feats = self.model.forward_on_text([target])
+        except Exception as exc:
+            self.get_logger().error(
+                f"搜索目标文本特征计算失败, 保留原目标, error={exc}"
+            )
+            return
+        self.text_queries = [target]
+        self.text_feats = text_feats
+        self.object_detection_confirmation.reset()
+        self.object_reached_evidence.reset()
+        self._object_detection_ready = False
+        self._visual_reached_active = False
+        self._object_missing_log_count = 0
+        self.object_search_completed = False
+        self.frontier_uuid_to_scores.clear()
+        self.get_logger().info(f"搜索目标已切换, target={target!r}")
 
     def update_navgraph_with_scores(self, navgraph_msg, geofrontiers, nav_data):
         """只发布当前活动 Frontier 的本帧评分, 不沿用历史视角结果"""

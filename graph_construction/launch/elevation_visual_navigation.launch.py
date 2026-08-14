@@ -166,6 +166,12 @@ def _launch_setup(context):
             "valid_geofrontiers_topic": _value(context, profile, "valid_geofrontiers_topic", "valid_geofrontiers_topic"),
             "score_ring_topic": _value(context, profile, "score_ring_topic", "score_ring_topic"),
             "object_mask_topic": _value(context, profile, "object_mask_topic", "object_mask_topic"),
+            "object_search_target_topic": _value(
+                context,
+                profile,
+                "object_search_target_topic",
+                "object_search_target_topic",
+            ),
             "object_reached_topic": _value(context, profile, "object_reached_topic", "object_reached_topic"),
             "object_completed_topic": _value(context, profile, "object_search_completed_topic", "object_search_completed_topic"),
             "object_search_config.mask_threshold": _value(
@@ -329,6 +335,14 @@ def _launch_setup(context):
             {"particle_topic": _value(context, profile, "object_target_particles_topic", "object_target_particles_topic")},
             {"completion_topic": _value(context, profile, "object_search_completed_topic", "object_search_completed_topic")},
             {
+                "object_search_target_topic": _value(
+                    context,
+                    profile,
+                    "object_search_target_topic",
+                    "object_search_target_topic",
+                )
+            },
+            {
                 "max_depth": _float_value(
                     context,
                     profile,
@@ -353,6 +367,14 @@ def _launch_setup(context):
             {"object_target_estimate_topic": _value(context, profile, "object_target_estimate_topic", "object_target_estimate_topic")},
             {"object_reached_topic": _value(context, profile, "object_reached_topic", "object_reached_topic")},
             {"completion_topic": _value(context, profile, "object_search_completed_topic", "object_search_completed_topic")},
+            {
+                "object_search_target_topic": _value(
+                    context,
+                    profile,
+                    "object_search_target_topic",
+                    "object_search_target_topic",
+                )
+            },
             {"odom_topic": odom_output_topic},
             {"nav_graph_topic": nav_graph_topic},
             {"scored_nav_graph_topic": scored_nav_graph_topic},

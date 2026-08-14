@@ -20,7 +20,7 @@ from scipy.spatial.transform import Rotation
 from geometry_msgs.msg import Point
 from sensor_msgs.msg import PointCloud2, PointField
 from sensor_msgs_py import point_cloud2
-from std_msgs.msg import Bool, Header
+from std_msgs.msg import Bool, Header, String
 from tf2_ros import Buffer, TransformException, TransformListener
 from visualization_msgs.msg import Marker
 
@@ -32,7 +32,10 @@ from triangulation3d.target_particle_filter import (
     TargetParticleFilter,
 )
 from visual_navigation.utils.performance_stats import EventRate, TimingWindow
-from visual_navigation.object_search_types import coarse_target_evidence_ready
+from visual_navigation.object_search_types import (
+    coarse_target_evidence_ready,
+    normalize_object_search_target,
+)
 
 
 _LIDAR_BUFFER_SIZE = 40
@@ -55,6 +58,7 @@ class ObjectTargetFusion(Node):
         self.declare_parameter("target_marker_topic", "/spot1/object_target_estimate_viz")
         self.declare_parameter("particle_topic", "/spot1/object_target_particles")
         self.declare_parameter("completion_topic", "/spot1/object_search_completed")
+        self.declare_parameter("object_search_target_topic", "/spot1/object_search_target")
         self.declare_parameter("global_frame", "odom")
         self.declare_parameter("particle_count", 1500)
         self.declare_parameter("max_depth", 100.0)
@@ -71,7 +75,7 @@ class ObjectTargetFusion(Node):
         self.declare_parameter("max_lidar_age_sec", 0.25)
 
         self.max_depth = max(float(self.get_parameter("max_depth").value), 2.0)
-        particle_config = ParticleFilterConfig(
+        self.particle_config = ParticleFilterConfig(
             particle_count=max(int(self.get_parameter("particle_count").value), 100),
             max_depth=self.max_depth,
             stable_min_confidence=float(self.get_parameter("stable_min_confidence").value),
@@ -96,7 +100,9 @@ class ObjectTargetFusion(Node):
                 0.1,
             ),
         )
-        self.particle_filter = TargetParticleFilter(particle_config)
+        self.particle_filter = TargetParticleFilter(self.particle_config)
+        self.current_target: str | None = None
+        self._target_changed_stamp_sec: float | None = None
         self.global_frame = str(self.get_parameter("global_frame").value)
         self.coarse_target_min_views = max(
             int(self.get_parameter("coarse_target_min_views").value),
@@ -180,6 +186,12 @@ class ObjectTargetFusion(Node):
             self._on_completed,
             10,
         )
+        self.create_subscription(
+            String,
+            str(self.get_parameter("object_search_target_topic").value),
+            self._on_object_search_target,
+            10,
+        )
         self.create_timer(_DIAGNOSTICS_LOG_PERIOD_SEC, self._log_health)
 
         self.get_logger().info(
@@ -188,9 +200,9 @@ class ObjectTargetFusion(Node):
             f"雷达话题={self.get_parameter('lidar_topic').value}, "
             f"估计话题={self.get_parameter('target_estimate_topic').value}, "
             f"最大深度={self.max_depth:.1f}m, "
-            f"独立视角横向基线={particle_config.independent_view_translation:.2f}m, "
-            f"重复帧门槛={particle_config.duplicate_view_translation:.2f}m/"
-            f"{particle_config.duplicate_view_angle_deg:.1f}deg, "
+            f"独立视角横向基线={self.particle_config.independent_view_translation:.2f}m, "
+            f"重复帧门槛={self.particle_config.duplicate_view_translation:.2f}m/"
+            f"{self.particle_config.duplicate_view_angle_deg:.1f}deg, "
             f"雷达匹配时间差上限={self.max_lidar_age_sec:.2f}s, "
             f"Mask扩张={self.lidar_mask_dilation_pixels}px, "
             f"最少投影点={self.lidar_min_points}, "
@@ -200,6 +212,26 @@ class ObjectTargetFusion(Node):
     def _on_lidar(self, msg: PointCloud2) -> None:
         self.lidar_buffer.append((_stamp_seconds(msg.header.stamp), msg))
         self._lidar_rate.tick()
+
+    def _on_object_search_target(self, msg: String) -> None:
+        """新任务必须丢弃旧目标粒子和可能滞留的旧 Mask"""
+        target = normalize_object_search_target(msg.data)
+        if target is None:
+            self.get_logger().warn("目标融合收到空搜索目标, 已忽略")
+            return
+        if target == self.current_target:
+            return
+
+        self.current_target = target
+        self._target_changed_stamp_sec = self.get_clock().now().nanoseconds * 1e-9
+        self.particle_filter = TargetParticleFilter(self.particle_config)
+        self.lidar_buffer.clear()
+        self._latest_camera_origins.clear()
+        self._latest_bearing_world = None
+        self._last_logged_state = ""
+        self._first_event_stamps.clear()
+        self.marker_publisher.publish(Marker(action=Marker.DELETEALL))
+        self.get_logger().info(f"目标融合状态已重置, target={target!r}")
 
     def _on_completed(self, msg: Bool) -> None:
         """只接受 Mux 最终完成通知, 未稳定估计不能提前终止融合"""
@@ -219,6 +251,13 @@ class ObjectTargetFusion(Node):
 
     def _on_object_mask(self, msg: ObjectMaskWithTf) -> None:
         """隔离单帧异常, 保留融合节点并记录完整处理阶段"""
+        mask_stamp = _stamp_seconds(msg.header.stamp)
+        if (
+            getattr(self, "_target_changed_stamp_sec", None) is not None
+            and mask_stamp > 0.0
+            and mask_stamp < self._target_changed_stamp_sec
+        ):
+            return
         callback_started = time.perf_counter()
         self._mask_received += 1
         self._mask_rate.tick()

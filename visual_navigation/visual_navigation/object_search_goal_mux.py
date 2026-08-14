@@ -13,7 +13,11 @@ from object_search_msgs.msg import TargetEstimate
 from visual_navigation.object_search_types import (
     ObjectSearchState,
     coarse_target_evidence_ready,
+    normalize_object_search_target,
 )
+
+
+_TARGET_CHANGE_REACHED_GUARD_SEC = 1.0
 
 
 class ObjectSearchGoalMux(Node):
@@ -27,6 +31,7 @@ class ObjectSearchGoalMux(Node):
         self.declare_parameter("object_target_estimate_topic", "/spot1/object_target_estimate")
         self.declare_parameter("object_reached_topic", "/spot1/object_search_reached")
         self.declare_parameter("completion_topic", "/spot1/object_search_completed")
+        self.declare_parameter("object_search_target_topic", "/spot1/object_search_target")
         self.declare_parameter("odom_topic", "/spot1/odom_for_scoring")
         self.declare_parameter("frame_id", "map")
         self.declare_parameter("initial_goal_distance", 30.0)
@@ -93,6 +98,7 @@ class ObjectSearchGoalMux(Node):
         self.object_target_estimate_topic = self._param_str("object_target_estimate_topic")
         self.object_reached_topic = self._param_str("object_reached_topic")
         self.completion_topic = self._param_str("completion_topic")
+        self.object_search_target_topic = self._param_str("object_search_target_topic")
         self.odom_topic = self._param_str("odom_topic")
         self.frame_id = self._param_str("frame_id")
         self.initial_goal_distance = self._param_float("initial_goal_distance")
@@ -312,6 +318,8 @@ class ObjectSearchGoalMux(Node):
         self.latest_object_reached_time = None
         self.reached_latched = False
         self.reached_hold_goal: PoseStamped | None = None
+        self.current_target: str | None = None
+        self._target_changed_stamp_sec: float | None = None
         self._last_state = ""
         self._last_reached_gate_reason = ""
         self._warned_frame_mismatch = False
@@ -378,6 +386,12 @@ class ObjectSearchGoalMux(Node):
             NavigationGraph,
             self.scored_nav_graph_topic,
             self._on_scored_nav_graph,
+            10,
+        )
+        self.object_target_sub = self.create_subscription(
+            String,
+            self.object_search_target_topic,
+            self._on_object_search_target,
             10,
         )
         self.timer = self.create_timer(1.0 / self.publish_rate, self._on_timer)
@@ -476,6 +490,13 @@ class ObjectSearchGoalMux(Node):
 
     def _on_target_estimate(self, msg: TargetEstimate) -> None:
         """两视角粗定位先引导导航, 稳定估计随后提升精度"""
+        estimate_stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        if (
+            self._target_changed_stamp_sec is not None
+            and estimate_stamp > 0.0
+            and estimate_stamp < self._target_changed_stamp_sec
+        ):
+            return
         if self._reached_latch_is_active():
             return
         self.latest_target_estimate_time = self.get_clock().now()
@@ -586,8 +607,17 @@ class ObjectSearchGoalMux(Node):
             )
 
     def _on_object_reached(self, msg: Bool) -> None:
+        now = self.get_clock().now()
+        now_seconds = now.nanoseconds * 1e-9
+        if (
+            msg.data
+            and self._target_changed_stamp_sec is not None
+            and now_seconds - self._target_changed_stamp_sec
+            < _TARGET_CHANGE_REACHED_GUARD_SEC
+        ):
+            return
         self.latest_object_reached = bool(msg.data)
-        self.latest_object_reached_time = self.get_clock().now()
+        self.latest_object_reached_time = now
         if not self.latest_object_reached:
             return
         reason_code, reason_text = self._object_reached_gate_reason(
@@ -601,6 +631,30 @@ class ObjectSearchGoalMux(Node):
                 f"视觉近距离证据已收到, 完成门控等待中, 原因={reason_text}"
             )
             self._last_reached_gate_reason = reason_code
+
+    def _on_object_search_target(self, msg: String) -> None:
+        """切换任务时清除旧定位、完成锁存和旧探索方向"""
+        target = normalize_object_search_target(msg.data)
+        if target is None:
+            self.get_logger().warn("Goal Mux 收到空搜索目标, 已忽略")
+            return
+        if target == self.current_target:
+            return
+
+        self.current_target = target
+        self._target_changed_stamp_sec = self.get_clock().now().nanoseconds * 1e-9
+        self._clear_target_search_state()
+        self.latest_object_reached = False
+        self.latest_object_reached_time = None
+        self.reached_latched = False
+        self.reached_hold_goal = None
+        self.initial_search_goal = None
+        self.exploration_heading_yaw = None
+        self.target_reposition_attempts = 0
+        self._last_state = ""
+        self._last_reached_gate_reason = ""
+        self.completion_pub.publish(Bool(data=False))
+        self.get_logger().info(f"目标搜索状态已重置, target={target!r}")
 
     def _on_timer(self) -> None:
         state, goal = self._select_goal()

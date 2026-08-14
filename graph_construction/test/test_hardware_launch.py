@@ -42,6 +42,8 @@ def _context_with_defaults(module):
 def _expanded(context, substitutions):
     if isinstance(substitutions, str):
         return substitutions
+    if not isinstance(substitutions, (list, tuple)):
+        substitutions = [substitutions]
     return perform_substitutions(context, substitutions)
 
 
@@ -199,3 +201,36 @@ def test_wildos_starts_before_heavy_pipeline_nodes():
     assert wildos_index < elevation_index
     assert "wildos" not in delayed_executables
     assert "object_target_fusion" in delayed_executables
+
+
+def test_runtime_target_topic_reaches_all_object_search_nodes():
+    """三个目标搜索节点必须使用同一个运行时目标 topic"""
+    module = _load_launch_module()
+    context = _context_with_defaults(module)
+    nodes = list(_all_nodes(module._launch_setup(context)))
+    target_topic = "/spot1/object_search_target"
+
+    for executable in ("object_target_fusion", "object_search_goal_mux"):
+        node = next(
+            item
+            for item in nodes
+            if _expanded(context, item.node_executable) == executable
+        )
+        parameters = {
+            key: value
+            for values in evaluate_parameters(context, node._Node__parameters)
+            if isinstance(values, dict)
+            for key, value in values.items()
+        }
+        assert parameters["object_search_target_topic"] == target_topic
+
+    wildos = next(
+        item
+        for item in nodes
+        if _expanded(context, item.node_executable) == "wildos"
+    )
+    arguments = [
+        _expanded(context, argument)
+        for argument in wildos._Node__arguments
+    ]
+    assert f'object_search_target_topic="{target_topic}"' in arguments

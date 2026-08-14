@@ -73,6 +73,7 @@ x86:
 
 | Topic | 类型 | 发布者 | 消费者 |
 |---|---|---|---|
+| `/spot1/object_search_target` | `std_msgs/msg/String` | 操作端或任务系统 | WildOS、target fusion、Goal Mux |
 | `/spot1/object_mask` | `ObjectMaskWithTf` | WildOS | target fusion |
 | `/spot1/object_target_estimate` | `TargetEstimate` | target fusion | Goal Mux |
 | `/spot1/object_search_reached` | `std_msgs/msg/Bool` | WildOS | Goal Mux |
@@ -82,6 +83,15 @@ x86:
 | `/spot1/object_target_particles` | `sensor_msgs/msg/PointCloud2` | target fusion | RViz |
 
 `object_search_reached` 是视觉证据, `object_search_completed` 才是最终完成状态
+
+运行时切换目标:
+
+```bash
+ros2 topic pub --once /spot1/object_search_target \
+  std_msgs/msg/String "{data: 'red fire extinguisher'}"
+```
+
+配置文件中的 `object_search_config.text_queries` 仅作为启动默认值
 
 ## 7. 三相机同步
 
@@ -109,6 +119,7 @@ ros2 topic hz /spot1/cloud_registered_local
 ros2 topic hz /elevation_mapping_node/elevation_map_raw
 ros2 topic hz /spot1/nav_graph
 ros2 topic hz /spot1/scored_nav_graph
+ros2 topic info -v /spot1/object_search_target
 ros2 topic info -v /cloud_registered
 ros2 run tf2_ros tf2_echo odom base_link
 ```

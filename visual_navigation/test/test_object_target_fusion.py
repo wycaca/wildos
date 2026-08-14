@@ -2,11 +2,16 @@ import numpy as np
 from builtin_interfaces.msg import Time
 from sensor_msgs.msg import Image, PointField
 from sensor_msgs_py import point_cloud2
-from std_msgs.msg import Header, MultiArrayDimension
+from std_msgs.msg import Header, MultiArrayDimension, String
 from visualization_msgs.msg import Marker
 
 from object_search_msgs.msg import ObjectMaskWithTf
-from triangulation3d.target_particle_filter import CameraObservation, TargetEstimate
+from triangulation3d.target_particle_filter import (
+    CameraObservation,
+    ParticleFilterConfig,
+    TargetEstimate,
+    TargetParticleFilter,
+)
 from visual_navigation.object_target_fusion import (
     ObjectTargetFusion,
     _mask_array,
@@ -92,6 +97,63 @@ def test_mask_callback_logs_exception_without_terminating_node():
     assert harness._mask_stage == "idle"
     assert "stage=update_vision" in harness.logger.errors[0]
     assert "RuntimeError: synthetic callback failure" in harness.logger.errors[0]
+
+
+def test_target_change_clears_old_fusion_state():
+    """新目标不能沿用旧目标粒子、点云和可视化"""
+
+    class Clock:
+        def now(self):
+            return type("Now", (), {"nanoseconds": 20_000_000_000})()
+
+    class Publisher:
+        def __init__(self):
+            self.messages = []
+
+        def publish(self, msg):
+            self.messages.append(msg)
+
+    class Logger:
+        def info(self, message):
+            pass
+
+        def warn(self, message):
+            pass
+
+    class Harness:
+        _on_object_search_target = ObjectTargetFusion._on_object_search_target
+
+        def __init__(self):
+            self.current_target = "old target"
+            self._target_changed_stamp_sec = None
+            self.particle_config = ParticleFilterConfig(particle_count=100)
+            self.particle_filter = TargetParticleFilter(self.particle_config)
+            self.particle_filter.particles = np.ones((100, 3))
+            self.lidar_buffer = [(1.0, object())]
+            self._latest_camera_origins = [np.ones(3)]
+            self._latest_bearing_world = np.ones(3)
+            self._last_logged_state = "TRACKING"
+            self._first_event_stamps = {"first_mask": 1.0}
+            self.marker_publisher = Publisher()
+            self.logger = Logger()
+
+        def get_clock(self):
+            return Clock()
+
+        def get_logger(self):
+            return self.logger
+
+    node = Harness()
+
+    node._on_object_search_target(String(data="new target"))
+
+    assert node.current_target == "new target"
+    assert node._target_changed_stamp_sec == 20.0
+    assert node.particle_filter.particles is None
+    assert node.lidar_buffer == []
+    assert node._latest_camera_origins == []
+    assert node._latest_bearing_world is None
+    assert node.marker_publisher.messages[-1].action == Marker.DELETEALL
 
 
 def test_xyz_points_accepts_mixed_pointcloud_field_types():

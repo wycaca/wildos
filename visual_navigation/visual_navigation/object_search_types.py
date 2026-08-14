@@ -14,6 +14,12 @@ class ObjectSearchState:
     SEARCHING_WITH_INITIAL_GOAL = "SEARCHING_WITH_INITIAL_GOAL"
 
 
+def normalize_object_search_target(value: str) -> str | None:
+    """压缩空白并拒绝空目标"""
+    target = " ".join(str(value).split())
+    return target or None
+
+
 def coarse_target_evidence_ready(
     state: str,
     accepted_views: int,

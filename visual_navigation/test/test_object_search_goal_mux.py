@@ -5,7 +5,7 @@ from nav_msgs.msg import Odometry
 import pytest
 import rclpy
 from rclpy.duration import Duration
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
 from graphnav_msgs.msg import NavigationGraph, Node, NodeTraversabilityProperties
 from object_search_msgs.msg import TargetEstimate
 
@@ -130,6 +130,28 @@ def test_initial_coarse_goal_is_computed_once(mux_node):
     assert first_goal.pose.position.y == pytest.approx(2.0)
     assert second_goal.pose.position.x == pytest.approx(first_goal.pose.position.x)
     assert second_goal.pose.position.y == pytest.approx(first_goal.pose.position.y)
+
+
+def test_target_change_clears_old_goal_and_completion_state(mux_node):
+    """运行时切换目标后必须从当前位置重新开始搜索"""
+    mux_node._on_odom(_odom(1.0, 2.0, 0.0))
+    mux_node._on_target_estimate(_target_estimate(4.0, 2.0))
+    mux_node.reached_latched = True
+    mux_node.reached_hold_goal = copy.deepcopy(mux_node.metric_target)
+    mux_node.initial_search_goal = copy.deepcopy(mux_node.metric_target)
+    mux_node.exploration_heading_yaw = 1.0
+
+    mux_node._on_object_search_target(String(data="new target"))
+
+    assert mux_node.current_target == "new target"
+    assert mux_node.metric_target is None
+    assert not mux_node.reached_latched
+    assert mux_node.reached_hold_goal is None
+    assert mux_node.initial_search_goal is None
+    assert mux_node.exploration_heading_yaw is None
+    state, goal = mux_node._select_goal()
+    assert state == ObjectSearchState.SEARCHING_WITH_INITIAL_GOAL
+    assert goal is not None
 
 
 def test_startup_observation_holds_until_graph_and_scoring_are_ready(mux_node):

@@ -30,3 +30,6 @@ class VisualReachedEvidence:
         )
         self.confirm_count = self.confirm_count + 1 if reached_candidate else 0
         return self.confirm_count >= self.confirm_frames
+
+    def reset(self) -> None:
+        self.confirm_count = 0
