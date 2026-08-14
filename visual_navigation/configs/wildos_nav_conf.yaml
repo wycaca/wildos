@@ -11,7 +11,7 @@ model_precision: FP16
 
 # Nav Params
 num_cameras: 3
-cams_inverted: true
+cams_inverted: false
 camera_image_flip_x: false
 num_angular_bins: 16
 reach_in_2D: true
