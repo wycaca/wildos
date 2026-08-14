@@ -71,7 +71,7 @@ class WildOS_Nav(TFLookupSubscriber):
         # 导航参数
         "num_cameras": 3,
         "cams_inverted": True,
-        "camera_image_flip_x": True,
+        "camera_image_flip_x": False,
         "num_angular_bins": 16,
         "reach_in_2D": True,
 
