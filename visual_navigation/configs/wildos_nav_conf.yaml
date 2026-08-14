@@ -12,7 +12,7 @@ model_precision: FP16
 # Nav Params
 num_cameras: 3
 cams_inverted: true
-camera_image_flip_x: false
+camera_image_flip_x: true
 num_angular_bins: 16
 reach_in_2D: true
 
@@ -65,7 +65,7 @@ navigation_graph_max_age_sec: 6.0
 # Object Search Config
 object_search_config:
     text_queries:
-        - "NASA logo"
+        - "chair"
     pixel_level_seg: false
     mask_threshold: 0.09
     detection_min_peak_score: 0.12

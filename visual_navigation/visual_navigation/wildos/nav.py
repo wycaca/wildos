@@ -71,7 +71,7 @@ class WildOS_Nav(TFLookupSubscriber):
         # 导航参数
         "num_cameras": 3,
         "cams_inverted": True,
-        "camera_image_flip_x": False,
+        "camera_image_flip_x": True,
         "num_angular_bins": 16,
         "reach_in_2D": True,
 
@@ -130,7 +130,8 @@ class WildOS_Nav(TFLookupSubscriber):
             # "text_queries": ["orange flag"],
             # "text_queries": ["golf cart"],
             # "text_queries": ["garbage container"],
-            "text_queries": ["blue bucket"],
+            # "text_queries": ["blue bucket"],
+            "text_queries": ["chair"],
             "pixel_level_seg": False,
             "mask_threshold": 0.09,
             "detection_min_peak_score": 0.12,
