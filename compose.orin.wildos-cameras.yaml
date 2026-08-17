@@ -1,21 +1,21 @@
 name: wildos-orin
 
 x-dds-environment: &dds-environment
-  ROS_DOMAIN_ID: "${ROS_DOMAIN_ID:?Set ROS_DOMAIN_ID}"
-  ROS_LOCALHOST_ONLY: "${ROS_LOCALHOST_ONLY:-0}"
-  RMW_IMPLEMENTATION: "${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}"
+  ROS_DOMAIN_ID: "2"
+  ROS_LOCALHOST_ONLY: "0"
+  RMW_IMPLEMENTATION: rmw_fastrtps_cpp
   FASTDDS_DEFAULT_PROFILES_FILE: /etc/wildos/fastdds.xml
   FASTRTPS_DEFAULT_PROFILES_FILE: /etc/wildos/fastdds.xml
 
 services:
   cameras:
-    image: wildos-cameras:${WILDOS_CAMERA_IMAGE_TAG:?Set WILDOS_CAMERA_IMAGE_TAG}
+    image: wildos-cameras:orin-humble
     platform: linux/arm64
     build:
       context: ..
       dockerfile: nebula2-wildos/docker/Dockerfile.camera.orin
       args:
-        BASE_IMAGE: ${WILDOS_CAMERA_BASE_IMAGE:-ros:humble-ros-base-jammy}
+        BASE_IMAGE: ros:humble-ros-base-jammy
     network_mode: host
     ipc: host
     privileged: true
@@ -23,11 +23,11 @@ services:
     stop_grace_period: 20s
     environment:
       <<: *dds-environment
-      BASE_FRAME: "${BASE_FRAME:-base_link}"
-      CAMERA_NAMESPACE: "${CAMERA_NAMESPACE:-spot1/realsense}"
-      CAMERA_COLOR_WIDTH: "${CAMERA_COLOR_WIDTH:-640}"
-      CAMERA_COLOR_HEIGHT: "${CAMERA_COLOR_HEIGHT:-480}"
-      CAMERA_COLOR_FPS: "${CAMERA_COLOR_FPS:-15}"
+      BASE_FRAME: base_link
+      CAMERA_NAMESPACE: spot1/realsense
+      CAMERA_COLOR_WIDTH: "640"
+      CAMERA_COLOR_HEIGHT: "480"
+      CAMERA_COLOR_FPS: "15"
       FRONT_CAMERA_SERIAL: "${FRONT_CAMERA_SERIAL:?Set FRONT_CAMERA_SERIAL}"
       LEFT_CAMERA_SERIAL: "${LEFT_CAMERA_SERIAL:?Set LEFT_CAMERA_SERIAL}"
       RIGHT_CAMERA_SERIAL: "${RIGHT_CAMERA_SERIAL:?Set RIGHT_CAMERA_SERIAL}"
@@ -40,13 +40,13 @@ services:
       - camera_ros_logs:/root/.ros/log
 
   wildos:
-    image: wildos:${WILDOS_ORIN_IMAGE_TAG:?Set WILDOS_ORIN_IMAGE_TAG}
+    image: wildos:orin-jp62
     platform: linux/arm64
     build:
       context: ..
       dockerfile: nebula2-wildos/docker/Dockerfile.orin
       args:
-        BASE_IMAGE: ${WILDOS_ORIN_BASE_IMAGE:?Set WILDOS_ORIN_BASE_IMAGE}
+        BASE_IMAGE: nvcr.io/nvidia/pytorch:24.10-py3-igpu
     network_mode: host
     ipc: host
     runtime: nvidia
@@ -57,9 +57,6 @@ services:
         condition: service_healthy
     environment:
       <<: *dds-environment
-      DO_OBJECT_SEARCH: "${DO_OBJECT_SEARCH:-true}"
-      WILDOS_LOG_LEVEL: "${WILDOS_LOG_LEVEL:-INFO}"
-      WILDOS_VISUAL_CONFIG: "${WILDOS_VISUAL_CONFIG:-wildos_nav_conf.yaml}"
     volumes:
       - wildos_ros_logs:/root/.ros/log
       - ./docker/fastdds.wildos.xml:/etc/wildos/fastdds.xml:ro

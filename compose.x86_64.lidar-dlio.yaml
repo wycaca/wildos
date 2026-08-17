@@ -1,13 +1,13 @@
 name: wildos-x86
 
 x-x86-image: &x86-image
-  image: wildos-localization:${WILDOS_X86_IMAGE_TAG:-x86_64}
+  image: wildos-localization:x86_64
   platform: linux/amd64
   build:
     context: ..
     dockerfile: nebula2-wildos/docker/Dockerfile.lidar-dlio
     args:
-      BASE_IMAGE: ${WILDOS_X86_BASE_IMAGE:-ros:humble-ros-base-jammy}
+      BASE_IMAGE: ros:humble-ros-base-jammy
 
 x-x86-runtime: &x86-runtime
   <<: *x86-image
@@ -16,9 +16,9 @@ x-x86-runtime: &x86-runtime
   restart: unless-stopped
 
 x-dds-environment: &dds-environment
-  ROS_DOMAIN_ID: "${ROS_DOMAIN_ID:?Set ROS_DOMAIN_ID}"
-  ROS_LOCALHOST_ONLY: "${ROS_LOCALHOST_ONLY:-0}"
-  RMW_IMPLEMENTATION: "${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}"
+  ROS_DOMAIN_ID: "2"
+  ROS_LOCALHOST_ONLY: "0"
+  RMW_IMPLEMENTATION: rmw_fastrtps_cpp
   FASTDDS_DEFAULT_PROFILES_FILE: /etc/wildos/fastdds.xml
   FASTRTPS_DEFAULT_PROFILES_FILE: /etc/wildos/fastdds.xml
 
@@ -35,10 +35,6 @@ services:
     environment:
       <<: *dds-environment
       MID360_CONFIG_FILE: /config/mid360.json
-      POINTCLOUD_INPUT_TOPIC: "${POINTCLOUD_INPUT_TOPIC:-/livox/lidar}"
-      IMU_INPUT_TOPIC: "${IMU_INPUT_TOPIC:-/livox/imu}"
-      LIDAR_FRAME: "${LIDAR_FRAME:-lidar_link}"
-      LIVOX_PUBLISH_FREQ: "${LIVOX_PUBLISH_FREQ:-10.0}"
     healthcheck:
       test:
         - CMD
@@ -61,14 +57,6 @@ services:
     environment:
       <<: *dds-environment
       DLIO_CONFIG_FILE: /config/dlio.yaml
-      POINTCLOUD_INPUT_TOPIC: "${POINTCLOUD_INPUT_TOPIC:-/livox/lidar}"
-      IMU_INPUT_TOPIC: "${IMU_INPUT_TOPIC:-/livox/imu}"
-      POINTCLOUD_OUTPUT_TOPIC: "${POINTCLOUD_OUTPUT_TOPIC:-/cloud_registered}"
-      ODOM_OUTPUT_TOPIC: "${ODOM_OUTPUT_TOPIC:-/odom}"
-      GLOBAL_FRAME: "${GLOBAL_FRAME:-odom}"
-      BASE_FRAME: "${BASE_FRAME:-base_link}"
-      LIDAR_FRAME: "${LIDAR_FRAME:-lidar_link}"
-      IMU_FRAME: "${IMU_FRAME:-imu_link}"
     ulimits:
       memlock: -1
       stack: 67108864

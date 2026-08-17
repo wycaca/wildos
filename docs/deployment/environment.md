@@ -9,14 +9,14 @@
 | `graph_construction/configs/elevation_mapping.yaml` | 小推车高程图和启动先验 |
 | `graph_construction/configs/graph_construction_elevation.yaml` | 实机地图分类、盲区和图参数 |
 | `visual_navigation/configs/wildos_nav_conf.yaml` | 三相机视觉配置 |
-| `.env.x86_64.lidar-dlio` | x86 传感器路径和容器变量 |
-| `.env.orin.wildos-cameras` | 相机 AGX 序列号、外参和模型路径 |
+| `.env.x86_64.lidar-dlio` | x86 MID360 和 D-LIO 宿主机文件路径 |
+| `.env.orin.wildos-cameras` | 相机 AGX 序列号、USB 路径、外参和模型路径 |
 
-带 `sim` 的文件名是历史兼容命名, 当前实机 Docker 入口仍加载这些文件
+YAML 和 Compose 保存全系统固定配置，`.env` 只保存主机路径、设备身份和标定数据
 
 ## 2. DDS 和网络
 
-两台主机统一设置:
+两台部署容器固定使用:
 
 ```dotenv
 ROS_DOMAIN_ID=2
@@ -26,21 +26,13 @@ RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 
 x86 和相机 AGX 通过 `192.168.50.0/24` 有线网络通信
 
-修改 RMW、Domain 或 FastDDS profile 后必须重启相关 ROS 进程
+Domain 和 RMW 是实机 topic 契约的一部分，变更时必须同时修改两台主机和 `robot` profile
 
 ## 3. x86 传感器和定位
 
-x86 环境文件至少配置:
+x86 环境文件只配置宿主机路径:
 
 ```dotenv
-POINTCLOUD_INPUT_TOPIC=/livox/lidar
-IMU_INPUT_TOPIC=/livox/imu
-POINTCLOUD_OUTPUT_TOPIC=/cloud_registered
-ODOM_OUTPUT_TOPIC=/odom
-GLOBAL_FRAME=odom
-BASE_FRAME=base_link
-LIDAR_FRAME=lidar_link
-IMU_FRAME=imu_link
 MID360_CONFIG_FILE=/absolute/path/to/MID360_config.json
 DLIO_CONFIG_FILE=/absolute/path/to/graph_construction/configs/dlio/mid360.yaml
 ```

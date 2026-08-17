@@ -6,11 +6,8 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
 ENV_FILE="${REPO_ROOT}/.env.orin.wildos-cameras"
 ENV_TEMPLATE="${REPO_ROOT}/.env.orin.wildos-cameras.example"
-COMPOSE_FILE="${REPO_ROOT}/compose.orin.wildos-cameras.yaml"
 INVENTORY_FILE=""
 ASSIGN_ROLE=""
-PREPARE_ONLY=false
-START_CAMERA=false
 REQUIRE_TRANSFORMS=false
 
 usage() {
@@ -21,8 +18,6 @@ Options:
   --env-file PATH             Generated Compose environment file
   --inventory-file PATH       Read serial|model|usb_path records instead of librealsense
   --assign ROLE               Register one connected camera as front, left, or right
-  --prepare-only              Generate and validate configuration without building
-  --up                        Start the cameras service after building
   --require-transforms        Reject missing calibrated transforms
   -h, --help                  Show this help
 EOF
@@ -42,14 +37,6 @@ while [[ $# -gt 0 ]]; do
       ASSIGN_ROLE="${2:?Missing role for --assign}"
       ASSIGN_ROLE="${ASSIGN_ROLE,,}"
       shift 2
-      ;;
-    --prepare-only)
-      PREPARE_ONLY=true
-      shift
-      ;;
-    --up)
-      START_CAMERA=true
-      shift
       ;;
     --require-transforms)
       REQUIRE_TRANSFORMS=true
@@ -108,7 +95,7 @@ load_inventory_file() {
 
 # Use the same librealsense serial number consumed by the ROS camera driver
 discover_realsense_cameras() {
-  local camera_image="wildos-cameras:${WILDOS_CAMERA_IMAGE_TAG:?Set WILDOS_CAMERA_IMAGE_TAG}"
+  local camera_image="wildos-cameras:orin-humble"
   local inventory
   local line
   local serial
@@ -123,7 +110,7 @@ discover_realsense_cameras() {
       "${camera_image}" \
       bash -lc 'source /opt/ros/humble/setup.bash; rs-enumerate-devices')"
   else
-    echo "Missing ${camera_image}, build the cameras image before assigning roles" >&2
+    echo "Missing ${camera_image}, run scripts/wildos_docker.sh orin build cameras first" >&2
     exit 1
   fi
 
@@ -333,18 +320,5 @@ if [[ -n "${ASSIGN_ROLE}" ]]; then
   exit 0
 fi
 
-compose=(docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}")
-"${compose[@]}" config --quiet
-
-if [[ "${PREPARE_ONLY}" == "true" ]]; then
-  echo "Camera deployment configuration is ready: ${ENV_FILE}"
-  exit 0
-fi
-
-"${compose[@]}" build cameras
-
-if [[ "${START_CAMERA}" == "true" ]]; then
-  "${compose[@]}" up -d cameras
-fi
-
-echo "Camera image build completed"
+echo "Camera deployment configuration is ready: ${ENV_FILE}"
+echo "Run scripts/wildos_docker.sh orin update cameras to rebuild and restart cameras"

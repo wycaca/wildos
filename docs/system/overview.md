@@ -68,8 +68,8 @@ x86 和相机 AGX 分别使用仓库根目录的两个 Compose 文件:
 | 高程图 | `graph_construction/configs/elevation_mapping.yaml` |
 | 图构建 | `graph_construction/configs/graph_construction_elevation.yaml` |
 | 视觉 | `visual_navigation/configs/wildos_nav_conf.yaml` |
-| 相机与镜像 | `.env.orin.wildos-cameras` |
-| 雷达与定位 | `.env.x86_64.lidar-dlio` |
+| 相机标定与模型路径 | `.env.orin.wildos-cameras` |
+| 雷达与 D-LIO 路径 | `.env.x86_64.lidar-dlio` |
 
 带 `sim` 的 launch 和配置名称是历史兼容命名, 当前 Docker 实机入口仍使用这些文件
 

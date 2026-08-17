@@ -18,11 +18,7 @@ require_variable() {
   fi
 }
 
-for variable_name in \
-  MID360_CONFIG_FILE \
-  POINTCLOUD_INPUT_TOPIC \
-  IMU_INPUT_TOPIC \
-  LIDAR_FRAME; do
+for variable_name in MID360_CONFIG_FILE; do
   require_variable "${variable_name}"
 done
 
@@ -35,12 +31,12 @@ python3 -m json.tool "${MID360_CONFIG_FILE}" >/dev/null
 
 exec ros2 run livox_ros_driver2 livox_ros_driver2_node --ros-args \
   -r __node:=livox_mid360_driver \
-  -r /livox/lidar:="${POINTCLOUD_INPUT_TOPIC}" \
-  -r /livox/imu:="${IMU_INPUT_TOPIC}" \
+  -r /livox/lidar:=/livox/lidar \
+  -r /livox/imu:=/livox/imu \
   -p xfer_format:=0 \
   -p multi_topic:=0 \
   -p data_src:=0 \
-  -p publish_freq:="${LIVOX_PUBLISH_FREQ:-10.0}" \
+  -p publish_freq:=10.0 \
   -p output_data_type:=0 \
-  -p frame_id:="${LIDAR_FRAME}" \
+  -p frame_id:=lidar_link \
   -p user_config_path:="${MID360_CONFIG_FILE}"
