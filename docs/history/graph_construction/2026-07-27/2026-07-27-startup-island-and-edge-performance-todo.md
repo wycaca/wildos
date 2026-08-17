@@ -8,7 +8,7 @@
 
 - [2026-07-23-edge-update-performance-todo.md](../2026-07-23/2026-07-23-edge-update-performance-todo.md)
 - [2026-07-20-elevation-startup-blind-zone-fix.md](../2026-07-20/2026-07-20-elevation-startup-blind-zone-fix.md)
-- [graph_update.md](../details/graph_update.md)
+- [graph_update.md](../../../graph_construction/graph_update.md)
 
 ## 1. 结论
 

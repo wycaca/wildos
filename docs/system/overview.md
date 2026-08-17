@@ -57,7 +57,7 @@ x86 和相机 AGX 分别使用仓库根目录的两个 Compose 文件:
 - `compose.x86_64.lidar-dlio.yaml`
 - `compose.orin.wildos-cameras.yaml`
 
-部署步骤见 [Docker 部署](docker_deployment.md)
+部署步骤见 [Docker 部署](../deployment/docker.md)
 
 ## 6. 配置入口
 
