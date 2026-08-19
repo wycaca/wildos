@@ -20,6 +20,7 @@
 #include <vector>
 #include "graphnav_planner/object_search_mode.hpp"
 #include "graphnav_planner/planner.hpp"
+#include "graphnav_planner/planning_input_health.hpp"
 
 namespace graphnav_planner
 {
@@ -356,41 +357,28 @@ private:
     }
   }
 
-  struct PlanningInputHealth
-  {
-    double graph_age = std::numeric_limits<double>::infinity();
-    double odom_age = std::numeric_limits<double>::infinity();
-    bool graph_fresh = false;
-    bool odom_fresh = false;
-
-    bool healthy() const
-    {
-      return graph_fresh && odom_fresh;
-    }
-  };
-
   PlanningInputHealth planning_input_health()
   {
-    PlanningInputHealth health;
     const rclcpp::Time now = this->get_clock()->now();
-    constexpr double future_tolerance = 0.1;
+    double graph_age = std::numeric_limits<double>::infinity();
+    double odom_age = std::numeric_limits<double>::infinity();
     if (latest_graph_header_)
     {
-      health.graph_age = (now - rclcpp::Time(
+      graph_age = (now - rclcpp::Time(
         latest_graph_header_->stamp,
         now.get_clock_type())).seconds();
-      health.graph_fresh = health.graph_age >= -future_tolerance &&
-        health.graph_age <= max_graph_age_sec_;
     }
     if (odom_)
     {
-      health.odom_age = (now - rclcpp::Time(
+      odom_age = (now - rclcpp::Time(
         odom_->header.stamp,
         now.get_clock_type())).seconds();
-      health.odom_fresh = health.odom_age >= -future_tolerance &&
-        health.odom_age <= max_odom_age_sec_;
     }
-    return health;
+    return evaluate_planning_input_health(
+      graph_age,
+      odom_age,
+      max_graph_age_sec_,
+      max_odom_age_sec_);
   }
 
   void plan_to_goal()
@@ -400,7 +388,8 @@ private:
     {
       const rclcpp::Time planning_time = this->get_clock()->now();
       const PlanningInputHealth health = planning_input_health();
-      if (!health.healthy())
+      const PlanningInputAction input_action = health.action(stale_graph_hold_published_);
+      if (input_action != PlanningInputAction::plan)
       {
         inputs_observed_unhealthy_ = true;
         planner_.pause_failure_timers(planning_time);
@@ -411,8 +400,7 @@ private:
           "规划输入不新鲜, 已停止规划, graph_age=%.3fs, odom_age=%.3fs",
           health.graph_age,
           health.odom_age);
-        if (!health.graph_fresh && health.odom_fresh &&
-          !stale_graph_hold_published_)
+        if (input_action == PlanningInputAction::publish_hold)
         {
           try
           {

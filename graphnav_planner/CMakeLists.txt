@@ -97,6 +97,7 @@ if(BUILD_TESTING)
     test/test_committed_branch.cpp
     test/test_exploration_recovery.cpp
     test/test_direct_goal.cpp
+    test/test_planning_input_health.cpp
   )
   target_link_libraries(test_exploration_state graphnav_planner_component)
 

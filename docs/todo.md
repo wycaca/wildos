@@ -346,6 +346,14 @@ Planner 检测到 graph 或 odom 过期后仍继续规划, freshness 当前只�
 - Path 是变化事件而不是心跳, 接收时校验时间戳, 恢复时等待新 Path
 - graph 过期时只发布一次 hold path, 不周期重发
 
+当前实现说明:
+
+- graph 和 odom 年龄统一通过纯判定函数转换为 plan、单次 hold 或 stop
+- graph 真正过期且 odom 新鲜时只允许一次 hold, future graph 不再误发 hold
+- stale odom、future graph 和 future odom 均 fail closed
+- 新增 4 个 GTest 覆盖单次 hold、旧 odom、未来时间戳和恢复规划
+- `graphnav_planner` 构建通过, 3/3 CTest 和 4/4 定向策略测试通过
+
 验收条件:
 
 - stale graph 不会触发新的 Dijkstra 或路线发布, 最多发布一次 hold path
@@ -740,22 +748,10 @@ Goal Mux 使用字符串拼装状态, Planner 使用前缀和子字符串解析
 ### 12.4 建议验证命令
 
 ```bash
-source /opt/ros/humble/setup.bash
-source /mnt/hhd/han/wildos_ws/install/setup.bash
-
-PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest \
-  graph_construction/test visual_navigation/test triangulation3d/test \
-  -p no:cacheprovider
-
-colcon build \
-  --packages-select graphnav_planner \
-  --cmake-args -DBUILD_TESTING=ON
-
-colcon test --packages-select graphnav_planner
-colcon test-result --verbose
+./scripts/test_repo.sh
 ```
 
-硬件测试需要单独记录所用提交、配置、模型哈希、rosbag、开始时间和持续时间
+完整输出查看、硬件基线和结果记录见[运行基线与上线验收](deployment/validation.md)
 
 ## 13. 开工前审核清单
 
