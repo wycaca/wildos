@@ -252,6 +252,7 @@ public:
   bool suspend_exploration_state();
   bool resume_exploration_state();
   void reset_exploration_state();
+  void pause_failure_timers(rclcpp::Time current_time);
   ExplorationDiagnostics take_exploration_diagnostics();
 
   void update_graph(graphnav_msgs::msg::NavigationGraph::ConstSharedPtr graph);

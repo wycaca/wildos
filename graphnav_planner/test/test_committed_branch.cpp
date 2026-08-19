@@ -165,7 +165,7 @@ TEST(CommittedBranch, UsesDetourPathProgressInsteadOfInitialAxis)
   EXPECT_GT(progressed.path.back().x(), 0.0);
 }
 
-TEST(CommittedBranch, FreezesFailureTimerWhenInputsAreStale)
+TEST(CommittedBranch, PausesFailureTimerWithoutPlanningStaleInputs)
 {
   Planner planner = make_planner();
   Eigen::Vector3d goal(30.0, 0.0, 0.0);
@@ -176,14 +176,7 @@ TEST(CommittedBranch, FreezesFailureTimerWhenInputsAreStale)
     rclcpp::Time(0, 0, RCL_ROS_TIME),
     Eigen::Vector3d::Zero()).path_changed);
 
-  const auto stale = planner.plan_to_goal(
-    goal,
-    3.0,
-    rclcpp::Time(30, 0, RCL_ROS_TIME),
-    Eigen::Vector3d::Zero(),
-    false);
-  EXPECT_FALSE(stale.path_changed);
-  ASSERT_FALSE(stale.path.empty());
+  planner.pause_failure_timers(rclcpp::Time(30, 0, RCL_ROS_TIME));
 
   const auto recovered_input = planner.plan_to_goal(
     goal,

@@ -13,6 +13,21 @@ namespace graphnav_planner
 
 using namespace detail;
 
+void Planner::pause_failure_timers(rclcpp::Time current_time)
+{
+  if (active_branch_)
+  {
+    active_branch_->start_time = current_time;
+    active_branch_->progress_time = current_time;
+  }
+  path_invalid_since_.reset();
+  path_invalid_frames_ = 0;
+  if (directional_blocked_since_)
+  {
+    directional_blocked_since_ = current_time;
+  }
+}
+
 // Build reachable candidates, apply exploration policy, then return only the executable route suffix
 Planner::PlanningResult Planner::plan_to_goal(
   Eigen::Vector3d& goal,
@@ -311,20 +326,10 @@ Planner::PlanningResult Planner::plan_to_goal(
   {
     update_active_branch_progress(current_position, current_time);
   }
-  else if (active_branch_)
+  else
   {
     // 输入异常期间冻结失败计时, 恢复后重新开始连续确认
-    active_branch_->start_time = current_time;
-    active_branch_->progress_time = current_time;
-    path_invalid_since_.reset();
-    path_invalid_frames_ = 0;
-  }
-  if (!timing_inputs_healthy)
-  {
-    if (directional_blocked_since_)
-    {
-      directional_blocked_since_ = current_time;
-    }
+    pause_failure_timers(current_time);
   }
   const bool path_invalid = committed_path_invalid(
     node_ids_by_uuid,

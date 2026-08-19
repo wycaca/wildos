@@ -133,8 +133,15 @@ public:
       this->get_parameter("pending_reposition_goal_radius").as_double();
     graph_sub_ = this->create_subscription<graphnav_msgs::msg::NavigationGraph>(
         "~/nav_graph", 10, [this](const graphnav_msgs::msg::NavigationGraph::ConstSharedPtr msg) {
-          this->planner_.update_graph(msg);
+          if (!this->planning_input_health().healthy())
+          {
+            this->inputs_observed_unhealthy_ = true;
+          }
           this->latest_graph_header_ = msg->header;
+          if (this->planning_input_health().graph_fresh)
+          {
+            this->planner_.update_graph(msg);
+          }
           this->plan_to_goal();
         });
     goal_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
@@ -329,6 +336,10 @@ private:
 
   void on_odom(const nav_msgs::msg::Odometry::ConstSharedPtr& msg)
   {
+    if (!planning_input_health().healthy())
+    {
+      inputs_observed_unhealthy_ = true;
+    }
     if (odom_)
     {
       const rclcpp::Time current_stamp(msg->header.stamp, this->get_clock()->get_clock_type());
@@ -352,6 +363,7 @@ private:
         goal_pose_.reset();
         last_hold_goal_.reset();
         latest_graph_header_.reset();
+        stale_graph_hold_published_ = false;
         manual_reset_events_++;
         RCLCPP_WARN(
           this->get_logger(),
@@ -362,26 +374,49 @@ private:
       }
     }
     odom_ = msg;
+    const PlanningInputHealth health = planning_input_health();
+    if (goal_pose_ && latest_graph_header_ &&
+      (!health.healthy() || inputs_observed_unhealthy_))
+    {
+      plan_to_goal();
+    }
   }
 
-  bool planning_inputs_healthy(double& graph_age, double& odom_age)
+  struct PlanningInputHealth
   {
-    graph_age = std::numeric_limits<double>::infinity();
-    odom_age = std::numeric_limits<double>::infinity();
-    if (!latest_graph_header_ || !odom_)
+    double graph_age = std::numeric_limits<double>::infinity();
+    double odom_age = std::numeric_limits<double>::infinity();
+    bool graph_fresh = false;
+    bool odom_fresh = false;
+
+    bool healthy() const
     {
-      return false;
+      return graph_fresh && odom_fresh;
     }
+  };
+
+  PlanningInputHealth planning_input_health()
+  {
+    PlanningInputHealth health;
     const rclcpp::Time now = this->get_clock()->now();
-    graph_age = (now - rclcpp::Time(
-      latest_graph_header_->stamp,
-      now.get_clock_type())).seconds();
-    odom_age = (now - rclcpp::Time(
-      odom_->header.stamp,
-      now.get_clock_type())).seconds();
     constexpr double future_tolerance = 0.1;
-    return graph_age >= -future_tolerance && graph_age <= max_graph_age_sec_ &&
-      odom_age >= -future_tolerance && odom_age <= max_odom_age_sec_;
+    if (latest_graph_header_)
+    {
+      health.graph_age = (now - rclcpp::Time(
+        latest_graph_header_->stamp,
+        now.get_clock_type())).seconds();
+      health.graph_fresh = health.graph_age >= -future_tolerance &&
+        health.graph_age <= max_graph_age_sec_;
+    }
+    if (odom_)
+    {
+      health.odom_age = (now - rclcpp::Time(
+        odom_->header.stamp,
+        now.get_clock_type())).seconds();
+      health.odom_fresh = health.odom_age >= -future_tolerance &&
+        health.odom_age <= max_odom_age_sec_;
+    }
+    return health;
   }
 
   void plan_to_goal()
@@ -389,6 +424,52 @@ private:
     // Resolve state-specific radius and hold behavior before delegating graph route selection
     if (goal_pose_ && latest_graph_header_)
     {
+      const rclcpp::Time planning_time = this->get_clock()->now();
+      const PlanningInputHealth health = planning_input_health();
+      if (!health.healthy())
+      {
+        inputs_observed_unhealthy_ = true;
+        planner_.pause_failure_timers(planning_time);
+        RCLCPP_WARN_THROTTLE(
+          this->get_logger(),
+          *this->get_clock(),
+          10000,
+          "规划输入不新鲜, 已停止规划, graph_age=%.3fs, odom_age=%.3fs",
+          health.graph_age,
+          health.odom_age);
+        if (!health.graph_fresh && health.odom_fresh &&
+          !stale_graph_hold_published_)
+        {
+          try
+          {
+            geometry_msgs::msg::PoseStamped robot_in_odom_frame;
+            robot_in_odom_frame.header = odom_->header;
+            robot_in_odom_frame.pose = odom_->pose.pose;
+            const geometry_msgs::msg::PoseStamped robot_in_graph_frame =
+              tf_buffer_.transform(
+              robot_in_odom_frame,
+              latest_graph_header_->frame_id,
+              tf2::durationFromSec(0.1));
+            publish_hold_path(robot_in_graph_frame, "stale_graph");
+            stale_graph_hold_published_ = true;
+          }
+          catch (const tf2::TransformException& ex)
+          {
+            RCLCPP_WARN(
+              this->get_logger(),
+              "过期导航图停车位姿转换失败, 原因=%s",
+              ex.what());
+          }
+        }
+        return;
+      }
+      if (inputs_observed_unhealthy_)
+      {
+        // 输入恢复后重新开始连续失败确认, 当前路线仍由本次规划重新校验
+        planner_.pause_failure_timers(planning_time);
+        inputs_observed_unhealthy_ = false;
+      }
+      stale_graph_hold_published_ = false;
       geometry_msgs::msg::PoseStamped goal = *goal_pose_;
       goal.header.stamp = latest_graph_header_->stamp;
       geometry_msgs::msg::PoseStamped goal_in_graph_frame;
@@ -474,25 +555,12 @@ private:
         }
       }
       const auto planning_started = std::chrono::steady_clock::now();
-      double graph_age = 0.0;
-      double odom_age = 0.0;
-      const bool timing_inputs_healthy = planning_inputs_healthy(graph_age, odom_age);
-      if (!timing_inputs_healthy)
-      {
-        RCLCPP_WARN_THROTTLE(
-          this->get_logger(),
-          *this->get_clock(),
-          10000,
-          "规划输入不新鲜, 已冻结分支失败计时, graph_age=%.3fs, odom_age=%.3fs",
-          graph_age,
-          odom_age);
-      }
       const auto planning_result = planner_.plan_to_goal(
         goal_vec,
         active_goal_radius,
-        this->get_clock()->now(),
+        planning_time,
         robot_position,
-        timing_inputs_healthy && !target_evidence_pending_);
+        !target_evidence_pending_);
       const double planning_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - planning_started).count();
       record_planning_timing(planning_ms);
@@ -592,9 +660,9 @@ private:
     const geometry_msgs::msg::PoseStamped& robot_pose,
     const char* reason)
   {
-    // 目标已在到达半径内时发布单点 path, 让自研导航立即进入停止条件
+    // 单点 path 使用当前机器人位姿时间, 让外部导航立即进入停止条件
     nav_msgs::msg::Path path_msg;
-    path_msg.header = *latest_graph_header_;
+    path_msg.header = robot_pose.header;
     geometry_msgs::msg::PoseStamped hold_pose = robot_pose;
     hold_pose.header = path_msg.header;
     path_msg.poses.push_back(hold_pose);
@@ -721,6 +789,8 @@ private:
   bool observation_mode_ = false;
   bool target_override_active_ = false;
   bool target_evidence_pending_ = false;
+  bool inputs_observed_unhealthy_ = true;
+  bool stale_graph_hold_published_ = false;
   double goal_radius_;
   double coarse_goal_radius_;
   double metric_goal_radius_;

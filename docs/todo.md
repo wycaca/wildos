@@ -47,7 +47,7 @@
 | LOC-01 | P1 | D-LIO adapter 和 guard | 为健康状态增加心跳和超时租约 | 待验证 |
 | VIS-01 | P1 | WildOS TF | 实机禁止 latest TF 回退 | 待验证 |
 | FUS-01 | P1 | `triangulation3d` | LiDAR 锁定前必须关联视觉轨迹 | 待验证 |
-| PLN-01 | P1 | `graphnav_planner` | 过期输入禁止继续规划 | 已批准 |
+| PLN-01 | P1 | `graphnav_planner` | 过期输入禁止继续规划 | 待验证 |
 | GC-03 | 其他 | 点云 relay | 禁止只修改 `frame_id` 冒充坐标变换 | 已批准 |
 | SEC-01 | 其他 | 模型加载 | 限制不安全 checkpoint 反序列化 | 已批准 |
 | SEC-02 | 其他 | Docker 和 DDS | 缩小容器和局域网攻击面 | 已批准 |
@@ -320,19 +320,19 @@ Planner 检测到 graph 或 odom 过期后仍继续规划, freshness 当前只�
 1. 在目标转换、距离判断和 `planner_.plan_to_goal` 之前检查 graph 与 odom freshness
 2. graph 过期但 odom 新鲜时, 最多发布一次当前位置 hold path
 3. odom 过期时不使用旧位姿生成 hold path
-4. 仓库外控制器必须配置 Path 超时停车, 并在文档中记录超时值
+4. 仓库外导航必须配置 odom 超时停车和新 Path 时间戳校验, 并在 Planner 文档中记录契约
 5. 输入恢复后重新验证当前路线, 不直接沿用异常期间的失败计时
 6. 对未来时间戳继续使用现有容差, 超出容差按不健康处理
 
-必须由人工决定:
+已确认决策:
 
-- odom 过期时发布空 Path、停止发布, 还是使用独立 stop 接口
-- 仓库外控制器实际支持哪种停车契约
-- hold path 是否需要周期重发
+- odom 过期时停止发布, 由仓库外导航的 odom 超时保护停车
+- Path 是变化事件而不是心跳, 接收时校验时间戳, 恢复时等待新 Path
+- graph 过期时只发布一次 hold path, 不周期重发
 
 验收条件:
 
-- stale graph 不会触发新的 Dijkstra 或路径发布
+- stale graph 不会触发新的 Dijkstra 或路线发布, 最多发布一次 hold path
 - stale odom 不会生成基于旧位姿的 hold path
 - 输入恢复后可以重新规划
 - 正常目标到达和观察姿态逻辑不受影响
