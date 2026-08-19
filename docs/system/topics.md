@@ -49,11 +49,12 @@ x86:
 
 | Topic | 类型 | 发布者 | 消费者 |
 |---|---|---|---|
-| `/spot1/cloud_registered_local` | `sensor_msgs/msg/PointCloud2` | pointcloud axis adapter | elevation mapping、目标融合 |
+| `/spot1/cloud_registered_local` | `sensor_msgs/msg/PointCloud2` | pointcloud relay | elevation mapping、目标融合 |
 | `/spot1/odom_for_scoring` | `nav_msgs/msg/Odometry` | odom frame adapter | graph、WildOS、Goal Mux、Planner |
 | `/elevation_mapping_node/elevation_map_raw` | `grid_map_msgs/msg/GridMap` | elevation mapping | graph construction |
 
-点云 adapter 当前使用 identity 轴向和 2 Hz 输出, 只跨机订阅一次原始注册点云
+点云 relay 以 2 Hz 零拷贝转发输入, 只跨机订阅一次原始注册点云
+输入 frame 必须为 `dlio_odom`, 不匹配时直接丢弃, 不允许只改 header 冒充坐标变换
 
 ## 5. 主链输出
 

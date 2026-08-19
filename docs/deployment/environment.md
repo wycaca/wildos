@@ -54,7 +54,8 @@ MID360 JSON 中主机网卡地址和雷达地址必须与现场网络一致
 
 不得只修改点云 header 来代替坐标变换
 
-`pointcloud_relay` 不修改点坐标和字段, 只限制跨机大点云的本机扇出和输出频率
+`pointcloud_relay` 不修改点坐标、字段和 header, 只限制跨机大点云的本机扇出和输出频率
+输入 frame 不是 `dlio_odom` 时会丢弃消息, 应先修复 D-LIO 输出或增加独立 TF 转换节点
 
 ## 5. TF
 

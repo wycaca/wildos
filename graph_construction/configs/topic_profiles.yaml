@@ -14,7 +14,7 @@ profiles:
     odom_child_frame: base_link
     base_frame: base_link
     cam_frame: "{}_color_optical_frame"
-    pointcloud_output_frame: dlio_odom
+    pointcloud_expected_frame: dlio_odom
 
     # x86 输出只跨机订阅一次, 本机降频到 2 Hz 后供高程图和目标融合共用
     pointcloud_input_topic: /cloud_registered

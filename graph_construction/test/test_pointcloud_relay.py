@@ -13,13 +13,12 @@ def test_identity_cloud_preserves_message_when_frame_matches():
     assert _relay_cloud(cloud, "") is cloud
 
 
-def test_identity_cloud_only_relabels_a_copy():
+def test_identity_cloud_rejects_frame_mismatch():
     cloud = SimpleNamespace(header=SimpleNamespace(frame_id="camera_init"))
 
     adapted = _relay_cloud(cloud, "odom")
 
-    assert adapted is not cloud
-    assert adapted.header.frame_id == "odom"
+    assert adapted is None
     assert cloud.header.frame_id == "camera_init"
 
 

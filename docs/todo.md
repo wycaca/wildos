@@ -48,7 +48,7 @@
 | VIS-01 | P1 | WildOS TF | 实机禁止 latest TF 回退 | 待验证 |
 | FUS-01 | P1 | `triangulation3d` | LiDAR 锁定前必须关联视觉轨迹 | 待验证 |
 | PLN-01 | P1 | `graphnav_planner` | 过期输入禁止继续规划 | 待验证 |
-| GC-03 | 其他 | 点云 relay | 禁止只修改 `frame_id` 冒充坐标变换 | 已批准 |
+| GC-03 | 其他 | 点云 relay | 禁止只修改 `frame_id` 冒充坐标变换 | 待验证 |
 | SEC-01 | 其他 | 模型加载 | 限制不安全 checkpoint 反序列化 | 已批准 |
 | SEC-02 | 其他 | Docker 和 DDS | 缩小容器和局域网攻击面 | 已批准 |
 | PERF-01 | 性能 | 跨机点云 | 在 x86 发送前完成限频 | 已批准 |
@@ -150,10 +150,10 @@
 3. frame 不匹配时丢弃消息并限频告警
 4. 如果未来确实需要转换, 使用独立且有测量时刻 TF 测试的转换节点
 
-人工审核点:
+已确认决策:
 
-- 确认 `/cloud_registered` 在所有实机配置中始终为 `dlio_odom`
-- 确认是否存在仍在使用 frame 重写的仿真配置
+- `robot` profile 要求 `/cloud_registered` 始终为 `dlio_odom`
+- 当前仅保留实机 profile, 不保留 frame 重写配置
 
 验收条件:
 

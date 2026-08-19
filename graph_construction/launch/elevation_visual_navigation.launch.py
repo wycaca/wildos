@@ -142,7 +142,12 @@ def _launch_setup(context):
         "camera_info_topic",
         "camera_info_topic",
     )
-    pointcloud_output_frame = _value(context, profile, "pointcloud_output_frame", "pointcloud_output_frame")
+    pointcloud_expected_frame = _value(
+        context,
+        profile,
+        "pointcloud_expected_frame",
+        "pointcloud_expected_frame",
+    )
 
     graph_overrides = _config_override_args(
         {
@@ -275,7 +280,7 @@ def _launch_setup(context):
             {"use_sim_time": use_sim_time},
             {"input_topic": pointcloud_input_topic},
             {"output_topic": aligned_lidar_topic},
-            {"output_frame": pointcloud_output_frame},
+            {"expected_frame": pointcloud_expected_frame},
             {
                 "max_output_rate_hz": float(
                     profile.get("pointcloud_output_rate_hz", 0.0)

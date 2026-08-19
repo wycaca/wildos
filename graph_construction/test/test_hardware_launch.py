@@ -112,6 +112,16 @@ def test_hardware_launch_relays_registered_cloud_locally():
         for parameters in evaluate_parameters(context, monitor._Node__parameters)
         for key, value in parameters.items()
     }
+    relay = next(
+        node
+        for node in nodes
+        if _expanded(context, node.node_executable) == "pointcloud_relay"
+    )
+    relay_parameters = {
+        key: value
+        for parameters in evaluate_parameters(context, relay._Node__parameters)
+        for key, value in parameters.items()
+    }
 
     assert "pointcloud_relay" in executables
     assert "elevation_mapping_node.py" in executables
@@ -121,6 +131,8 @@ def test_hardware_launch_relays_registered_cloud_locally():
     assert monitor_parameters["aligned_pointcloud_topic"] == (
         "/spot1/cloud_registered_local"
     )
+    assert relay_parameters["expected_frame"] == "dlio_odom"
+    assert "output_frame" not in relay_parameters
 
 
 def test_planner_uses_the_canonical_path_topic():
