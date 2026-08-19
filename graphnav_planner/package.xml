@@ -20,6 +20,8 @@
   <depend>tf2_geometry_msgs</depend>
   <depend>graphnav_msgs</depend>
   <depend>object_search_msgs</depend>
+  <depend>grid_map_msgs</depend>
+  <depend>visualization_msgs</depend>
   <depend>eigen</depend>
   <depend>graaf_vendor</depend>
 

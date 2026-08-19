@@ -57,7 +57,7 @@
 | PERF-04 | 性能 | WildOS 推理 | 使用 inference mode 并验证收益 | 已批准 |
 | ARCH-01 | 架构 | Goal Mux | 拆分 ROS adapter 和纯状态策略 | 待验证 |
 | ARCH-02 | 架构 | Goal Mux 与 Planner | 用强类型消息替代字符串协议 | 待验证 |
-| MNT-01 | 可维护性 | ROS package | 补齐 package 依赖 | 已批准 |
+| MNT-01 | 可维护性 | ROS package | 补齐 package 依赖 | 待验证 |
 | MNT-02 | 可维护性 | 测试和 CI | 建立统一测试入口 | 已批准 |
 | MNT-03 | 可维护性 | C++ | 保持 C++ 代码格式统一 | 已批准 |
 | MNT-04 | 可维护性 | Planner | 删除自带 path follower | 已批准 |
@@ -556,6 +556,14 @@ Goal Mux 使用字符串拼装状态, Planner 使用前缀和子字符串解析
 2. `visual_navigation` 补齐 `geometry_msgs`、`cv_bridge`、`message_filters`、`tf2_msgs` 和实际运行依赖
 3. `graphnav_planner` 补齐 `grid_map_msgs` 和 `visualization_msgs`
 4. 使用 rosdep 或隔离环境验证, 不能依赖开发机上偶然存在的包
+
+当前实现说明:
+
+- `visual_navigation` 已声明源码直接导入的消息、launch、`cv_bridge`、`message_filters` 和 TF 依赖
+- `graphnav_planner` manifest 已与 CMake 对齐, 补充 `grid_map_msgs` 和 `visualization_msgs`
+- PyTorch、OmegaConf 和模型依赖继续由根 `pyproject.toml` 锁定, 不在 ROS manifest 重复维护非 ROS Python 环境
+- rosdep 定向检查通过, 两个 package 单包构建通过
+- 功能验证通过: `visual_navigation` 102 passed、1 skipped, `graphnav_planner` 3/3 CTest passed
 
 验收条件:
 
