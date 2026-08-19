@@ -1,5 +1,6 @@
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 import torch
@@ -54,6 +55,23 @@ def test_manifest_rejects_unlisted_and_external_paths(tmp_path):
         verify_model_asset(unlisted, tmp_path)
     with pytest.raises(RuntimeError, match="越出仓库"):
         verify_model_asset(tmp_path.parent / "outside.bin", tmp_path)
+
+
+def test_repository_manifest_records_model_provenance_and_code_baseline():
+    manifest_path = Path(__file__).resolve().parents[2] / "ckpts" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert len(manifest["compatible_code_commit"]) == 40
+    assert all(
+        character in "0123456789abcdef"
+        for character in manifest["compatible_code_commit"]
+    )
+    assert manifest["compatibility_status"] == "hardware-validation-pending"
+    for asset in manifest["assets"]:
+        assert asset["source"]
+        assert asset["version"]
+        assert asset["size"] > 0
+        assert len(asset["sha256"]) == 64
 
 
 def test_head_loader_uses_weights_only_and_validates_tensors(monkeypatch, tmp_path):

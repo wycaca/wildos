@@ -13,6 +13,7 @@
 | 实机验收与运行约束 | [实机验收](system/issues.md) |
 | 主机和 profile 配置 | [环境配置](deployment/environment.md) |
 | Docker 部署 | [部署说明](deployment/docker.md) |
+| 测试、性能基线和责任边界 | [运行基线与上线验收](deployment/validation.md) |
 | D-LIO 与 TF | [定位说明](localization/dlio.md) |
 
 ## 运行模块

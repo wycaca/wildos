@@ -1,5 +1,7 @@
 {
   "version": 1,
+  "compatible_code_commit": "790ecac1de720c4ef3522f73eb1ae87e9483db33",
+  "compatibility_status": "hardware-validation-pending",
   "assets": [
     {
       "path": "ckpts/c-radio_v3-b_half.pth.tar",
