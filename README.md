@@ -25,6 +25,16 @@ x86 主机运行 LiDAR 与 D-LIO. 相机 AGX 运行相机, 建图, 图构建, �
 
 当前行为以 `docs/` 和代码为准. `docs/history/` 中的日期记录只保留历史上下文, 不能作为部署依据
 
+## 测试
+
+在 ROS Humble workspace 中使用唯一入口运行构建、Python 功能测试、Planner CTest、manifest 和 Docker 契约检查:
+
+```bash
+./scripts/test_repo.sh
+```
+
+该入口固定使用仓库 `.venv` 的 Python 3.10, 不执行 flake8 或 pep257. GPU、硬件和 10 分钟 rosbag 验证按 [TODO](docs/todo.md) 单独执行
+
 ## 主要模块
 
 | 模块 | 职责 |

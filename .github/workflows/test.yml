@@ -1,0 +1,16 @@
+name: Functional tests
+
+on:
+  pull_request:
+  push:
+
+jobs:
+  ros-humble-python310:
+    runs-on: [self-hosted, linux, x64, wildos]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sync locked Python environment
+        run: uv sync --frozen --group test
+      - name: Run repository test entrypoint
+        run: ./scripts/test_repo.sh

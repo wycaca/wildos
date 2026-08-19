@@ -58,7 +58,7 @@
 | ARCH-01 | 架构 | Goal Mux | 拆分 ROS adapter 和纯状态策略 | 待验证 |
 | ARCH-02 | 架构 | Goal Mux 与 Planner | 用强类型消息替代字符串协议 | 待验证 |
 | MNT-01 | 可维护性 | ROS package | 补齐 package 依赖 | 待验证 |
-| MNT-02 | 可维护性 | 测试和 CI | 建立统一测试入口 | 已批准 |
+| MNT-02 | 可维护性 | 测试和 CI | 建立统一测试入口 | 待验证 |
 | MNT-03 | 可维护性 | C++ | 保持 C++ 代码格式统一 | 已批准 |
 | MNT-04 | 可维护性 | Planner | 删除自带 path follower | 已批准 |
 | MNT-05 | 可维护性 | 文档和模型 | 补齐运行基线、模型来源和校验信息 | 已批准 |
@@ -579,6 +579,14 @@ Goal Mux 使用字符串拼装状态, Planner 使用前缀和子字符串解析
 3. Docker 镜像构建可以继续关闭测试, 但镜像构建前必须有独立测试任务通过
 4. 硬件、GPU 和 10 分钟 rosbag 测试单独运行, 不阻塞普通单元测试
 5. CI 固定 ROS Humble、Python 3.10 和关键依赖版本
+
+当前实现说明:
+
+- 根入口为 `./scripts/test_repo.sh`, 分阶段执行 manifest、构建、Python 功能、Planner CTest 和 Docker 契约检查
+- 按审核决定不执行 flake8 和 pep257, C++ 格式由代码评审保持统一
+- CI 使用带 `wildos` 标签的 ROS Humble 自托管 runner 和仓库 `.venv` Python 3.10
+- GPU、硬件和 10 分钟 rosbag 测试继续独立运行, 不阻塞普通功能测试
+- 统一入口自举通过: graph construction 149、visual navigation 102、triangulation 12 项测试和 Planner 3/3 CTest 全部通过
 
 验收条件:
 
