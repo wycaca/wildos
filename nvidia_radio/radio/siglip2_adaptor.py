@@ -18,6 +18,7 @@ from .adaptor_registry import adaptor_registry, dict_t, state_t
 from .adaptor_generic import GenericAdaptor
 from .utils import rank_gate
 from pathlib import Path
+from ..model_assets import verify_model_asset
 home_dir = Path.home()
 
 
@@ -40,14 +41,22 @@ class SigLIP2Adaptor(GenericAdaptor):
             print(f"[INFO] Using checkpoint path: {ckpt_path}")
             local_model_path = _resolve_local_hf_snapshot(version, Path(ckpt_path))
             print(f"[INFO] Using local SigLIP2 path: {local_model_path}")
+            for filename in (
+                "model.safetensors",
+                "config.json",
+                "preprocessor_config.json",
+                "tokenizer_config.json",
+                "special_tokens_map.json",
+                "tokenizer.json",
+                "tokenizer.model",
+            ):
+                verify_model_asset(local_model_path / filename)
             model = AutoModel.from_pretrained(
                 local_model_path,
-                trust_remote_code=True,
                 local_files_only=True,
             )
             proc = AutoProcessor.from_pretrained(
                 local_model_path,
-                trust_remote_code=True,
                 local_files_only=True,
             )
 

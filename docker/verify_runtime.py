@@ -4,9 +4,7 @@ import os
 from pathlib import Path
 import platform
 
-import cupy
-import rclpy
-import torch
+from nvidia_radio.model_assets import verify_model_manifest
 
 
 def main() -> None:
@@ -19,15 +17,11 @@ def main() -> None:
         )
 
     repo_root = Path(os.environ.get("WILDOS_REPO_ROOT", "/opt/wildos_ws/src/nebula2-wildos"))
-    required_assets = (
-        repo_root / "ckpts" / "c-radio_v3-b_half.pth.tar",
-        repo_root / "ckpts" / "frontier_ckpt_new.ckpt",
-        repo_root / "ckpts" / "traversability_ckpt.ckpt",
-        repo_root / "ckpts" / "siglip2",
-    )
-    missing_assets = [str(path) for path in required_assets if not path.exists()]
-    if missing_assets:
-        raise RuntimeError(f"缺少模型文件, paths={missing_assets}")
+    verified_assets = verify_model_manifest(repo_root)
+
+    import cupy
+    import rclpy
+    import torch
 
     if not torch.cuda.is_available():
         raise RuntimeError("PyTorch 无法访问 CUDA GPU")
@@ -39,7 +33,7 @@ def main() -> None:
         "WildOS 容器运行环境检查通过, "
         f"arch={actual_arch}, torch={torch.__version__}, "
         f"cuda={torch.version.cuda}, cupy_devices={cupy_devices}, "
-        f"rclpy={Path(rclpy.__file__).parent}",
+        f"rclpy={Path(rclpy.__file__).parent}, models={verified_assets}",
         flush=True,
     )
 

@@ -49,7 +49,7 @@
 | FUS-01 | P1 | `triangulation3d` | LiDAR 锁定前必须关联视觉轨迹 | 待验证 |
 | PLN-01 | P1 | `graphnav_planner` | 过期输入禁止继续规划 | 待验证 |
 | GC-03 | 其他 | 点云 relay | 禁止只修改 `frame_id` 冒充坐标变换 | 待验证 |
-| SEC-01 | 其他 | 模型加载 | 限制不安全 checkpoint 反序列化 | 已批准 |
+| SEC-01 | 其他 | 模型加载 | 限制不安全 checkpoint 反序列化 | 待验证 |
 | SEC-02 | 其他 | Docker 和 DDS | 缩小容器和局域网攻击面 | 已批准 |
 | PERF-01 | 性能 | 跨机点云 | 在 x86 发送前完成限频 | 已批准 |
 | PERF-02 | 性能 | 导航图链路 | 避免重复复制、重建和规划相同图 | 已批准 |
@@ -455,11 +455,12 @@ Goal Mux 使用字符串拼装状态, Planner 使用前缀和子字符串解析
 5. `docker/verify_runtime.py` 在启动前校验文件存在性和哈希
 6. 校验失败时停止启动, 不自动下载或继续加载
 
-人工审核点:
+当前实现说明:
 
-- 确认当前模型是否能直接使用 `weights_only=True`
-- 确认模型转换流程和产物保存位置
-- 确认模型更新和回滚责任人
+- 两个 head checkpoint 使用 `weights_only=True`, 仅 allowlist 其 Lightning optimizer 和 OmegaConf 固定类型
+- RADIO checkpoint 依赖 `argparse.Namespace`, 当前保留原格式, 仅允许固定 SHA256 的文件进入反序列化
+- SigLIP2 使用固定 revision 的 safetensors, 同时校验配置和 tokenizer 文件
+- 模型更新和回滚必须通过 `ckpts/manifest.json` 评审
 
 验收条件:
 

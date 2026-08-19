@@ -161,6 +161,10 @@ RIGHT_CAMERA_TRANSFORM="x y z qx qy qz qw"
 WILDOS_CKPT_DIR=/absolute/path/to/ckpts
 ```
 
+模型文件必须与仓库中的 `ckpts/manifest.json` 完全匹配。容器启动和模型反序列化前都会校验文件大小与 SHA256, 校验失败时直接停止, 不会自动下载替代文件
+
+更新模型时必须同步评审并更新清单中的版本、来源、大小和 SHA256。当前两个 head checkpoint 使用 `weights_only=True` 和固定类型 allowlist 加载；RADIO checkpoint 仍含模型构造元数据, 只允许在哈希校验通过后加载
+
 三台相机已经按前、左、右接入。主机没有 `rs-enumerate-devices` 时，先构建相机镜像，再逐台登记:
 
 ```bash

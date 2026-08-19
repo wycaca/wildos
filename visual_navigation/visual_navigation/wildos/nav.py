@@ -58,8 +58,8 @@ _SLOW_PROCESSING_WARNING_MS = 1500.0
 class WildOS_Nav(TFLookupSubscriber):
     default_config = {
         # 模型参数
-        "frontier_ckpt": "frontier_head.ckpt",
-        "traversability_ckpt": "trav_head.ckpt",
+        "frontier_ckpt": "frontier_ckpt_new.ckpt",
+        "traversability_ckpt": "traversability_ckpt.ckpt",
         "model_version": "c-radio_v3-b",
         "adaptor_version": None,
         "use_naclip": True,
@@ -465,7 +465,7 @@ class WildOS_Nav(TFLookupSubscriber):
         if local_model_path.exists():
             return local_model_path
 
-        return model_version
+        raise FileNotFoundError(f"缺少本地 RADIO checkpoint, path={local_model_path}")
 
     def _resolve_wildos_adaptor_path(self, adaptor_version):
         """SigLIP2 需要指向完整 HuggingFace cache 目录"""
@@ -476,7 +476,7 @@ class WildOS_Nav(TFLookupSubscriber):
         if adaptor_path.exists():
             return adaptor_path
 
-        return HOME_DIR / "ckpts"
+        raise FileNotFoundError(f"缺少本地 adaptor checkpoint, path={adaptor_path}")
 
     @staticmethod
     def _config_bool(value):

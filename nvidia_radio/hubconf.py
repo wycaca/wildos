@@ -27,6 +27,7 @@ from .radio.input_conditioner import get_default_conditioner
 from .radio.vitdet import apply_vitdet_arch, VitDetArgs
 from .radio.siglip2_adaptor import SigLIP2Adaptor
 from .radio.open_clip_adaptor import OpenCLIP_RADIO
+from .model_assets import verify_model_asset
 
 from pathlib import Path
 
@@ -47,7 +48,8 @@ def radio_model(
         version = DEFAULT_VERSION
 
     if os.path.isfile(version):
-        chk = torch.load(version, map_location="cpu", weights_only=False)
+        verified_version = verify_model_asset(version)
+        chk = torch.load(verified_version, map_location="cpu", weights_only=False)
         resource = RadioResource(version, patch_size=None, max_resolution=None, preferred_resolution=None)
     else:
         resource = RESOURCE_MAP[version]

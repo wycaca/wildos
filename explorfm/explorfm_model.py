@@ -1,14 +1,54 @@
-from typing import Optional, Tuple, List
+from collections import defaultdict
+from functools import partial
+from typing import Any, Optional, Tuple, List
 import os
 from enum import Enum, auto
 
 import numpy as np
 import torch
+from omegaconf.base import ContainerMetadata, Metadata
+from omegaconf.listconfig import ListConfig
+from omegaconf.nodes import AnyNode
 from torch import nn
 from torch.nn import functional as F
 from torchvision import transforms
 
 from nvidia_radio.hubconf import radio_model
+from nvidia_radio.model_assets import verify_model_asset
+
+
+_HEAD_CHECKPOINT_SAFE_GLOBALS = (
+    partial,
+    defaultdict,
+    ListConfig,
+    list,
+    Any,
+    dict,
+    int,
+    torch.optim.Adam,
+    Metadata,
+    AnyNode,
+    torch.optim.lr_scheduler.ReduceLROnPlateau,
+    ContainerMetadata,
+)
+
+
+def _load_head_state_dict(checkpoint_path: str):
+    """校验旧 Lightning checkpoint 后仅加载已授权类型和 tensor"""
+    verified_ckpt = verify_model_asset(checkpoint_path)
+    with torch.serialization.safe_globals(_HEAD_CHECKPOINT_SAFE_GLOBALS):
+        checkpoint = torch.load(
+            verified_ckpt,
+            map_location="cpu",
+            weights_only=True,
+        )
+    state_dict = checkpoint.get("state_dict")
+    if not isinstance(state_dict, dict) or not all(
+        isinstance(key, str) and torch.is_tensor(value)
+        for key, value in state_dict.items()
+    ):
+        raise RuntimeError(f"Head checkpoint state_dict 非法, path={verified_ckpt}")
+    return state_dict
 
 class ModelPrecision(Enum):
     FP32 = auto()
@@ -97,7 +137,7 @@ class ExploRFM(nn.Module):
         )
         # load traversability checkpoint
         if os.path.exists(traversability_ckpt):
-            orig_state_dict = torch.load(traversability_ckpt, map_location='cpu', weights_only=False)['state_dict']
+            orig_state_dict = _load_head_state_dict(traversability_ckpt)
             state_dict = {}
             for k, v in orig_state_dict.items():
                 state_dict[k.replace('net.head.', '')] = v
@@ -122,7 +162,7 @@ class ExploRFM(nn.Module):
         )
         # load frontier checkpoint
         if os.path.exists(frontier_ckpt):
-            orig_state_dict = torch.load(frontier_ckpt, map_location='cpu', weights_only=False)['state_dict']
+            orig_state_dict = _load_head_state_dict(frontier_ckpt)
             state_dict = {}
             for k, v in orig_state_dict.items():
                 if 'criterion' in k:

@@ -1,6 +1,7 @@
 __pycache__/
 *.egg-info/
 ckpts/*
+!ckpts/manifest.json
 
 test/*
 external_references/*

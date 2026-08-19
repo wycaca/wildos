@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "assets": [
+    {
+      "path": "ckpts/c-radio_v3-b_half.pth.tar",
+      "version": "c-radio_v3-b",
+      "source": "https://huggingface.co/nvidia/C-RADIOv3-B",
+      "size": 546632054,
+      "sha256": "530b0e827b1d409ca3b175466e11062885baedd823ec5dae3a88348e76d4c398"
+    },
+    {
+      "path": "ckpts/frontier_ckpt_new.ckpt",
+      "version": "WildOS robot baseline",
+      "source": "project-provided training artifact",
+      "size": 39524786,
+      "sha256": "5c6d3c91d3e4edb5408b770674d87cbfa769c6123d8b071a8cdecd08179c6461"
+    },
+    {
+      "path": "ckpts/traversability_ckpt.ckpt",
+      "version": "WildOS robot baseline",
+      "source": "project-provided training artifact",
+      "size": 39523061,
+      "sha256": "462e545c7e528795a0b2728d8223cfbbd71ff284757cd479a2a72f7f00b9cad6"
+    },
+    {
+      "path": "ckpts/siglip2/models--google--siglip2-so400m-patch16-naflex/snapshots/cc24074f717b612951c2dead130904ab9b65a81e/model.safetensors",
+      "version": "cc24074f717b612951c2dead130904ab9b65a81e",
+      "source": "https://huggingface.co/google/siglip2-so400m-patch16-naflex",
+      "size": 4542792928,
+      "sha256": "11a61a2068800d5f4f35cb041c1fea25de86ce87725e4c97a9ed046d0b22c076"
+    },
+    {
+      "path": "ckpts/siglip2/models--google--siglip2-so400m-patch16-naflex/snapshots/cc24074f717b612951c2dead130904ab9b65a81e/config.json",
+      "version": "cc24074f717b612951c2dead130904ab9b65a81e",
+      "source": "https://huggingface.co/google/siglip2-so400m-patch16-naflex",
+      "size": 590,
+      "sha256": "c633ddede50ec15d5818e04325bc4a5ac47c2762194a02486baee7d2a3a3dbc5"
+    },
+    {
+      "path": "ckpts/siglip2/models--google--siglip2-so400m-patch16-naflex/snapshots/cc24074f717b612951c2dead130904ab9b65a81e/preprocessor_config.json",
+      "version": "cc24074f717b612951c2dead130904ab9b65a81e",
+      "source": "https://huggingface.co/google/siglip2-so400m-patch16-naflex",
+      "size": 393,
+      "sha256": "1125703e5446d5b6ff4d5893a33bac128cdd21dc12e3dad2469a648fb0ae3bf7"
+    },
+    {
+      "path": "ckpts/siglip2/models--google--siglip2-so400m-patch16-naflex/snapshots/cc24074f717b612951c2dead130904ab9b65a81e/tokenizer_config.json",
+      "version": "cc24074f717b612951c2dead130904ab9b65a81e",
+      "source": "https://huggingface.co/google/siglip2-so400m-patch16-naflex",
+      "size": 40160,
+      "sha256": "d2343400f0f86133053325951b696df8fd0f53a007cf6a546e6c2b4361344f47"
+    },
+    {
+      "path": "ckpts/siglip2/models--google--siglip2-so400m-patch16-naflex/snapshots/cc24074f717b612951c2dead130904ab9b65a81e/special_tokens_map.json",
+      "version": "cc24074f717b612951c2dead130904ab9b65a81e",
+      "source": "https://huggingface.co/google/siglip2-so400m-patch16-naflex",
+      "size": 636,
+      "sha256": "baec30ea10906f16adb8c18af7a34023002c1746542612b8b41c9f09e1351351"
+    },
+    {
+      "path": "ckpts/siglip2/models--google--siglip2-so400m-patch16-naflex/snapshots/cc24074f717b612951c2dead130904ab9b65a81e/tokenizer.json",
+      "version": "cc24074f717b612951c2dead130904ab9b65a81e",
+      "source": "https://huggingface.co/google/siglip2-so400m-patch16-naflex",
+      "size": 34356304,
+      "sha256": "58a1696e79c9d97937389ed116f552a15c84811d7b8023918b86f4bc5775b1b0"
+    },
+    {
+      "path": "ckpts/siglip2/models--google--siglip2-so400m-patch16-naflex/snapshots/cc24074f717b612951c2dead130904ab9b65a81e/tokenizer.model",
+      "version": "cc24074f717b612951c2dead130904ab9b65a81e",
+      "source": "https://huggingface.co/google/siglip2-so400m-patch16-naflex",
+      "size": 4241003,
+      "sha256": "61a7b147390c64585d6c3543dd6fc636906c9af3865a5548f27f31aee1d4c8e2"
+    }
+  ]
+}
