@@ -16,6 +16,8 @@ ROS 2 package for the current WildOS visual pipeline, object-search control, res
 
 The pure target filter is implemented in `triangulation3d/target_particle_filter.py`
 
+WildOS image and text model entry points run under PyTorch inference mode. The periodic performance log reports inference average, P95, maximum latency, and CUDA memory usage
+
 ## Configuration
 
 | Config | Used by |

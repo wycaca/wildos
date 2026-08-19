@@ -269,6 +269,7 @@ class ExploRFMInference:
         if adaptor_version is not None:
             self.text_model = self.model.radio_model.adaptors[adaptor_version]
 
+    @torch.inference_mode()
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         """Perform a forward pass through the model.
 
@@ -295,6 +296,7 @@ class ExploRFMInference:
         input_tensor = self.transforms(input_img).unsqueeze(0)        
         return self.forward(input_tensor)
     
+    @torch.inference_mode()
     def forward_on_text(
         self, text_queries: List[str]
     ) -> torch.Tensor:

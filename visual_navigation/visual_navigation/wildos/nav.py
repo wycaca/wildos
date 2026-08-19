@@ -979,6 +979,14 @@ class WildOS_Nav(TFLookupSubscriber):
         if not summaries["total"].count:
             return
         total = summaries["total"]
+        inference = summaries["inference"]
+        gpu_memory = "显存=不可用"
+        if torch.cuda.is_available():
+            gpu_memory = (
+                f"显存=已分配{torch.cuda.memory_allocated() / 1024**2:.0f}/"
+                f"保留{torch.cuda.memory_reserved() / 1024**2:.0f}/"
+                f"峰值{torch.cuda.max_memory_allocated() / 1024**2:.0f}MiB"
+            )
         latency = {
             name: timing.summary(reset=True)
             for name, timing in self._latency_timings.items()
@@ -988,6 +996,9 @@ class WildOS_Nav(TFLookupSubscriber):
             f"频率={self._processing_rate.sample(reset=True):.2f}Hz, "
             f"总耗时=平均{total.average_ms:.0f}/95%上限{total.p95_ms:.0f}/"
             f"最大{total.maximum_ms:.0f}ms, "
+            f"模型推理=平均{inference.average_ms:.0f}/"
+            f"95%上限{inference.p95_ms:.0f}/最大{inference.maximum_ms:.0f}ms, "
+            f"{gpu_memory}, "
             "阶段平均耗时="
             f"图像解码{summaries['decode'].average_ms:.0f}ms/"
             f"几何投影{summaries['project'].average_ms:.0f}ms/"
@@ -1217,8 +1228,7 @@ class WildOS_Nav(TFLookupSubscriber):
 
         self.get_logger().info(f"开始切换搜索目标, target={target!r}")
         try:
-            with torch.inference_mode():
-                text_feats = self.model.forward_on_text([target])
+            text_feats = self.model.forward_on_text([target])
         except Exception as exc:
             self.get_logger().error(
                 f"搜索目标文本特征计算失败, 保留原目标, error={exc}"
