@@ -58,3 +58,10 @@ class EventRate:
             self._started_at = now
             self._count = 0
         return rate
+
+
+def publish_due(now_ns: int, last_ns: int | None, max_rate_hz: float) -> bool:
+    """Return whether a rate-limited event may be published"""
+    if max_rate_hz <= 0.0 or last_ns is None:
+        return True
+    return now_ns - last_ns >= 1.0e9 / max_rate_hz

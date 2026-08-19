@@ -16,10 +16,10 @@ profiles:
     cam_frame: "{}_color_optical_frame"
     pointcloud_expected_frame: dlio_odom
 
-    # x86 输出只跨机订阅一次, 本机降频到 2 Hz 后供高程图和目标融合共用
+    # x86 已限制为 2 Hz, 本机只做 identity 扇出
     pointcloud_input_topic: /cloud_registered
     aligned_lidar_topic: /spot1/cloud_registered_local
-    pointcloud_output_rate_hz: 2.0
+    pointcloud_output_rate_hz: 0.0
     odom_input_topic: /odom
     odom_stamp_mode: preserve
     odom_pose_source: message

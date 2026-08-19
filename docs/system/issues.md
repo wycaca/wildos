@@ -64,9 +64,9 @@
 
 ## 6. 跨机通信
 
-`/cloud_registered` 是当前主要带宽风险
+`/cloud_registered` 是当前主要带宽风险, x86 guard 默认在发送前限制为 2 Hz
 
-当前相机 AGX 只跨机订阅一次, 再以 2 Hz 发布 `/spot1/cloud_registered_local`
+当前相机 AGX 只跨机订阅一次, 再 identity 转发 `/spot1/cloud_registered_local`, 不做第二次限频
 
 仍需记录:
 

@@ -61,6 +61,7 @@ services:
     environment:
       <<: *dds-environment
       DLIO_CONFIG_FILE: /config/dlio.yaml
+      OUTPUT_POINTCLOUD_RATE_HZ: "${OUTPUT_POINTCLOUD_RATE_HZ:-2.0}"
     ulimits:
       memlock: -1
       stack: 67108864

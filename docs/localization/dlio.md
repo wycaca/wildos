@@ -60,7 +60,7 @@ MID360 安装相对水平面倾斜约 7 度, 当前精确 LiDAR 外参仍需测�
 | `/livox/lidar` | `lidar` 容器 |
 | `/livox/imu` | `lidar` 容器 |
 | `/odom` | `dlio_tf_adapter` |
-| `/cloud_registered` | `dlio_output_guard` |
+| `/cloud_registered` | `dlio_output_guard`, 健康时默认限频 2 Hz |
 | `/tf` | `dlio_tf_adapter` |
 
 不得同时启动第二个 `/odom` 或相同 TF child frame 发布者
@@ -76,12 +76,14 @@ ros2 topic echo /cloud_registered --field header --once
 ros2 run tf2_ros tf2_echo odom base_link
 ```
 
+`OUTPUT_POINTCLOUD_RATE_HZ` 控制 x86 跨机输出频率, 默认 2.0 Hz。D-LIO 内部 deskewed 点云保持原始频率, 设为 0 可关闭跨机限频
+
 需要确认:
 
 - 原始点云约 10 Hz
 - 点云包含有效逐点 `timestamp`
 - IMU 和点云使用同一时钟
-- 静止时 `/cloud_registered` 仍持续发布
+- 静止时 `/cloud_registered` 仍以配置频率持续发布
 - 前进、后退和转弯方向正确
 - 长时间运动不出现跳变或发散
 

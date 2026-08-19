@@ -132,6 +132,7 @@ def test_hardware_launch_relays_registered_cloud_locally():
         "/spot1/cloud_registered_local"
     )
     assert relay_parameters["expected_frame"] == "dlio_odom"
+    assert relay_parameters["max_output_rate_hz"] == 0.0
     assert "output_frame" not in relay_parameters
 
 

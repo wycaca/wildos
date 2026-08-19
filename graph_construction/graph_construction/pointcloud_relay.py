@@ -8,6 +8,8 @@ from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import PointCloud2
 
+from graph_construction.performance_stats import publish_due as _publish_due
+
 
 class PointCloudRelay(Node):
     """将跨机注册点云降频后转发给本机高开销节点"""
@@ -84,13 +86,6 @@ class PointCloudRelay(Node):
                 f"output_frame={relayed_msg.header.frame_id}"
             )
             self._logged_first_cloud = True
-
-
-def _publish_due(now_ns: int, last_ns: int | None, max_rate_hz: float) -> bool:
-    """限制高开销下游的点云输入速率"""
-    if max_rate_hz <= 0.0 or last_ns is None:
-        return True
-    return now_ns - last_ns >= 1.0e9 / max_rate_hz
 
 
 def _relay_cloud(

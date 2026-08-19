@@ -9,7 +9,7 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import PointCloud2
 from std_msgs.msg import Bool
 
-from graph_construction.performance_stats import EventRate, TimingWindow
+from graph_construction.performance_stats import EventRate, TimingWindow, publish_due
 
 
 _DIAGNOSTICS_LOG_PERIOD_SEC = 30.0
@@ -72,6 +72,7 @@ class DlioOutputGuard(Node):
             "/spot1/dlio/odom_node/healthy",
         )
         self.declare_parameter("health_timeout_sec", 1.5)
+        self.declare_parameter("max_output_rate_hz", 2.0)
         self.input_pointcloud_topic = str(
             self.get_parameter("input_pointcloud_topic").value
         )
@@ -82,6 +83,11 @@ class DlioOutputGuard(Node):
         self.health_lease = HealthLease(
             float(self.get_parameter("health_timeout_sec").value)
         )
+        self.max_output_rate_hz = float(
+            self.get_parameter("max_output_rate_hz").value
+        )
+        if self.max_output_rate_hz < 0.0:
+            raise ValueError("max_output_rate_hz must be nonnegative")
         sensor_qos = QoSProfile(
             depth=1,
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -113,14 +119,20 @@ class DlioOutputGuard(Node):
 
         self.forwarded = 0
         self.suppressed = 0
+        self.rate_limited = 0
+        self.forwarded_bytes = 0
+        self._last_publish_time_ns: int | None = None
         self._last_forwarded = 0
         self._last_suppressed = 0
+        self._last_rate_limited = 0
+        self._last_forwarded_bytes = 0
         self._callback_timing = TimingWindow()
         self._input_rate = EventRate()
         self.get_logger().info(
             "DLIO output guard 已启动, "
             f"pointcloud={self.input_pointcloud_topic}"
-            f"->{self.output_pointcloud_topic}"
+            f"->{self.output_pointcloud_topic}, "
+            f"max_rate={self.max_output_rate_hz:.1f}Hz"
         )
 
     def _on_pointcloud(self, msg: PointCloud2) -> None:
@@ -130,8 +142,19 @@ class DlioOutputGuard(Node):
             self.suppressed += 1
             self._callback_timing.add_seconds(time.perf_counter() - started)
             return
+        now_ns = time.monotonic_ns()
+        if not publish_due(
+            now_ns,
+            self._last_publish_time_ns,
+            self.max_output_rate_hz,
+        ):
+            self.rate_limited += 1
+            self._callback_timing.add_seconds(time.perf_counter() - started)
+            return
+        self._last_publish_time_ns = now_ns
         self.pointcloud_publisher.publish(msg)
         self.forwarded += 1
+        self.forwarded_bytes += len(msg.data)
         self._callback_timing.add_seconds(time.perf_counter() - started)
 
     def _on_health(self, msg: Bool) -> None:
@@ -146,13 +169,21 @@ class DlioOutputGuard(Node):
         )
         forwarded = self.forwarded - self._last_forwarded
         suppressed = self.suppressed - self._last_suppressed
-        total = forwarded + suppressed
+        rate_limited = self.rate_limited - self._last_rate_limited
+        forwarded_bytes = self.forwarded_bytes - self._last_forwarded_bytes
+        total = forwarded + suppressed + rate_limited
         suppressed_ratio = 100.0 * suppressed / total if total else 0.0
+        output_rate = forwarded / _DIAGNOSTICS_LOG_PERIOD_SEC
+        bandwidth_mbps = (
+            forwarded_bytes * 8.0 / _DIAGNOSTICS_LOG_PERIOD_SEC / 1.0e6
+        )
         timing = self._callback_timing.summary(reset=True)
         self.get_logger().info(
             "DLIO 点云输出, "
             f"输入频率={self._input_rate.sample(reset=True):.1f}Hz, "
-            f"转发={forwarded}, 拦截={suppressed}({suppressed_ratio:.1f}%), "
+            f"跨机频率={output_rate:.1f}Hz, 带宽={bandwidth_mbps:.1f}Mbps, "
+            f"转发={forwarded}, 限频={rate_limited}, "
+            f"健康拦截={suppressed}({suppressed_ratio:.1f}%), "
             f"状态={'正常' if healthy else '暂停'}, "
             f"心跳年龄={heartbeat_age_text}, "
             f"心跳超时={self.health_lease.timeouts}次, "
@@ -162,6 +193,8 @@ class DlioOutputGuard(Node):
         )
         self._last_forwarded = self.forwarded
         self._last_suppressed = self.suppressed
+        self._last_rate_limited = self.rate_limited
+        self._last_forwarded_bytes = self.forwarded_bytes
 
 
 def main(args=None) -> None:

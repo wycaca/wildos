@@ -29,11 +29,11 @@ x86:
 |---|---|---|---|---|
 | `/livox/lidar` | `sensor_msgs/msg/PointCloud2` | Livox 驱动 | D-LIO | 约 10 Hz, 含逐点 `timestamp` |
 | `/livox/imu` | `sensor_msgs/msg/Imu` | Livox 驱动 | D-LIO | 时间连续 |
-| `/cloud_registered` | `sensor_msgs/msg/PointCloud2` | D-LIO guard | 相机 AGX | frame=`dlio_odom` |
+| `/cloud_registered` | `sensor_msgs/msg/PointCloud2` | D-LIO guard | 相机 AGX | 2 Hz, frame=`dlio_odom` |
 | `/odom` | `nav_msgs/msg/Odometry` | D-LIO TF adapter | 相机 AGX | parent=`odom`, child=`base_link` |
 | `/tf` | `tf2_msgs/msg/TFMessage` | D-LIO TF adapter | 两台主机 | 不能有重复 child owner |
 
-`/cloud_registered` 静止时也必须持续发布
+`/cloud_registered` 静止时也必须以配置频率持续发布
 
 ## 3. 相机 AGX 外部输入
 
@@ -53,7 +53,7 @@ x86:
 | `/spot1/odom_for_scoring` | `nav_msgs/msg/Odometry` | odom frame adapter | graph、WildOS、Goal Mux、Planner |
 | `/elevation_mapping_node/elevation_map_raw` | `grid_map_msgs/msg/GridMap` | elevation mapping | graph construction |
 
-点云 relay 以 2 Hz 零拷贝转发输入, 只跨机订阅一次原始注册点云
+点云 relay 零拷贝转发 x86 已限频的输入, 只跨机订阅一次原始注册点云
 输入 frame 必须为 `dlio_odom`, 不匹配时直接丢弃, 不允许只改 header 冒充坐标变换
 
 ## 5. 主链输出

@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from graph_construction.dlio_output_guard import HealthLease
+from graph_construction.performance_stats import publish_due
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -54,3 +55,10 @@ def test_new_healthy_heartbeat_recovers_expired_lease():
 def test_health_lease_rejects_nonpositive_timeout():
     with pytest.raises(ValueError, match="greater than 0"):
         HealthLease(timeout_sec=0.0)
+
+
+def test_output_rate_limit_keeps_dlio_internal_rate_unchanged():
+    assert publish_due(1_000_000_000, None, 2.0)
+    assert not publish_due(1_499_999_999, 1_000_000_000, 2.0)
+    assert publish_due(1_500_000_000, 1_000_000_000, 2.0)
+    assert publish_due(1_000_000_001, 1_000_000_000, 0.0)
