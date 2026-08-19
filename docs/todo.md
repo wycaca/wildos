@@ -46,7 +46,7 @@
 | GC-02 | P1 | `graph_construction` | 删除按帧分位数决定安全分类 | 待验证 |
 | LOC-01 | P1 | D-LIO adapter 和 guard | 为健康状态增加心跳和超时租约 | 待验证 |
 | VIS-01 | P1 | WildOS TF | 实机禁止 latest TF 回退 | 待验证 |
-| FUS-01 | P1 | `triangulation3d` | LiDAR 锁定前必须关联视觉轨迹 | 已批准 |
+| FUS-01 | P1 | `triangulation3d` | LiDAR 锁定前必须关联视觉轨迹 | 待验证 |
 | PLN-01 | P1 | `graphnav_planner` | 过期输入禁止继续规划 | 已批准 |
 | GC-03 | 其他 | 点云 relay | 禁止只修改 `frame_id` 冒充坐标变换 | 已批准 |
 | SEC-01 | 其他 | 模型加载 | 限制不安全 checkpoint 反序列化 | 已批准 |

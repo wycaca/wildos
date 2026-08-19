@@ -155,6 +155,57 @@ def test_lidar_requires_consistent_frames_and_reached_is_terminal():
     assert math.dist(reached.position, second.position) < 1e-9
 
 
+def test_consistent_lidar_far_from_visual_track_cannot_lock():
+    particle_filter, target = _filter_with_visual_posterior(seed=15)
+    particles_before = particle_filter.particles.copy()
+    far_measurement = target + np.array([20.0, 20.0, 0.0])
+
+    first = particle_filter.update_lidar(far_measurement, support=80)
+    second = particle_filter.update_lidar(
+        far_measurement + np.array([0.1, 0.0, 0.0]),
+        support=90,
+    )
+
+    assert first.state == FusionState.STABLE_VISION
+    assert second.state == FusionState.STABLE_VISION
+    assert particle_filter.lidar_consistent_frames == 0
+    assert particle_filter.lidar_association_rejected == 2
+    assert np.array_equal(particle_filter.particles, particles_before)
+
+
+def test_associated_consecutive_lidar_measurements_can_lock():
+    particle_filter, target = _filter_with_visual_posterior(seed=16)
+
+    first = particle_filter.update_lidar(
+        target + np.array([0.2, 0.1, 0.0]),
+        support=80,
+    )
+    second = particle_filter.update_lidar(
+        target + np.array([0.3, 0.1, 0.0]),
+        support=90,
+    )
+
+    assert first.state == FusionState.STABLE_VISION
+    assert second.state == FusionState.LIDAR_LOCKED
+    assert particle_filter.lidar_association_rejected == 0
+
+
+def test_lidar_outlier_resets_consecutive_associated_frames():
+    particle_filter, target = _filter_with_visual_posterior(seed=17)
+    valid = target + np.array([0.2, 0.1, 0.0])
+
+    particle_filter.update_lidar(valid, support=80)
+    particle_filter.update_lidar(target + np.array([20.0, 20.0, 0.0]), support=80)
+    after_restart = particle_filter.update_lidar(valid, support=80)
+
+    assert particle_filter.lidar_consistent_frames == 1
+    assert after_restart.state == FusionState.STABLE_VISION
+
+    locked = particle_filter.update_lidar(valid, support=80)
+
+    assert locked.state == FusionState.LIDAR_LOCKED
+
+
 def test_reached_does_not_promote_unstable_estimate():
     target = np.array([8.0, 0.0, 1.0])
     particle_filter = TargetParticleFilter(ParticleFilterConfig(particle_count=500), seed=8)
@@ -199,7 +250,7 @@ def test_single_lidar_frame_cannot_move_visual_track():
     ])
 
     after_single_lidar = particle_filter.update_lidar(
-        np.array([25.0, 20.0, 1.0]),
+        np.array([250.0, 200.0, 1.0]),
         support=100,
     )
 
@@ -207,3 +258,26 @@ def test_single_lidar_frame_cannot_move_visual_track():
     assert after_single_lidar.confidence == visual.confidence
     assert after_single_lidar.source == visual.source
     assert after_single_lidar.state != FusionState.LIDAR_LOCKED
+    assert particle_filter.lidar_association_rejected == 1
+
+
+def _filter_with_visual_posterior(seed: int):
+    target = np.array([8.0, 2.0, 1.0])
+    config = ParticleFilterConfig(
+        particle_count=500,
+        lidar_lock_frames=2,
+    )
+    particle_filter = TargetParticleFilter(config, seed=seed)
+    particle_filter.particles = particle_filter.rng.normal(
+        target,
+        0.1,
+        size=(config.particle_count, 3),
+    )
+    particle_filter.weights = np.full(
+        config.particle_count,
+        1.0 / config.particle_count,
+    )
+    particle_filter.accepted_views = 2
+    particle_filter.view_support = 2.0
+    particle_filter.state = FusionState.STABLE_VISION
+    return particle_filter, target

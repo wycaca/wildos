@@ -123,6 +123,7 @@ class TargetParticleFilter:
         self.duplicate_views_rejected = 0
         self.lidar_support = 0
         self.lidar_consistent_frames = 0
+        self.lidar_association_rejected = 0
         self.last_lidar_position: np.ndarray | None = None
         self.reached_estimate_stable = False
         self.state = FusionState.EMPTY
@@ -195,6 +196,14 @@ class TargetParticleFilter:
         support = max(int(support), 0)
 
         has_visual_track = self.particles is not None and self.accepted_views > 0
+        if has_visual_track and not self._is_lidar_associated_with_track(measurement):
+            self.lidar_consistent_frames = 0
+            self.last_lidar_position = None
+            self.lidar_support = 0
+            self.lidar_association_rejected += 1
+            self._update_state()
+            return self.estimate()
+
         if (
             self.last_lidar_position is not None
             and np.linalg.norm(measurement - self.last_lidar_position)
@@ -229,6 +238,23 @@ class TargetParticleFilter:
             self._resample_if_needed()
         self._update_state()
         return self.estimate()
+
+    def _is_lidar_associated_with_track(self, measurement: np.ndarray) -> bool:
+        """使用视觉后验的水平不确定度关联 LiDAR 测量"""
+        estimate = self.estimate()
+        if estimate is None:
+            return True
+        horizontal_std = math.sqrt(
+            max(float(estimate.covariance[0, 0] + estimate.covariance[1, 1]), 0.0)
+        )
+        association_radius = max(
+            self.config.association_min_radius,
+            self.config.association_sigma_factor * horizontal_std,
+        )
+        association_distance = float(
+            np.linalg.norm(measurement[:2] - estimate.position[:2])
+        )
+        return association_distance <= association_radius
 
     def estimate(self) -> TargetEstimate | None:
         if self.particles is None or self.weights is None:

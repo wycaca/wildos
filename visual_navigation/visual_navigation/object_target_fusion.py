@@ -324,9 +324,14 @@ class ObjectTargetFusion(Node):
             self._timings["lidar"].add_seconds(time.perf_counter() - stage_started)
             if lidar_measurement is not None:
                 position, support = lidar_measurement
-                self._lidar_refined += 1
                 self._set_mask_stage("update_lidar", f"support={support}")
+                rejected_before = self.particle_filter.lidar_association_rejected
                 estimate = self.particle_filter.update_lidar(position, support)
+                if self.particle_filter.lidar_association_rejected > rejected_before:
+                    self._lidar_failures["visual_track_mismatch"] += 1
+                    self._set_mask_stage("reject_lidar", "visual_track_mismatch")
+                else:
+                    self._lidar_refined += 1
             elif failure_reason is not None:
                 self._lidar_failures[failure_reason] += 1
         else:
@@ -419,6 +424,7 @@ class ObjectTargetFusion(Node):
             f"有效权重{self.particle_filter.view_support:.2f}/"
             f"弱更新{self.particle_filter.weak_view_updates}/"
             f"重复丢弃{self.particle_filter.duplicate_views_rejected}, "
+            f"雷达视觉关联拒绝{self.particle_filter.lidar_association_rejected}, "
             "消息年龄="
             f"Mask平均{age_summaries['mask'].average_ms:.0f}/"
             f"95%上限{age_summaries['mask'].p95_ms:.0f}ms, "
