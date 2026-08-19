@@ -121,6 +121,10 @@ class ObjectTargetFusion(Node):
         self.lidar_buffer: deque[tuple[float, PointCloud2]] = deque(
             maxlen=_LIDAR_BUFFER_SIZE
         )
+        self._lidar_cache_key: tuple[int, int, str] | None = None
+        self._lidar_cache_points: np.ndarray | None = None
+        self._lidar_cache_world_points: np.ndarray | None = None
+        self._lidar_cache_hits = 0
         self._last_logged_state = ""
         self._latest_camera_origins: list[np.ndarray] = []
         self._latest_bearing_world: np.ndarray | None = None
@@ -143,7 +147,16 @@ class ObjectTargetFusion(Node):
         self._lidar_rate = EventRate()
         self._timings = {
             name: TimingWindow()
-            for name in ("decode", "vision", "lidar", "publish", "total")
+            for name in (
+                "decode",
+                "vision",
+                "lidar",
+                "lidar_decode",
+                "lidar_transform",
+                "lidar_project",
+                "publish",
+                "total",
+            )
         }
         self._message_ages = {
             name: TimingWindow()
@@ -226,11 +239,15 @@ class ObjectTargetFusion(Node):
         self._target_changed_stamp_sec = self.get_clock().now().nanoseconds * 1e-9
         self.particle_filter = TargetParticleFilter(self.particle_config)
         self.lidar_buffer.clear()
+        self._lidar_cache_key = None
+        self._lidar_cache_points = None
+        self._lidar_cache_world_points = None
         self._latest_camera_origins.clear()
         self._latest_bearing_world = None
         self._last_logged_state = ""
         self._first_event_stamps.clear()
-        self.marker_publisher.publish(Marker(action=Marker.DELETEALL))
+        if self.marker_publisher.get_subscription_count() > 0:
+            self.marker_publisher.publish(Marker(action=Marker.DELETEALL))
         self.get_logger().info(f"目标融合状态已重置, target={target!r}")
 
     def _on_completed(self, msg: Bool) -> None:
@@ -425,6 +442,7 @@ class ObjectTargetFusion(Node):
             f"弱更新{self.particle_filter.weak_view_updates}/"
             f"重复丢弃{self.particle_filter.duplicate_views_rejected}, "
             f"雷达视觉关联拒绝{self.particle_filter.lidar_association_rejected}, "
+            f"雷达缓存复用{self._lidar_cache_hits}次, "
             "消息年龄="
             f"Mask平均{age_summaries['mask'].average_ms:.0f}/"
             f"95%上限{age_summaries['mask'].p95_ms:.0f}ms, "
@@ -436,9 +454,13 @@ class ObjectTargetFusion(Node):
             "阶段平均耗时="
             f"Mask解析{summaries['decode'].average_ms:.0f}ms/"
             f"视觉融合{summaries['vision'].average_ms:.0f}ms/"
-            f"雷达投影{summaries['lidar'].average_ms:.0f}ms/"
+            f"雷达总计{summaries['lidar'].average_ms:.0f}ms/"
+            f"点云解码{summaries['lidar_decode'].average_ms:.0f}ms/"
+            f"坐标转换{summaries['lidar_transform'].average_ms:.0f}ms/"
+            f"雷达投影{summaries['lidar_project'].average_ms:.0f}ms/"
             f"结果发布{summaries['publish'].average_ms:.0f}ms"
         )
+        self._lidar_cache_hits = 0
 
     def _log_estimate_state(self, estimate: CoreTargetEstimate) -> None:
         if estimate.state == self._last_logged_state:
@@ -516,19 +538,22 @@ class ObjectTargetFusion(Node):
         lidar_msg: PointCloud2,
     ) -> tuple[tuple[np.ndarray, int] | None, str | None]:
         """联合三相机投影, 去地面后选择最近的连续前景簇"""
-        points = _xyz_points(lidar_msg)
+        points, world_points = self._cached_lidar_points(lidar_msg)
         if points.size == 0:
             self._record_lidar_counts()
             return None, "empty_cloud"
-        world_points = self._points_in_global_frame(points, lidar_msg)
         if world_points is None:
             self._record_lidar_counts(cloud=points.shape[0])
             return None, "tf_unavailable"
 
+        project_started = time.perf_counter()
         visible_union, mask_union = _projected_mask_support(
             world_points,
             observations,
             self.lidar_mask_dilation_pixels,
+        )
+        self._timings["lidar_project"].add_seconds(
+            time.perf_counter() - project_started
         )
 
         supported_points = world_points[mask_union]
@@ -564,6 +589,43 @@ class ObjectTargetFusion(Node):
         if measurement is None:
             return None, failure_reason
         return measurement, None
+
+    def _cached_lidar_points(
+        self,
+        lidar_msg: PointCloud2,
+    ) -> tuple[np.ndarray, np.ndarray | None]:
+        """Decode and transform one cloud once across masks sharing its identity"""
+        key = (
+            int(lidar_msg.header.stamp.sec),
+            int(lidar_msg.header.stamp.nanosec),
+            lidar_msg.header.frame_id,
+        )
+        if key != self._lidar_cache_key:
+            decode_started = time.perf_counter()
+            self._lidar_cache_points = _xyz_points(lidar_msg)
+            self._timings["lidar_decode"].add_seconds(
+                time.perf_counter() - decode_started
+            )
+            self._lidar_cache_key = key
+            self._lidar_cache_world_points = None
+        elif self._lidar_cache_world_points is not None:
+            self._lidar_cache_hits += 1
+            return self._lidar_cache_points, self._lidar_cache_world_points
+
+        if self._lidar_cache_points.size == 0:
+            self._lidar_cache_world_points = self._lidar_cache_points
+            return self._lidar_cache_points, self._lidar_cache_world_points
+        transform_started = time.perf_counter()
+        world_points = self._points_in_global_frame(
+            self._lidar_cache_points,
+            lidar_msg,
+        )
+        self._timings["lidar_transform"].add_seconds(
+            time.perf_counter() - transform_started
+        )
+        if world_points is not None:
+            self._lidar_cache_world_points = world_points
+        return self._lidar_cache_points, world_points
 
     def _record_lidar_counts(
         self,
@@ -646,6 +708,8 @@ class ObjectTargetFusion(Node):
 
     def _publish_markers(self, estimate: CoreTargetEstimate, stamp) -> None:
         """在同一 Marker 话题发布目标球和观测射线, 避免增加重复可视化话题"""
+        if self.marker_publisher.get_subscription_count() == 0:
+            return
         self.marker_publisher.publish(
             _target_marker(
                 estimate,
@@ -667,6 +731,8 @@ class ObjectTargetFusion(Node):
         )
 
     def _publish_particles(self, stamp) -> None:
+        if self.particle_publisher.get_subscription_count() == 0:
+            return
         particles = self.particle_filter.particles
         if particles is None:
             return

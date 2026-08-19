@@ -1,3 +1,5 @@
+from unittest.mock import Mock, patch
+
 import numpy as np
 from builtin_interfaces.msg import Time
 from sensor_msgs.msg import Image, PointField
@@ -110,6 +112,9 @@ def test_target_change_clears_old_fusion_state():
         def __init__(self):
             self.messages = []
 
+        def get_subscription_count(self):
+            return 1
+
         def publish(self, msg):
             self.messages.append(msg)
 
@@ -175,6 +180,63 @@ def test_xyz_points_accepts_mixed_pointcloud_field_types():
     assert points.dtype == np.float64
     assert points.shape == (1, 3)
     assert np.allclose(points[0], [1.0, 2.0, 3.0])
+
+
+def test_lidar_cache_reuses_only_matching_stamp_and_frame():
+    fusion = object.__new__(ObjectTargetFusion)
+    fusion._lidar_cache_key = None
+    fusion._lidar_cache_points = None
+    fusion._lidar_cache_world_points = None
+    fusion._lidar_cache_hits = 0
+    fusion._timings = {
+        "lidar_decode": TimingWindow(),
+        "lidar_transform": TimingWindow(),
+    }
+    transform = Mock(side_effect=lambda points, _: points + 1.0)
+    fusion._points_in_global_frame = transform
+    cloud = point_cloud2.create_cloud_xyz32(
+        Header(frame_id="lidar", stamp=Time(sec=10)),
+        [(1.0, 2.0, 3.0)],
+    )
+
+    with patch(
+        "visual_navigation.object_target_fusion._xyz_points",
+        wraps=_xyz_points,
+    ) as decode:
+        first = fusion._cached_lidar_points(cloud)
+        second = fusion._cached_lidar_points(cloud)
+        cloud.header.frame_id = "lidar_reframed"
+        fusion._cached_lidar_points(cloud)
+        cloud.header.stamp.sec = 11
+        fusion._cached_lidar_points(cloud)
+
+        assert decode.call_count == 3
+    assert np.array_equal(first[1], second[1])
+    assert transform.call_count == 3
+    assert fusion._lidar_cache_hits == 1
+
+
+def test_debug_messages_are_not_built_without_subscribers():
+    class Publisher:
+        def get_subscription_count(self):
+            return 0
+
+        def publish(self, msg):
+            raise AssertionError("debug publish must be skipped")
+
+    fusion = object.__new__(ObjectTargetFusion)
+    fusion.marker_publisher = Publisher()
+    fusion.particle_publisher = Publisher()
+    fusion.particle_filter = type("Filter", (), {"particles": np.ones((2, 3))})()
+    with patch("visual_navigation.object_target_fusion._target_marker") as target_marker:
+        with patch(
+            "visual_navigation.object_target_fusion.point_cloud2.create_cloud"
+        ) as create_cloud:
+            fusion._publish_markers(_estimate(True, np.eye(3)), Time())
+            fusion._publish_particles(Time())
+
+            target_marker.assert_not_called()
+            create_cloud.assert_not_called()
 
 
 def _estimate(

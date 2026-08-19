@@ -294,6 +294,14 @@ WildOS 默认在 TF 外推失败时使用 latest TF, 与测量时刻 TF 契约�
 4. marker 和 particle topic 没有订阅者时不构造消息
 5. 分别记录 decode、transform、project 和 publish 耗时
 
+当前实现说明:
+
+- 缓存键使用点云 `stamp.sec`、`stamp.nanosec` 和 `frame_id`, 只保存最近一帧
+- TF 暂不可用时保留解码结果但不缓存失败, 后续 Mask 允许重试 TF
+- marker 和 particle topic 无订阅者时直接返回, 不构造调试消息
+- 软件验证通过: `test_object_target_fusion.py` 20 passed
+- 状态保持待验证, 还需在目标平台记录缓存命中率和各阶段耗时
+
 验收条件:
 
 - 同一 LiDAR stamp 只执行一次点云解码和世界坐标转换
