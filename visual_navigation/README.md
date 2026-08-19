@@ -9,6 +9,7 @@ ROS 2 package for the current WildOS visual pipeline, object-search control, res
 | `visual_navigation/wildos/nav.py` | ExploRFM inference, graph scoring, confirmed object masks, and reached evidence |
 | `visual_navigation/object_target_fusion.py` | ROS adapter for recursive multi-view target fusion |
 | `visual_navigation/object_search_goal_mux.py` | Exploration goal, stable target goal, and completion ownership |
+| `visual_navigation/object_search_goal_policy.py` | Pure priority policy for completion, target following, and exploration fallback |
 | `visual_navigation/object_detection_filter.py` | Connected-component and temporal detection filtering |
 | `visual_navigation/object_reached_evidence.py` | Near-range visual completion evidence |
 | `visual_navigation/utils/object_search_utils.py` | `ObjectMaskWithTf` construction and query localization |

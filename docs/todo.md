@@ -55,7 +55,7 @@
 | PERF-02 | 性能 | 导航图链路 | 避免重复复制、重建和规划相同图 | 待验证 |
 | PERF-03 | 性能 | 目标融合 | 复用同一帧 LiDAR 处理结果 | 已批准 |
 | PERF-04 | 性能 | WildOS 推理 | 使用 inference mode 并验证收益 | 已批准 |
-| ARCH-01 | 架构 | Goal Mux | 拆分 ROS adapter 和纯状态策略 | 已批准 |
+| ARCH-01 | 架构 | Goal Mux | 拆分 ROS adapter 和纯状态策略 | 待验证 |
 | ARCH-02 | 架构 | Goal Mux 与 Planner | 用强类型消息替代字符串协议 | 已批准 |
 | MNT-01 | 可维护性 | ROS package | 补齐 package 依赖 | 已批准 |
 | MNT-02 | 可维护性 | 测试和 CI | 建立统一测试入口 | 已批准 |
@@ -400,6 +400,14 @@ Planner 检测到 graph 或 odom 过期后仍继续规划, freshness 当前只�
 | `object_search_goal_policy.py` | 搜索状态、证据时效、状态转换、完成门控和目标选择 |
 
 第一阶段不继续拆分 goal builder、timer manager 或通用状态机框架
+
+当前实现说明:
+
+- 新增不依赖 `rclpy` 的 `ObjectSearchGoalPolicy`, 统一完成锁存、完成触发、目标质量、目标过期和探索回退优先级
+- ROS adapter 继续拥有消息缓存、goal 构造和唯一状态字段, policy 不保存重复状态
+- 当前时间和目标年龄由 adapter 计算后显式传给 policy
+- 纯 policy 测试 4 passed, 原 Goal Mux 行为测试 31 passed
+- 第一阶段不搬运 goal builder 和观察动作实现, 避免仅为缩短文件制造代理层
 
 实施步骤:
 

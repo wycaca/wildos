@@ -15,6 +15,11 @@ from visual_navigation.object_search_types import (
     coarse_target_evidence_ready,
     normalize_object_search_target,
 )
+from visual_navigation.object_search_goal_policy import (
+    GoalMode,
+    GoalSelectionInput,
+    ObjectSearchGoalPolicy,
+)
 
 
 _TARGET_CHANGE_REACHED_GUARD_SEC = 1.0
@@ -354,6 +359,7 @@ class ObjectSearchGoalMux(Node):
         self.final_approach_goal: PoseStamped | None = None
         self.final_reposition_goal: PoseStamped | None = None
         self.final_reposition_attempts = 0
+        self.policy = ObjectSearchGoalPolicy()
 
         self.goal_pub = self.create_publisher(PoseStamped, self.output_goal_topic, 10)
         self.status_pub = self.create_publisher(String, self.status_topic, 10)
@@ -666,33 +672,36 @@ class ObjectSearchGoalMux(Node):
     def _select_goal(self) -> tuple[str, PoseStamped | None]:
         """两视角粗目标出现前持续使用固定初始探索目标"""
         now = self.get_clock().now()
-        if self._reached_latch_is_active():
-            if self.reached_hold_goal is None and self.latest_odom is None:
-                return ObjectSearchState.WAIT_FOR_ODOM, None
+        target_age = self._age_seconds(now, self.latest_target_estimate_time)
+        mode = self.policy.select(
+            GoalSelectionInput(
+                reached_latched=self._reached_latch_is_active(),
+                reached_hold_available=self.reached_hold_goal is not None,
+                odom_available=self.latest_odom is not None,
+                completion_ready=self._object_reached_is_active(now),
+                metric_target_available=self.metric_target is not None,
+                metric_target_stable=self.metric_target_stable,
+                metric_target_age_sec=target_age,
+                coarse_target_timeout_sec=self.coarse_target_timeout_sec,
+            )
+        )
+        if mode == GoalMode.WAIT_FOR_ODOM:
+            return ObjectSearchState.WAIT_FOR_ODOM, None
+        if mode == GoalMode.HOLD_REACHED:
             return ObjectSearchState.TARGET_REACHED_VIEWPOINT, self._build_hold_goal(now)
-
-        if self.latest_odom is not None and self._object_reached_is_active(now):
+        if mode == GoalMode.ACTIVATE_REACHED:
             self._activate_reached_latch(now)
             return ObjectSearchState.TARGET_REACHED_VIEWPOINT, self._build_hold_goal(now)
-
-        if self.metric_target is not None:
-            target_age = self._age_seconds(now, self.latest_target_estimate_time)
-            if (
-                not self.metric_target_stable
-                and target_age > self.coarse_target_timeout_sec
-            ):
-                self.get_logger().info(
-                    "视觉粗目标已过期, 恢复原探索分支, "
-                    f"age={target_age:.2f}s"
-                )
-                self._clear_metric_target()
-            elif self.metric_target_stable:
-                return self._select_final_target_goal(now)
-            else:
-                return self._select_coarse_target_goal(now)
-
-        if self.latest_odom is None:
-            return ObjectSearchState.WAIT_FOR_ODOM, None
+        if mode == GoalMode.FOLLOW_STABLE_TARGET:
+            return self._select_final_target_goal(now)
+        if mode == GoalMode.FOLLOW_COARSE_TARGET:
+            return self._select_coarse_target_goal(now)
+        if mode == GoalMode.EXPIRE_COARSE_TARGET:
+            self.get_logger().info(
+                "视觉粗目标已过期, 恢复原探索分支, "
+                f"age={target_age:.2f}s"
+            )
+            self._clear_metric_target()
 
         pending_state, pending_goal = self._select_pending_target_goal(now)
         if pending_state is not None:
