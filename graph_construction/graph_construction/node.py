@@ -51,8 +51,6 @@ _GRID_MAP_TRAVERSABILITY_LAYER = "traversability"
 _GRID_MAP_ELEVATION_LAYER = "elevation"
 _GRID_MAP_VARIANCE_LAYER = "variance"
 _GRID_MAP_INITIALIZER_VARIANCE = 10.0
-_GRID_MAP_NORMALIZE_LOW_QUANTILE = 0.05
-_GRID_MAP_NORMALIZE_HIGH_QUANTILE = 0.95
 _GRID_MAP_Z_OFFSET = 0.08
 _GRID_MAP_MAJORITY_FILL_ITERATIONS = 1
 _GRID_MAP_MAJORITY_FILL_MIN_NEIGHBORS = 6
@@ -118,6 +116,7 @@ class GraphConstructionNode(Node):
         self._stale_grid_messages = 0
         self._stale_odom_messages = 0
         self._last_input_warning = 0.0
+        self._last_grid_range_warning = 0.0
         self._logged_first_grid = False
         self._logged_first_odom = False
         self._logged_first_publish = False
@@ -433,15 +432,12 @@ class GraphConstructionNode(Node):
         GridMap 的 rolling buffer 已由 grid_adapter 解包, 这里固定启用经过验证的
         拓扑后处理和标准轴约定, 避免重新开放会破坏坐标一致性的历史调试开关
         """
-        return classify_grid_map(
+        classified_grid = classify_grid_map(
             grid_msg,
             traversability_layer=_GRID_MAP_TRAVERSABILITY_LAYER,
             elevation_layer=_GRID_MAP_ELEVATION_LAYER,
             free_threshold=self.config["grid_map_free_threshold"],
             obstacle_threshold=self.config["grid_map_obstacle_threshold"],
-            normalize_traversability=True,
-            normalize_low_quantile=_GRID_MAP_NORMALIZE_LOW_QUANTILE,
-            normalize_high_quantile=_GRID_MAP_NORMALIZE_HIGH_QUANTILE,
             z_offset=_GRID_MAP_Z_OFFSET,
             min_free_component_cells=self.config["grid_map_min_free_component_cells"],
             fill_hole_max_cells=self.config["grid_map_fill_hole_max_cells"],
@@ -453,6 +449,21 @@ class GraphConstructionNode(Node):
             fill_elevation_radius_cells=self.config["grid_map_fill_elevation_radius_cells"],
             variance_layer=_GRID_MAP_VARIANCE_LAYER,
             initializer_variance=_GRID_MAP_INITIALIZER_VARIANCE,
+        )
+        out_of_range = classified_grid.stats.get("out_of_range", 0)
+        if out_of_range:
+            self._warn_traversability_range(out_of_range)
+        return classified_grid
+
+    def _warn_traversability_range(self, out_of_range: int) -> None:
+        """低频报告不符合固定评分契约的 traversability cell"""
+        now = time.monotonic()
+        if now - self._last_grid_range_warning < 30.0:
+            return
+        self._last_grid_range_warning = now
+        self.get_logger().warn(
+            "traversability 超出固定范围 [0, 1], "
+            f"已将 {out_of_range} 个 cell 分类为 unknown"
         )
 
     def _graph_header(self, input_header, fallback_frame: str):
@@ -482,8 +493,10 @@ def _resolve_config(config: Mapping[str, Any]) -> Dict[str, Any]:
         raise ValueError("viz_publish_rate_hz must be greater than 0")
     if float(resolved["max_grid_odom_time_delta_sec"]) <= 0.0:
         raise ValueError("max_grid_odom_time_delta_sec must be greater than 0")
-    if float(resolved["grid_map_obstacle_threshold"]) > float(resolved["grid_map_free_threshold"]):
-        raise ValueError("grid_map_obstacle_threshold must not exceed grid_map_free_threshold")
+    obstacle_threshold = float(resolved["grid_map_obstacle_threshold"])
+    free_threshold = float(resolved["grid_map_free_threshold"])
+    if not 0.0 <= obstacle_threshold <= free_threshold <= 1.0:
+        raise ValueError("grid map thresholds must satisfy 0 <= obstacle <= free <= 1")
     return resolved
 
 
@@ -506,6 +519,7 @@ def _format_grid_stats(stats: Any) -> str:
         f", 有效={stats.get('valid', 0)}, 原始free={stats.get('raw_free', 0)}, "
         f"原始obstacle={stats.get('raw_obstacle', 0)}, 原始unknown={stats.get('raw_unknown', 0)}, "
         f"待评分先验={stats.get('initializer_prior', 0)}, "
+        f"越界评分={stats.get('out_of_range', 0)}, "
         f"free={stats.get('free', 0)}, obstacle={stats.get('obstacle', 0)}, "
         f"unknown={stats.get('unknown', 0)}, "
         f"脚下盲区修补={stats.get('robot_blind_zone_filled', 0)}, "

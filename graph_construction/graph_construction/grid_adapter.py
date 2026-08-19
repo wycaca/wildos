@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from math import atan2
-from typing import Set, Tuple
+from typing import Tuple
 
 from grid_map_msgs.msg import GridMap
 import numpy as np
@@ -11,15 +11,16 @@ from std_msgs.msg import Float32MultiArray
 from graph_construction.grid_types import ClassifiedGrid, GridIndex
 
 
+_TRAVERSABILITY_MIN = 0.0
+_TRAVERSABILITY_MAX = 1.0
+
+
 def classify_grid_map(
     msg: GridMap,
     traversability_layer: str,
     elevation_layer: str,
     free_threshold: float,
     obstacle_threshold: float,
-    normalize_traversability: bool,
-    normalize_low_quantile: float,
-    normalize_high_quantile: float,
     z_offset: float,
     min_free_component_cells: int,
     fill_hole_max_cells: int,
@@ -43,6 +44,11 @@ def classify_grid_map(
         elevation = None
         valid = np.isfinite(trav)
 
+    out_of_range = valid & (
+        (trav < _TRAVERSABILITY_MIN) | (trav > _TRAVERSABILITY_MAX)
+    )
+    valid &= ~out_of_range
+
     initializer_prior = np.zeros(trav.shape, dtype=bool)
     if (
         variance_layer
@@ -61,13 +67,6 @@ def classify_grid_map(
         )
         valid &= ~initializer_prior
 
-    trav = normalize_grid_map_layer(
-        trav,
-        valid,
-        enabled=normalize_traversability,
-        low_quantile=normalize_low_quantile,
-        high_quantile=normalize_high_quantile,
-    )
     free = valid & (trav >= free_threshold)
     obstacle = valid & (trav <= obstacle_threshold)
     unknown = ~valid | (valid & ~(free | obstacle))
@@ -114,6 +113,7 @@ def classify_grid_map(
             "raw_obstacle": raw_obstacle_count,
             "raw_unknown": raw_unknown_count,
             "initializer_prior": int(np.count_nonzero(initializer_prior)),
+            "out_of_range": int(np.count_nonzero(out_of_range)),
             "free": int(np.count_nonzero(free)),
             "obstacle": int(np.count_nonzero(obstacle)),
             "unknown": int(np.count_nonzero(unknown)),
@@ -143,18 +143,19 @@ def postprocess_classification(
     obstacle_value = 2
     unknown_value = 0
     labels = np.full(free.shape, unknown_value, dtype=np.int8)
-    labels[obstacle] = obstacle_value
     labels[free] = free_value
+    labels[obstacle] = obstacle_value
 
     labels = _majority_fill_free(
         labels,
         free_value=free_value,
+        target_value=unknown_value,
         iterations=max(0, int(majority_fill_iterations)),
         min_neighbors=max(1, int(majority_fill_min_neighbors)),
     )
     labels = _fill_enclosed_regions(
         labels,
-        target_values={unknown_value, obstacle_value},
+        target_value=unknown_value,
         free_value=free_value,
         max_cells=max(0, int(fill_hole_max_cells)),
         min_free_neighbor_ratio=min(max(float(fill_hole_min_free_neighbor_ratio), 0.0), 1.0),
@@ -167,35 +168,6 @@ def postprocess_classification(
     )
 
     return labels == free_value, labels == obstacle_value, labels == unknown_value
-
-
-def normalize_grid_map_layer(
-    layer: np.ndarray,
-    valid: np.ndarray,
-    enabled: bool,
-    low_quantile: float,
-    high_quantile: float,
-) -> np.ndarray:
-    """上游 traversability 数值范围过窄时拉伸评分"""
-    if not enabled:
-        return layer
-
-    finite_values = layer[valid & np.isfinite(layer)]
-    if finite_values.size < 2:
-        return layer
-
-    low_q = min(max(float(low_quantile), 0.0), 1.0)
-    high_q = min(max(float(high_quantile), 0.0), 1.0)
-    if high_q <= low_q:
-        return layer
-
-    low = float(np.quantile(finite_values, low_q))
-    high = float(np.quantile(finite_values, high_q))
-    if not np.isfinite(low) or not np.isfinite(high) or high <= low:
-        return layer
-
-    normalized = (layer - low) / (high - low)
-    return np.clip(normalized, 0.0, 1.0).astype(np.float32)
 
 
 def fill_elevation_for_free_cells(
@@ -232,6 +204,7 @@ def fill_elevation_for_free_cells(
 def _majority_fill_free(
     grid: np.ndarray,
     free_value: int,
+    target_value: int,
     iterations: int,
     min_neighbors: int,
 ) -> np.ndarray:
@@ -246,7 +219,7 @@ def _majority_fill_free(
             src_x, dst_x = _shift_slices(free.shape[1], dx)
             shifted[dst_y, dst_x] = free[src_y, src_x]
             neighbor_count += shifted.astype(np.uint8)
-        promote = (processed != free_value) & (neighbor_count >= min_neighbors)
+        promote = (processed == target_value) & (neighbor_count >= min_neighbors)
         if not np.any(promote):
             break
         processed[promote] = free_value
@@ -255,7 +228,7 @@ def _majority_fill_free(
 
 def _fill_enclosed_regions(
     grid: np.ndarray,
-    target_values: Set[int],
+    target_value: int,
     free_value: int,
     max_cells: int,
     min_free_neighbor_ratio: float,
@@ -265,7 +238,7 @@ def _fill_enclosed_regions(
         return grid
 
     processed = grid.copy()
-    target = np.isin(processed, list(target_values))
+    target = processed == target_value
     component_labels, component_count = ndimage.label(
         target,
         structure=np.ones((3, 3), dtype=np.uint8),

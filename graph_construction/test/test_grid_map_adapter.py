@@ -18,7 +18,11 @@ except ImportError:
     sys.modules.setdefault("std_msgs.msg", types.ModuleType("std_msgs.msg"))
     sys.modules["std_msgs.msg"].Float32MultiArray = object
 
-from graph_construction.grid_adapter import classify_grid_map, decode_grid_map_layer
+from graph_construction.grid_adapter import (
+    classify_grid_map,
+    decode_grid_map_layer,
+    postprocess_classification,
+)
 
 
 def test_grid_map_decode_uses_data_offset_and_rolling_indices():
@@ -55,9 +59,6 @@ def test_grid_map_coordinate_round_trip_without_yaw():
         elevation_layer="elevation",
         free_threshold=0.5,
         obstacle_threshold=0.1,
-        normalize_traversability=False,
-        normalize_low_quantile=0.05,
-        normalize_high_quantile=0.95,
         z_offset=0.0,
         min_free_component_cells=1,
         fill_hole_max_cells=0,
@@ -80,9 +81,6 @@ def test_grid_map_coordinate_round_trip_with_yaw():
         elevation_layer="elevation",
         free_threshold=0.5,
         obstacle_threshold=0.1,
-        normalize_traversability=False,
-        normalize_low_quantile=0.05,
-        normalize_high_quantile=0.95,
         z_offset=0.0,
         min_free_component_cells=1,
         fill_hole_max_cells=0,
@@ -109,9 +107,6 @@ def test_grid_map_postprocess_fills_elevation_for_small_free_hole():
         elevation_layer="elevation",
         free_threshold=0.5,
         obstacle_threshold=0.1,
-        normalize_traversability=False,
-        normalize_low_quantile=0.05,
-        normalize_high_quantile=0.95,
         z_offset=0.08,
         min_free_component_cells=1,
         fill_hole_max_cells=4,
@@ -144,9 +139,6 @@ def test_grid_map_treats_aged_initializer_cells_as_unknown():
         elevation_layer="elevation",
         free_threshold=0.5,
         obstacle_threshold=0.1,
-        normalize_traversability=False,
-        normalize_low_quantile=0.05,
-        normalize_high_quantile=0.95,
         z_offset=0.0,
         min_free_component_cells=1,
         fill_hole_max_cells=0,
@@ -161,6 +153,115 @@ def test_grid_map_treats_aged_initializer_cells_as_unknown():
     assert grid.obstacle[4, 4]
     assert np.count_nonzero(grid.unknown) == 24
     assert grid.stats["initializer_prior"] == 24
+
+
+def test_majority_fill_only_promotes_unknown_cells():
+    free = np.ones((5, 5), dtype=bool)
+    obstacle = np.zeros((5, 5), dtype=bool)
+    unknown = np.zeros((5, 5), dtype=bool)
+    obstacle[2, 2] = True
+
+    processed_free, processed_obstacle, _ = postprocess_classification(
+        free,
+        obstacle,
+        unknown,
+        min_free_component_cells=1,
+        fill_hole_max_cells=0,
+        fill_hole_min_free_neighbor_ratio=0.0,
+        majority_fill_iterations=1,
+        majority_fill_min_neighbors=6,
+    )
+
+    assert processed_obstacle[2, 2]
+    assert not processed_free[2, 2]
+
+
+def test_hole_fill_only_promotes_unknown_regions():
+    free = np.ones((5, 7), dtype=bool)
+    obstacle = np.zeros((5, 7), dtype=bool)
+    unknown = np.zeros((5, 7), dtype=bool)
+    obstacle[1:4, 1:3] = True
+    unknown[2, 4] = True
+    free[obstacle] = False
+    free[2, 4] = False
+
+    processed_free, processed_obstacle, processed_unknown = postprocess_classification(
+        free,
+        obstacle,
+        unknown,
+        min_free_component_cells=1,
+        fill_hole_max_cells=6,
+        fill_hole_min_free_neighbor_ratio=1.0,
+        majority_fill_iterations=0,
+        majority_fill_min_neighbors=1,
+    )
+
+    assert np.all(processed_obstacle[1:4, 1:3])
+    assert not np.any(processed_free[1:4, 1:3])
+    assert processed_free[2, 4]
+    assert not processed_unknown[2, 4]
+
+
+def test_grid_map_uses_fixed_thresholds_and_rejects_out_of_range_scores():
+    traversability = np.array(
+        [
+            [-0.1, 0.0, 0.05],
+            [0.1, 0.19, 0.2],
+            [0.8, 1.0, 1.1],
+        ],
+        dtype=np.float32,
+    )
+    msg = _grid_map_message(traversability)
+
+    grid = classify_grid_map(
+        msg,
+        traversability_layer="traversability",
+        elevation_layer="elevation",
+        free_threshold=0.2,
+        obstacle_threshold=0.05,
+        z_offset=0.0,
+        min_free_component_cells=1,
+        fill_hole_max_cells=0,
+        fill_hole_min_free_neighbor_ratio=0.0,
+        majority_fill_iterations=0,
+        majority_fill_min_neighbors=1,
+    )
+
+    assert grid.unknown[0, 0]
+    assert grid.obstacle[0, 1]
+    assert grid.obstacle[0, 2]
+    assert grid.unknown[1, 0]
+    assert grid.unknown[1, 1]
+    assert grid.free[1, 2]
+    assert grid.free[2, 0]
+    assert grid.free[2, 1]
+    assert grid.unknown[2, 2]
+    assert grid.stats["out_of_range"] == 2
+
+
+def test_fixed_cell_classification_does_not_follow_frame_distribution():
+    low_background = np.zeros((3, 3), dtype=np.float32)
+    high_background = np.ones((3, 3), dtype=np.float32)
+    low_background[1, 1] = 0.15
+    high_background[1, 1] = 0.15
+
+    def classify(layer):
+        return classify_grid_map(
+            _grid_map_message(layer),
+            traversability_layer="traversability",
+            elevation_layer="elevation",
+            free_threshold=0.2,
+            obstacle_threshold=0.05,
+            z_offset=0.0,
+            min_free_component_cells=1,
+            fill_hole_max_cells=0,
+            fill_hole_min_free_neighbor_ratio=0.0,
+            majority_fill_iterations=0,
+            majority_fill_min_neighbors=1,
+        )
+
+    assert classify(low_background).unknown[1, 1]
+    assert classify(high_background).unknown[1, 1]
 
 
 def _assert_round_trip(grid):

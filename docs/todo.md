@@ -42,8 +42,8 @@
 
 | ID | 优先级 | 模块 | 修改内容 | 状态 |
 | --- | --- | --- | --- | --- |
-| GC-01 | P0 | `graph_construction` | obstacle 永远不能被后处理改为 free | 已批准 |
-| GC-02 | P1 | `graph_construction` | 删除按帧分位数决定安全分类 | 已批准 |
+| GC-01 | P0 | `graph_construction` | obstacle 永远不能被后处理改为 free | 待验证 |
+| GC-02 | P1 | `graph_construction` | 删除按帧分位数决定安全分类 | 待验证 |
 | LOC-01 | P1 | D-LIO adapter 和 guard | 为健康状态增加心跳和超时租约 | 已批准 |
 | VIS-01 | P1 | WildOS TF | 实机禁止 latest TF 回退 | 已批准 |
 | FUS-01 | P1 | `triangulation3d` | LiDAR 锁定前必须关联视觉轨迹 | 已批准 |
