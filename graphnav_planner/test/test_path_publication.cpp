@@ -1,4 +1,5 @@
 #include "planner_test_utils.hpp"
+#include "graphnav_planner/object_search_mode.hpp"
 
 namespace graphnav_planner
 {
@@ -6,6 +7,33 @@ namespace
 {
 
 using namespace test;
+
+TEST(ObjectSearchMode, ClassifiesEveryTypedState)
+{
+  using Status = object_search_msgs::msg::ObjectSearchStatus;
+  const std::vector<uint8_t> states = {
+    Status::WAIT_FOR_ODOM,
+    Status::STARTUP_OBSERVATION,
+    Status::TARGET_PENDING_OBSERVATION,
+    Status::TARGET_PENDING_REPOSITION,
+    Status::TARGET_APPROACH_COARSE,
+    Status::TARGET_OBSERVATION,
+    Status::TARGET_APPROACH_METRIC,
+    Status::TARGET_FINAL_OBSERVATION,
+    Status::TARGET_FINAL_REPOSITION,
+    Status::TARGET_REACHED_VIEWPOINT,
+    Status::SEARCHING_WITH_INITIAL_GOAL,
+  };
+  for (const auto state : states)
+  {
+    EXPECT_TRUE(object_search_mode(state).has_value());
+  }
+  EXPECT_FALSE(object_search_mode(Status::UNKNOWN).has_value());
+  EXPECT_TRUE(
+    object_search_mode(Status::SEARCHING_WITH_INITIAL_GOAL)->directional_exploration);
+  EXPECT_TRUE(object_search_mode(Status::TARGET_OBSERVATION)->observation);
+  EXPECT_TRUE(object_search_mode(Status::TARGET_APPROACH_METRIC)->target_override);
+}
 
 TEST(CommittedBranch, SuppressesRepeatedPublicationForSameFrontier)
 {

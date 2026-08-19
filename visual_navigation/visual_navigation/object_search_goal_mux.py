@@ -8,7 +8,7 @@ from nav_msgs.msg import Odometry
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from std_msgs.msg import Bool, String
-from object_search_msgs.msg import TargetEstimate
+from object_search_msgs.msg import ObjectSearchStatus, TargetEstimate
 
 from visual_navigation.object_search_types import (
     ObjectSearchState,
@@ -33,6 +33,7 @@ class ObjectSearchGoalMux(Node):
 
         self.declare_parameter("output_goal_topic", "/spot1/graphnav_goal_pose")
         self.declare_parameter("status_topic", "/spot1/object_search_status")
+        self.declare_parameter("typed_status_topic", "/spot1/object_search_status_v2")
         self.declare_parameter("object_target_estimate_topic", "/spot1/object_target_estimate")
         self.declare_parameter("object_reached_topic", "/spot1/object_search_reached")
         self.declare_parameter("completion_topic", "/spot1/object_search_completed")
@@ -100,6 +101,7 @@ class ObjectSearchGoalMux(Node):
 
         self.output_goal_topic = self._param_str("output_goal_topic")
         self.status_topic = self._param_str("status_topic")
+        self.typed_status_topic = self._param_str("typed_status_topic")
         self.object_target_estimate_topic = self._param_str("object_target_estimate_topic")
         self.object_reached_topic = self._param_str("object_reached_topic")
         self.completion_topic = self._param_str("completion_topic")
@@ -363,6 +365,11 @@ class ObjectSearchGoalMux(Node):
 
         self.goal_pub = self.create_publisher(PoseStamped, self.output_goal_topic, 10)
         self.status_pub = self.create_publisher(String, self.status_topic, 10)
+        self.typed_status_pub = self.create_publisher(
+            ObjectSearchStatus,
+            self.typed_status_topic,
+            10,
+        )
         self.completion_pub = self.create_publisher(Bool, self.completion_topic, 10)
         self.metric_target_sub = self.create_subscription(
             TargetEstimate,
@@ -1579,8 +1586,22 @@ class ObjectSearchGoalMux(Node):
         return all(math.isfinite(value) for value in values)
 
     def _publish_status(self, state: str, goal: PoseStamped | None) -> None:
+        now = self.get_clock().now()
+        typed_status = ObjectSearchStatus()
+        typed_status.header.stamp = now.to_msg()
+        typed_status.header.frame_id = goal.header.frame_id if goal else self.frame_id
+        typed_status.state = _object_search_state_code(state)
+        typed_status.pending_protection = (
+            state in {
+                ObjectSearchState.SEARCHING_WITH_INITIAL_GOAL,
+                ObjectSearchState.TARGET_PENDING_OBSERVATION,
+                ObjectSearchState.TARGET_PENDING_REPOSITION,
+            }
+            and self._pending_evidence_protection_active(now)
+        )
+        self.typed_status_pub.publish(typed_status)
         status = String()
-        status.data = self._status_text(state, goal)
+        status.data = self._status_text(state, goal, now)
         self.status_pub.publish(status)
         if state == self._last_state:
             return
@@ -1597,7 +1618,7 @@ class ObjectSearchGoalMux(Node):
             f"{goal.pose.position.z:.2f})"
         )
 
-    def _status_text(self, state: str, goal: PoseStamped | None) -> str:
+    def _status_text(self, state: str, goal: PoseStamped | None, now=None) -> str:
         if goal is None:
             return f"state={state}"
         parts = [
@@ -1613,7 +1634,7 @@ class ObjectSearchGoalMux(Node):
                 ObjectSearchState.TARGET_PENDING_OBSERVATION,
                 ObjectSearchState.TARGET_PENDING_REPOSITION,
             }
-            and self._pending_evidence_protection_active(self.get_clock().now())
+            and self._pending_evidence_protection_active(now or self.get_clock().now())
         ):
             parts.append("pending_protection=true")
         return ", ".join(parts)
@@ -1682,6 +1703,22 @@ def _object_search_state_name(state: str) -> str:
             "目标到达观察点(TARGET_REACHED_VIEWPOINT)"
         ),
     }.get(state, f"未知状态({state})")
+
+
+def _object_search_state_code(state: str) -> int:
+    return {
+        ObjectSearchState.WAIT_FOR_ODOM: ObjectSearchStatus.WAIT_FOR_ODOM,
+        ObjectSearchState.STARTUP_OBSERVATION: ObjectSearchStatus.STARTUP_OBSERVATION,
+        ObjectSearchState.TARGET_PENDING_OBSERVATION: ObjectSearchStatus.TARGET_PENDING_OBSERVATION,
+        ObjectSearchState.TARGET_PENDING_REPOSITION: ObjectSearchStatus.TARGET_PENDING_REPOSITION,
+        ObjectSearchState.TARGET_APPROACH_COARSE: ObjectSearchStatus.TARGET_APPROACH_COARSE,
+        ObjectSearchState.TARGET_OBSERVATION: ObjectSearchStatus.TARGET_OBSERVATION,
+        ObjectSearchState.TARGET_APPROACH_METRIC: ObjectSearchStatus.TARGET_APPROACH_METRIC,
+        ObjectSearchState.TARGET_FINAL_OBSERVATION: ObjectSearchStatus.TARGET_FINAL_OBSERVATION,
+        ObjectSearchState.TARGET_FINAL_REPOSITION: ObjectSearchStatus.TARGET_FINAL_REPOSITION,
+        ObjectSearchState.TARGET_REACHED_VIEWPOINT: ObjectSearchStatus.TARGET_REACHED_VIEWPOINT,
+        ObjectSearchState.SEARCHING_WITH_INITIAL_GOAL: ObjectSearchStatus.SEARCHING_WITH_INITIAL_GOAL,
+    }.get(state, ObjectSearchStatus.UNKNOWN)
 
 
 def _normalize_angle(angle: float) -> float:

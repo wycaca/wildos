@@ -7,9 +7,12 @@ import rclpy
 from rclpy.duration import Duration
 from std_msgs.msg import Bool, String
 from graphnav_msgs.msg import NavigationGraph, Node, NodeTraversabilityProperties
-from object_search_msgs.msg import TargetEstimate
+from object_search_msgs.msg import ObjectSearchStatus, TargetEstimate
 
-from visual_navigation.object_search_goal_mux import ObjectSearchGoalMux
+from visual_navigation.object_search_goal_mux import (
+    ObjectSearchGoalMux,
+    _object_search_state_code,
+)
 from visual_navigation.object_search_types import ObjectSearchState
 
 
@@ -114,6 +117,19 @@ def _enable_test_startup(node: ObjectSearchGoalMux) -> None:
     node.startup_min_scored_graph_frames = 2
     node.startup_scan_trigger_frames = 3
     node.startup_scan_hold_sec = 0.0
+
+
+def test_all_goal_mux_states_have_unique_typed_codes():
+    states = [
+        value
+        for name, value in vars(ObjectSearchState).items()
+        if name.isupper()
+    ]
+    codes = [_object_search_state_code(state) for state in states]
+
+    assert len(codes) == len(set(codes))
+    assert ObjectSearchStatus.UNKNOWN not in codes
+    assert _object_search_state_code("INVALID") == ObjectSearchStatus.UNKNOWN
 
 
 def test_initial_coarse_goal_is_computed_once(mux_node):

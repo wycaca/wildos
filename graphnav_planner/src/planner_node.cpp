@@ -7,8 +7,8 @@
 #include <visualization_msgs/msg/marker_array.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <graphnav_msgs/msg/navigation_graph.hpp>
+#include <object_search_msgs/msg/object_search_status.hpp>
 #include <std_msgs/msg/header.hpp>
-#include <std_msgs/msg/string.hpp>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -18,6 +18,7 @@
 #include <optional>
 #include <stdexcept>
 #include <vector>
+#include "graphnav_planner/object_search_mode.hpp"
 #include "graphnav_planner/planner.hpp"
 
 namespace graphnav_planner
@@ -191,8 +192,10 @@ public:
           this->goal_pose_ = msg;
           this->plan_to_goal();
         });
-    object_search_status_sub_ = this->create_subscription<std_msgs::msg::String>(
-        "~/object_search_status", 10, [this](const std_msgs::msg::String::ConstSharedPtr msg) {
+    object_search_status_sub_ =
+      this->create_subscription<object_search_msgs::msg::ObjectSearchStatus>(
+        "~/object_search_status", 10,
+        [this](const object_search_msgs::msg::ObjectSearchStatus::ConstSharedPtr msg) {
           this->on_object_search_status(*msg);
         });
     odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
@@ -209,88 +212,38 @@ public:
   }
 
 private:
-  static std::string object_search_state(const std::string& status)
+  using ObjectSearchStatus = object_search_msgs::msg::ObjectSearchStatus;
+
+  static const char* object_search_state_name(uint8_t state)
   {
-    constexpr char prefix[] = "state=";
-    if (status.rfind(prefix, 0) != 0)
+    switch (state)
     {
-      return {};
+      case ObjectSearchStatus::WAIT_FOR_ODOM: return "等待里程计";
+      case ObjectSearchStatus::SEARCHING_WITH_INITIAL_GOAL: return "按初始方向探索";
+      case ObjectSearchStatus::STARTUP_OBSERVATION: return "启动观察";
+      case ObjectSearchStatus::TARGET_PENDING_OBSERVATION: return "单视角目标短时观察";
+      case ObjectSearchStatus::TARGET_PENDING_REPOSITION: return "单视角目标横向换位";
+      case ObjectSearchStatus::TARGET_APPROACH_COARSE: return "接近视觉粗目标";
+      case ObjectSearchStatus::TARGET_OBSERVATION: return "面向视觉粗目标观察";
+      case ObjectSearchStatus::TARGET_APPROACH_METRIC: return "接近稳定融合目标";
+      case ObjectSearchStatus::TARGET_FINAL_OBSERVATION: return "稳定目标最终观察";
+      case ObjectSearchStatus::TARGET_FINAL_REPOSITION: return "更换最终观察点";
+      case ObjectSearchStatus::TARGET_REACHED_VIEWPOINT: return "目标到达观察点";
+      default: return "未知状态";
     }
-    const size_t separator = status.find(',');
-    const size_t state_begin = sizeof(prefix) - 1;
-    if (separator == std::string::npos)
-    {
-      return status.substr(state_begin);
-    }
-    return status.substr(state_begin, separator - state_begin);
   }
 
-  static const char* object_search_state_name(const std::string& state)
-  {
-    if (state == "WAIT_FOR_ODOM")
-    {
-      return "等待里程计";
-    }
-    if (state == "SEARCHING_WITH_INITIAL_GOAL")
-    {
-      return "按初始方向探索";
-    }
-    if (state == "STARTUP_OBSERVATION")
-    {
-      return "启动观察";
-    }
-    if (state == "TARGET_PENDING_OBSERVATION")
-    {
-      return "单视角目标短时观察";
-    }
-    if (state == "TARGET_PENDING_REPOSITION")
-    {
-      return "单视角目标横向换位";
-    }
-    if (state == "TARGET_APPROACH_COARSE")
-    {
-      return "接近视觉粗目标";
-    }
-    if (state == "TARGET_OBSERVATION")
-    {
-      return "面向视觉粗目标观察";
-    }
-    if (state == "TARGET_APPROACH_METRIC")
-    {
-      return "接近稳定融合目标";
-    }
-    if (state == "TARGET_FINAL_OBSERVATION")
-    {
-      return "稳定目标最终观察";
-    }
-    if (state == "TARGET_FINAL_REPOSITION")
-    {
-      return "更换最终观察点";
-    }
-    if (state == "TARGET_REACHED_VIEWPOINT")
-    {
-      return "目标到达观察点";
-    }
-    return "未知状态";
-  }
-
-  static bool target_override_state(const std::string& state)
-  {
-    return state == "TARGET_PENDING_OBSERVATION" ||
-      state == "TARGET_PENDING_REPOSITION" ||
-      state == "TARGET_APPROACH_COARSE" ||
-      state == "TARGET_OBSERVATION" ||
-      state == "TARGET_APPROACH_METRIC" ||
-      state == "TARGET_FINAL_OBSERVATION" ||
-      state == "TARGET_FINAL_REPOSITION" ||
-      state == "TARGET_REACHED_VIEWPOINT";
-  }
-
-  void on_object_search_status(const std_msgs::msg::String& msg)
+  void on_object_search_status(const ObjectSearchStatus& msg)
   {
     // Convert Goal Mux ownership changes into exploration suspend or resume operations
-    const bool target_evidence_pending =
-      msg.data.find("pending_protection=true") != std::string::npos;
+    const uint8_t state = msg.state;
+    const auto mode = object_search_mode(state);
+    if (!mode)
+    {
+      RCLCPP_WARN(this->get_logger(), "收到未知目标搜索状态, 已忽略");
+      return;
+    }
+    const bool target_evidence_pending = msg.pending_protection;
     if (target_evidence_pending != target_evidence_pending_)
     {
       target_evidence_pending_ = target_evidence_pending;
@@ -300,42 +253,37 @@ private:
         target_evidence_pending_ ? "启用" : "结束",
         target_evidence_pending_ ? "冻结" : "恢复");
     }
-    const std::string state = object_search_state(msg.data);
-    if (state.empty() || state == object_search_state_)
+    if (state == object_search_state_)
     {
       return;
     }
 
     const bool was_target_override = target_override_active_;
-    const bool next_target_override = target_override_state(state);
+    const bool next_target_override = mode->target_override;
     if (!was_target_override && next_target_override)
     {
       planner_.suspend_exploration_state();
     }
     else if (
       was_target_override && !next_target_override &&
-      state == "SEARCHING_WITH_INITIAL_GOAL")
+      state == ObjectSearchStatus::SEARCHING_WITH_INITIAL_GOAL)
     {
       planner_.resume_exploration_state();
     }
 
     object_search_state_ = state;
     target_override_active_ = next_target_override;
-    directional_exploration_mode_ = state == "SEARCHING_WITH_INITIAL_GOAL";
-    observation_mode_ =
-      state == "STARTUP_OBSERVATION" ||
-      state == "TARGET_PENDING_OBSERVATION" ||
-      state == "TARGET_OBSERVATION" ||
-      state == "TARGET_FINAL_OBSERVATION";
+    directional_exploration_mode_ = mode->directional_exploration;
+    observation_mode_ = mode->observation;
     // 状态切换先丢弃旧 goal, 等同一周期的新 goal 到达后再规划
     // 这样目标出现时不会用旧探索 goal 短暂发布错误路径
     goal_pose_.reset();
     last_hold_goal_.reset();
     RCLCPP_INFO(
       this->get_logger(),
-      "目标搜索规划模式切换, 状态=%s(%s), 路线类型=%s",
+      "目标搜索规划模式切换, 状态=%s(%u), 路线类型=%s",
       object_search_state_name(state),
-      state.c_str(),
+      static_cast<unsigned int>(state),
       directional_exploration_mode_ ? "初始方向探索" :
       (observation_mode_ ? "原地观察" : "目标接近"));
   }
@@ -511,19 +459,19 @@ private:
       Eigen::Vector3d goal_vec(goal_in_graph_frame.pose.position.x, goal_in_graph_frame.pose.position.y,
                                goal_in_graph_frame.pose.position.z);
       double active_goal_radius = goal_radius_;
-      if (object_search_state_ == "TARGET_APPROACH_COARSE")
+      if (object_search_state_ == ObjectSearchStatus::TARGET_APPROACH_COARSE)
       {
         active_goal_radius = coarse_goal_radius_;
       }
-      else if (object_search_state_ == "TARGET_APPROACH_METRIC")
+      else if (object_search_state_ == ObjectSearchStatus::TARGET_APPROACH_METRIC)
       {
         active_goal_radius = metric_goal_radius_;
       }
-      else if (object_search_state_ == "TARGET_FINAL_REPOSITION")
+      else if (object_search_state_ == ObjectSearchStatus::TARGET_FINAL_REPOSITION)
       {
         active_goal_radius = final_reposition_goal_radius_;
       }
-      else if (object_search_state_ == "TARGET_PENDING_REPOSITION")
+      else if (object_search_state_ == ObjectSearchStatus::TARGET_PENDING_REPOSITION)
       {
         active_goal_radius = pending_reposition_goal_radius_;
       }
@@ -823,7 +771,7 @@ private:
   rclcpp::Subscription<graphnav_msgs::msg::NavigationGraph>::SharedPtr graph_sub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
-  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr object_search_status_sub_;
+  rclcpp::Subscription<ObjectSearchStatus>::SharedPtr object_search_status_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
   rclcpp::Publisher<grid_map_msgs::msg::GridMap>::SharedPtr grid_map_debug_pub_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr scores_debug_pub_;
@@ -836,7 +784,7 @@ private:
   std::optional<geometry_msgs::msg::PoseStamped> last_hold_goal_;
   nav_msgs::msg::Odometry::ConstSharedPtr odom_;
   std::optional<std_msgs::msg::Header> latest_graph_header_;
-  std::string object_search_state_;
+  uint8_t object_search_state_ = ObjectSearchStatus::UNKNOWN;
   bool directional_exploration_mode_ = false;
   bool observation_mode_ = false;
   bool target_override_active_ = false;

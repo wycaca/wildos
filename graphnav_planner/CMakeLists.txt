@@ -13,6 +13,7 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_components REQUIRED)
 find_package(graphnav_msgs REQUIRED)
+find_package(object_search_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
@@ -43,6 +44,7 @@ ament_target_dependencies(graphnav_planner_component
   rclcpp
   rclcpp_components
   graphnav_msgs
+  object_search_msgs
   visualization_msgs
   nav_msgs
   std_msgs

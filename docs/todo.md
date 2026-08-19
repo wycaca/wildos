@@ -56,7 +56,7 @@
 | PERF-03 | 性能 | 目标融合 | 复用同一帧 LiDAR 处理结果 | 已批准 |
 | PERF-04 | 性能 | WildOS 推理 | 使用 inference mode 并验证收益 | 已批准 |
 | ARCH-01 | 架构 | Goal Mux | 拆分 ROS adapter 和纯状态策略 | 待验证 |
-| ARCH-02 | 架构 | Goal Mux 与 Planner | 用强类型消息替代字符串协议 | 已批准 |
+| ARCH-02 | 架构 | Goal Mux 与 Planner | 用强类型消息替代字符串协议 | 待验证 |
 | MNT-01 | 可维护性 | ROS package | 补齐 package 依赖 | 已批准 |
 | MNT-02 | 可维护性 | 测试和 CI | 建立统一测试入口 | 已批准 |
 | MNT-03 | 可维护性 | C++ | 保持 C++ 代码格式统一 | 已批准 |
@@ -456,6 +456,15 @@ Goal Mux 使用字符串拼装状态, Planner 使用前缀和子字符串解析
 4. Goal Mux 日志保留中文状态名称
 5. Planner 删除字符串 parser 和硬编码状态文本
 6. 确认没有外部消费者后再停止发布旧 String topic
+
+当前实现说明:
+
+- 新增 `ObjectSearchStatus.msg`, 使用固定编号的 11 个状态 enum 和 `UNKNOWN=0`
+- Goal Mux 在 `/spot1/object_search_status_v2` 发布强类型消息, 原 String topic 保留一个迁移周期
+- Planner 只订阅 v2 topic, 直接读取 enum 和 `pending_protection`, 未知状态 fail closed
+- Python 覆盖全部状态到 enum 的唯一映射, C++ 覆盖全部 enum 的规划模式分类
+- 软件验证通过: `visual_navigation` 102 passed、1 skipped, `graphnav_planner` 3/3 CTest passed, launch contract 8 passed
+- 状态保持待验证, 现场确认外部监控完成迁移后再删除旧 String topic
 
 人工审核点:
 

@@ -18,6 +18,7 @@ find_package(geometry_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ObjectMaskWithTf.msg"
+  "msg/ObjectSearchStatus.msg"
   "msg/TargetEstimate.msg"
   DEPENDENCIES std_msgs sensor_msgs tf2_msgs geometry_msgs
 )

@@ -151,6 +151,35 @@ def test_planner_uses_the_canonical_path_topic():
     ) in _remappings(context, planner)
 
 
+def test_planner_uses_typed_object_search_status_topic():
+    module = _load_launch_module()
+    context = _context_with_defaults(module)
+    nodes = list(_all_nodes(module._launch_setup(context)))
+    planner = next(
+        node
+        for node in nodes
+        if _expanded(context, node.node_executable) == "planner_node"
+    )
+    mux = next(
+        node
+        for node in nodes
+        if _expanded(context, node.node_executable) == "object_search_goal_mux"
+    )
+    mux_parameters = {
+        key: value
+        for values in evaluate_parameters(context, mux._Node__parameters)
+        if isinstance(values, dict)
+        for key, value in values.items()
+    }
+
+    assert (
+        "~/object_search_status",
+        "/spot1/object_search_status_v2",
+    ) in _remappings(context, planner)
+    assert mux_parameters["typed_status_topic"] == "/spot1/object_search_status_v2"
+    assert mux_parameters["status_topic"] == "/spot1/object_search_status"
+
+
 def test_all_python_nodes_use_uv_environment_python():
     module = _load_launch_module()
     context = _context_with_defaults(module)
