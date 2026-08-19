@@ -1,4 +1,5 @@
 import math
+from types import SimpleNamespace
 
 from geometry_msgs.msg import TransformStamped
 from nav_msgs.msg import Odometry
@@ -6,6 +7,7 @@ import pytest
 from tf2_msgs.msg import TFMessage
 
 from graph_construction.dlio_tf_adapter import (
+    DlioTfAdapter,
     HeadingConsistencyMonitor,
     HealthStateFilter,
     OdometryHealthMonitor,
@@ -15,6 +17,20 @@ from graph_construction.dlio_tf_adapter import (
     odom_to_transform,
     relay_extrinsic_transforms,
 )
+
+
+def test_health_publisher_repeats_stable_state_for_heartbeat():
+    published = []
+    adapter = SimpleNamespace(
+        _health_status=True,
+        health_publisher=SimpleNamespace(
+            publish=lambda msg: published.append(msg.data)
+        ),
+    )
+
+    assert not DlioTfAdapter._publish_health(adapter, True)
+    assert DlioTfAdapter._publish_health(adapter, True, repeat=True)
+    assert published == [True]
 
 
 def test_health_filter_ignores_single_bad_sample():

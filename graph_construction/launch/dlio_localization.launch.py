@@ -83,6 +83,7 @@ def generate_launch_description() -> LaunchDescription:
                 "base_frame": LaunchConfiguration("base_frame"),
                 "alignment_delay": 0.0,
                 "health_topic": health_topic,
+                "health_heartbeat_hz": 2.0,
             }
         ],
     )
@@ -100,6 +101,7 @@ def generate_launch_description() -> LaunchDescription:
                     "output_pointcloud_topic"
                 ),
                 "health_topic": health_topic,
+                "health_timeout_sec": 1.5,
             }
         ],
     )

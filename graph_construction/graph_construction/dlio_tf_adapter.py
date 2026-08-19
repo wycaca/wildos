@@ -543,6 +543,7 @@ class DlioTfAdapter(Node):
         self.declare_parameter("reference_max_time_delta", 0.1)
         self.declare_parameter("alignment_delay", 0.0)
         self.declare_parameter("health_topic", "/spot1/dlio/odom_node/healthy")
+        self.declare_parameter("health_heartbeat_hz", 2.0)
         self.declare_parameter("max_position_error", 0.5)
         self.declare_parameter("max_orientation_error_deg", 10.0)
         self.declare_parameter("max_linear_speed", 5.0)
@@ -577,6 +578,11 @@ class DlioTfAdapter(Node):
             float(self.get_parameter("alignment_delay").value) * 1.0e9
         )
         self.health_topic = str(self.get_parameter("health_topic").value)
+        self.health_heartbeat_hz = float(
+            self.get_parameter("health_heartbeat_hz").value
+        )
+        if self.health_heartbeat_hz <= 0.0:
+            raise ValueError("health_heartbeat_hz must be greater than 0")
         self.max_position_error = float(
             self.get_parameter("max_position_error").value
         )
@@ -658,7 +664,7 @@ class DlioTfAdapter(Node):
             history=HistoryPolicy.KEEP_LAST,
             depth=1,
             reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            durability=DurabilityPolicy.VOLATILE,
         )
         self.health_publisher = self.create_publisher(
             Bool,
@@ -690,6 +696,10 @@ class DlioTfAdapter(Node):
                 rotation=(0.0, 0.0, 0.0, 1.0),
             )
         self.create_timer(_DIAGNOSTICS_LOG_PERIOD_SEC, self._report_diagnostics)
+        self.create_timer(
+            1.0 / self.health_heartbeat_hz,
+            self._publish_health_heartbeat,
+        )
         self.get_logger().info(
             f"DLIO TF adapter 已启动, odom={self.input_odom_topic}, "
             f"reference={self.reference_odom_topic or '<identity>'}, "
@@ -843,12 +853,18 @@ class DlioTfAdapter(Node):
             f"orientation_error={metrics[1]:.2f}deg"
         )
 
-    def _publish_health(self, healthy: bool) -> bool:
-        if self._health_status == healthy:
+    def _publish_health(self, healthy: bool, repeat: bool = False) -> bool:
+        if self._health_status == healthy and not repeat:
             return False
         self.health_publisher.publish(Bool(data=healthy))
         self._health_status = healthy
         return True
+
+    def _publish_health_heartbeat(self) -> None:
+        """周期发布当前稳定健康状态, 供下游维护短租约"""
+        if self.health_filter.state is None:
+            return
+        self._publish_health(self.health_filter.state, repeat=True)
 
     def _report_diagnostics(self) -> None:
         """Report bounded health and callback metrics at low frequency"""
