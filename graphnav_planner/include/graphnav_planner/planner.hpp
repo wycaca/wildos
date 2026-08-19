@@ -225,6 +225,13 @@ public:
     bool path_changed;
   };
 
+  enum class GraphUpdate
+  {
+    unchanged,
+    scores_only,
+    rebuilt,
+  };
+
   struct ExplorationDiagnostics
   {
     size_t route_changes = 0;
@@ -255,7 +262,7 @@ public:
   void pause_failure_timers(rclcpp::Time current_time);
   ExplorationDiagnostics take_exploration_diagnostics();
 
-  void update_graph(graphnav_msgs::msg::NavigationGraph::ConstSharedPtr graph);
+  GraphUpdate update_graph(graphnav_msgs::msg::NavigationGraph::ConstSharedPtr graph);
   PlanningResult plan_to_goal(
     Eigen::Vector3d& goal,
     double goal_radius,
@@ -383,6 +390,7 @@ private:
   size_t path_invalid_frames_ = 0;
   std::optional<std::string> last_current_node_uuid_;
   std::unordered_set<std::string> traversed_edges_;
+  graphnav_msgs::msg::NavigationGraph::ConstSharedPtr latest_graph_msg_;
   std::vector<std::string> direct_path_node_uuids_;
   std::vector<Eigen::Vector3d> direct_path_points_;
   std::optional<SuspendedExploration> suspended_exploration_;

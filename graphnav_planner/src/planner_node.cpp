@@ -140,7 +140,33 @@ public:
           this->latest_graph_header_ = msg->header;
           if (this->planning_input_health().graph_fresh)
           {
-            this->planner_.update_graph(msg);
+            const auto update_started = std::chrono::steady_clock::now();
+            const auto update = this->planner_.update_graph(msg);
+            graph_update_timings_ms_.push_back(std::chrono::duration<double, std::milli>(
+              std::chrono::steady_clock::now() - update_started).count());
+            if (graph_update_timings_ms_.size() > 512)
+            {
+              graph_update_timings_ms_.pop_front();
+            }
+            graph_updates_++;
+            if (update == Planner::GraphUpdate::rebuilt)
+            {
+              graph_rebuilds_++;
+            }
+            else if (update == Planner::GraphUpdate::scores_only)
+            {
+              graph_score_updates_++;
+            }
+            else
+            {
+              graph_unchanged_++;
+            }
+            if (update == Planner::GraphUpdate::unchanged &&
+              this->planning_input_health().healthy() &&
+              !this->inputs_observed_unhealthy_)
+            {
+              return;
+            }
           }
           this->plan_to_goal();
         });
@@ -720,8 +746,29 @@ private:
 
   void report_diagnostics()
   {
+    if (!graph_update_timings_ms_.empty())
+    {
+      const double total = std::accumulate(
+        graph_update_timings_ms_.begin(), graph_update_timings_ms_.end(), 0.0);
+      const double maximum = *std::max_element(
+        graph_update_timings_ms_.begin(), graph_update_timings_ms_.end());
+      RCLCPP_INFO(
+        this->get_logger(),
+        "导航图处理性能, 耗时=平均%.1f/最大%.1fms, 更新=%zu/重建%zu/仅评分%zu/无变化%zu次",
+        total / graph_update_timings_ms_.size(),
+        maximum,
+        graph_updates_,
+        graph_rebuilds_,
+        graph_score_updates_,
+        graph_unchanged_);
+    }
     if (planning_timings_ms_.empty())
     {
+      graph_update_timings_ms_.clear();
+      graph_updates_ = 0;
+      graph_rebuilds_ = 0;
+      graph_score_updates_ = 0;
+      graph_unchanged_ = 0;
       return;
     }
     std::vector<double> samples(planning_timings_ms_.begin(), planning_timings_ms_.end());
@@ -766,6 +813,11 @@ private:
     path_changes_ = 0;
     empty_paths_ = 0;
     manual_reset_events_ = 0;
+    graph_update_timings_ms_.clear();
+    graph_updates_ = 0;
+    graph_rebuilds_ = 0;
+    graph_score_updates_ = 0;
+    graph_unchanged_ = 0;
   }
 
   rclcpp::Subscription<graphnav_msgs::msg::NavigationGraph>::SharedPtr graph_sub_;
@@ -801,10 +853,15 @@ private:
   double odom_reset_distance_;
   double odom_reset_speed_;
   std::deque<double> planning_timings_ms_;
+  std::deque<double> graph_update_timings_ms_;
   size_t planning_calls_ = 0;
   size_t path_changes_ = 0;
   size_t empty_paths_ = 0;
   size_t manual_reset_events_ = 0;
+  size_t graph_updates_ = 0;
+  size_t graph_rebuilds_ = 0;
+  size_t graph_score_updates_ = 0;
+  size_t graph_unchanged_ = 0;
   std::chrono::steady_clock::time_point last_slow_warning_{};
 
   Planner planner_;

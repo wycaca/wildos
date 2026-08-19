@@ -52,7 +52,7 @@
 | SEC-01 | 其他 | 模型加载 | 限制不安全 checkpoint 反序列化 | 待验证 |
 | SEC-02 | 其他 | Docker 和 DDS | 缩小容器和局域网攻击面 | 待验证 |
 | PERF-01 | 性能 | 跨机点云 | 在 x86 发送前完成限频 | 待验证 |
-| PERF-02 | 性能 | 导航图链路 | 避免重复复制、重建和规划相同图 | 已批准 |
+| PERF-02 | 性能 | 导航图链路 | 避免重复复制、重建和规划相同图 | 待验证 |
 | PERF-03 | 性能 | 目标融合 | 复用同一帧 LiDAR 处理结果 | 已批准 |
 | PERF-04 | 性能 | WildOS 推理 | 使用 inference mode 并验证收益 | 已批准 |
 | ARCH-01 | 架构 | Goal Mux | 拆分 ROS adapter 和纯状态策略 | 已批准 |
@@ -346,17 +346,21 @@ Planner 检测到 graph 或 odom 过期后仍继续规划, freshness 当前只�
 修改方案:
 
 1. 先记录节点数、边数、消息大小、深拷贝耗时、图重建耗时和规划耗时
-2. WildOS 仅在基础图更新或 frontier score 实际变化时发布 scored graph
+2. WildOS 在基础图或 frontier score 实际变化时立即发布, 无变化时只发布 1 Hz freshness 心跳
 3. Planner 区分 topology 变化和仅 score 变化
 4. topology 未变化时只更新必要属性, 不重建图和 unexplored map
 5. goal、current node 或有效 score 没变化时不重复运行 Dijkstra
 6. 第一阶段不引入 delta graph 消息, 只有现有门控仍无法满足性能目标时再评审
 
-人工审核点:
+当前实现说明:
 
-- 选择稳定的 graph revision 或 topology signature
-- 确认 current node 变化是否必须触发重规划
-- 确认 score 变化的最小有效阈值
+- 不新增 revision 字段, Planner 对上一帧消息做精确 topology 和 properties 比较
+- current node 变化视为规划输入变化并触发图重建和重规划
+- score 有效变化阈值为 0.001, 可通过 `frontier_score_publish_epsilon` 调整
+- 心跳周期为 1.0 秒, 小于 Planner 默认 2.0 秒 graph freshness 租约
+- WildOS 记录完整评分图大小和深拷贝耗时, Planner 记录图更新平均和最大耗时
+- 软件验证通过: `visual_navigation` 93 passed、1 skipped, `graphnav_planner` 3/3 CTest passed
+- 状态保持待验证, 还需用目标平台 rosbag 对比修改前后的 CPU、网络和规划耗时
 
 验收条件:
 

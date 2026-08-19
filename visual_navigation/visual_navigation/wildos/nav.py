@@ -17,11 +17,17 @@ from omegaconf import OmegaConf
 import numpy as np
 import torch
 import time
+from rclpy.serialization import serialize_message
 from torchvision import transforms
 
 from visual_navigation.utils.tf_lookup_sub import TFEdge, TFLookupSubscriber
 from visual_navigation.wildos.goalagnostic_scoring import GoalAgnosticScoring
-from visual_navigation.wildos.current_frontier_scores import CurrentFrontierScores
+from visual_navigation.wildos.current_frontier_scores import (
+    CurrentFrontierScores,
+    frontier_score_snapshots_equal,
+    navigation_graph_content_equal,
+    scored_graph_publish_due,
+)
 from visual_navigation.geofrontier_nav.geofrontier_to_image import GeoFrontierToImage
 from visual_navigation.wildos.viz import VisualizeGoalAgnosticGeoFrontierScoring
 from explorfm import ExploRFMInference
@@ -114,6 +120,8 @@ class WildOS_Nav(TFLookupSubscriber):
         "visualization_publish_period_sec": 2.0,
         "visualization_require_subscribers": True,
         "processing_rate_hz": None,
+        "scored_graph_heartbeat_sec": 1.0,
+        "frontier_score_publish_epsilon": 0.001,
 
         # ROS2 订阅参数
         "qos_history_depth": 1,
@@ -200,6 +208,22 @@ class WildOS_Nav(TFLookupSubscriber):
         
         # 保存当前 frontier node 及其评分
         self.frontier_uuid_to_scores = {}
+        self._last_scored_source_graph = None
+        self._last_scored_navgraph = None
+        self._last_scored_signature = {}
+        self._last_scored_publish_time = None
+        self._scored_graph_changed_publishes = 0
+        self._scored_graph_heartbeat_publishes = 0
+        self._scored_graph_skipped_publishes = 0
+        self._last_scored_graph_size_bytes = 0
+        self.scored_graph_heartbeat_sec = max(
+            float(config.get("scored_graph_heartbeat_sec", 1.0)),
+            0.1,
+        )
+        self.frontier_score_publish_epsilon = max(
+            float(config.get("frontier_score_publish_epsilon", 0.001)),
+            0.0,
+        )
         self.object_detection_debug_interval = 20
         self._object_missing_log_count = 0
         self.object_detection_confirmation = None
@@ -323,7 +347,16 @@ class WildOS_Nav(TFLookupSubscriber):
         self._processing_rate = EventRate()
         self._processing_timings = {
             name: TimingWindow()
-            for name in ("decode", "project", "inference", "object", "score", "publish", "total")
+            for name in (
+                "decode",
+                "project",
+                "inference",
+                "object",
+                "score",
+                "graph_copy",
+                "publish",
+                "total",
+            )
         }
         self._latency_timings = {
             name: TimingWindow()
@@ -851,10 +884,26 @@ class WildOS_Nav(TFLookupSubscriber):
 
         # 发布评分后的 navgraph
         stage_started = time.perf_counter()
-        updated_navgraph, removed_uuids, updated_uuids = self.update_navgraph_with_scores(
+        updated_navgraph, removed_uuids, updated_uuids, graph_changed = self.update_navgraph_with_scores(
             navgraph_msg, geofrontiers, nav_data
         )
-        self.scored_navgraph_pub.publish(updated_navgraph)
+        now = time.monotonic()
+        publish_scored_graph = scored_graph_publish_due(
+            graph_changed,
+            self._last_scored_publish_time,
+            now,
+            self.scored_graph_heartbeat_sec,
+        )
+        if publish_scored_graph:
+            updated_navgraph.header.stamp = self.get_clock().now().to_msg()
+            self.scored_navgraph_pub.publish(updated_navgraph)
+            self._last_scored_publish_time = now
+            if graph_changed:
+                self._scored_graph_changed_publishes += 1
+            else:
+                self._scored_graph_heartbeat_publishes += 1
+        else:
+            self._scored_graph_skipped_publishes += 1
         if self._should_publish_visualization():
             if self._visualization_publisher_enabled(self.withinrange_geofront_pub):
                 self.viz.delete_markers(self.withinrange_geofront_pub)
@@ -945,7 +994,12 @@ class WildOS_Nav(TFLookupSubscriber):
             f"模型推理{summaries['inference'].average_ms:.0f}ms/"
             f"目标检测{summaries['object'].average_ms:.0f}ms/"
             f"边界评分{summaries['score'].average_ms:.0f}ms/"
+            f"图复制{summaries['graph_copy'].average_ms:.0f}ms/"
             f"结果发布{summaries['publish'].average_ms:.0f}ms, "
+            f"评分图=变化{self._scored_graph_changed_publishes}/"
+            f"心跳{self._scored_graph_heartbeat_publishes}/"
+            f"跳过{self._scored_graph_skipped_publishes}, "
+            f"评分图大小={self._last_scored_graph_size_bytes / 1024.0:.1f}KiB, "
             "链路延迟平均值="
             f"图像同步等待{latency['sync_wait'].average_ms:.0f}ms/"
             f"三相机时间差{latency['camera_spread'].average_ms:.0f}ms/"
@@ -953,6 +1007,9 @@ class WildOS_Nav(TFLookupSubscriber):
             f"TF等待{latency['tf_wait'].average_ms:.0f}ms/"
             f"Mask发布年龄{latency['mask_age'].average_ms:.0f}ms"
         )
+        self._scored_graph_changed_publishes = 0
+        self._scored_graph_heartbeat_publishes = 0
+        self._scored_graph_skipped_publishes = 0
 
     def _record_image_arrival(self, msg, camera_idx: int) -> None:
         """记录图像进入同步器的时间, 仅保留最近少量帧"""
@@ -1182,8 +1239,6 @@ class WildOS_Nav(TFLookupSubscriber):
         """只发布当前活动 Frontier 的本帧评分, 不沿用历史视角结果"""
         current_scores = CurrentFrontierScores(self.frontier_uuid_to_scores)
         trav_class_idx = navgraph_msg.trav_classes.index(self.traversability_class)
-        # 最新原始图会被多组相机复用, 评分只能修改消息副本
-        scored_navgraph = deepcopy(navgraph_msg)
         
         for i in range(self.num_cameras):
             if not geofrontiers[i]:
@@ -1208,8 +1263,7 @@ class WildOS_Nav(TFLookupSubscriber):
                 scores = self.normalize_frontier_scores(scores)
                 current_scores.add_visual(uuid, scores, frontier_node)
 
-        scored_navgraph.header.stamp = self.get_clock().now().to_msg()
-        for node in scored_navgraph.nodes:
+        for node in navgraph_msg.nodes:
             uuid = self.uuid_to_str(node.uuid)
             if not node.trav_properties[trav_class_idx].is_frontier:
                 continue
@@ -1222,14 +1276,48 @@ class WildOS_Nav(TFLookupSubscriber):
 
             scores = self.normalize_frontier_scores(current_scores.scores(uuid))
             current_scores.set_scores(uuid, scores)
+
+        entries, removed_uuids, updated_uuids = current_scores.finish()
+        signature = current_scores.snapshot()
+        graph_changed = not navigation_graph_content_equal(
+            self._last_scored_source_graph,
+            navgraph_msg,
+        ) or not frontier_score_snapshots_equal(
+            self._last_scored_signature,
+            signature,
+            self.frontier_score_publish_epsilon,
+        )
+        self.frontier_uuid_to_scores = entries
+        if not graph_changed and self._last_scored_navgraph is not None:
+            return (
+                self._last_scored_navgraph,
+                removed_uuids,
+                updated_uuids,
+                False,
+            )
+
+        # 只有图或有效评分变化时才复制完整消息
+        copy_started = time.perf_counter()
+        scored_navgraph = deepcopy(navgraph_msg)
+        for node in scored_navgraph.nodes:
+            uuid = self.uuid_to_str(node.uuid)
+            if not node.trav_properties[trav_class_idx].is_frontier:
+                continue
+            scores = current_scores.scores(uuid)
             node.properties.append(KeyValue(key="frontier_scores", value=list(scores)))
             node.properties.append(KeyValue(
                 key="is_default_scored",
                 value=[0.0 if current_scores.is_visual(uuid) else 1.0],
             ))
 
-        self.frontier_uuid_to_scores, removed_uuids, updated_uuids = current_scores.finish()
-        return scored_navgraph, removed_uuids, updated_uuids
+        self._processing_timings["graph_copy"].add_seconds(
+            time.perf_counter() - copy_started
+        )
+        self._last_scored_source_graph = navgraph_msg
+        self._last_scored_navgraph = scored_navgraph
+        self._last_scored_signature = signature
+        self._last_scored_graph_size_bytes = len(serialize_message(scored_navgraph))
+        return scored_navgraph, removed_uuids, updated_uuids, True
 
     @staticmethod
     def normalize_frontier_scores(scores):

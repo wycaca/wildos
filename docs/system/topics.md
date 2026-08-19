@@ -69,6 +69,7 @@ x86:
 | `/spot1/score_rings` | `visualization_msgs/msg/MarkerArray` | WildOS | RViz |
 
 `nav_graph` 是纯几何图, `scored_nav_graph` 是加入视觉评分后的 Planner 输入
+评分内容变化时立即发布, 内容不变时以 1 Hz 心跳维持 freshness；Planner 会跳过心跳图的重建和 Dijkstra
 
 ## 6. 目标搜索
 

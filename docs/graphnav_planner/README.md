@@ -29,6 +29,8 @@
 - 普通延伸不能无限制回退, 只有显式 `BACKTRACK` 可以明显回头
 - 图或 odom 缺失时暂停规划, 但保留恢复状态
 - 目标抢占会保留探索记忆, 过期目标证据失效后可以恢复原分支
+- scored graph 仅时间戳变化时跳过图重建和 Dijkstra
+- 仅 Frontier properties 变化时原位更新评分, topology 或 current node 变化时才重建图
 
 ## 外部导航安全契约
 

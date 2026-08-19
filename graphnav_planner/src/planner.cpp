@@ -12,6 +12,54 @@
 namespace graphnav_planner
 {
 
+namespace
+{
+
+bool same_topology(
+  const graphnav_msgs::msg::NavigationGraph& lhs,
+  const graphnav_msgs::msg::NavigationGraph& rhs)
+{
+  if (lhs.trav_classes != rhs.trav_classes ||
+      lhs.current_node_idx != rhs.current_node_idx ||
+      lhs.nodes.size() != rhs.nodes.size() ||
+      lhs.edges != rhs.edges)
+  {
+    return false;
+  }
+  for (size_t index = 0; index < lhs.nodes.size(); ++index)
+  {
+    const auto& lhs_node = lhs.nodes[index];
+    const auto& rhs_node = rhs.nodes[index];
+    if (lhs_node.uuid != rhs_node.uuid ||
+        lhs_node.pose != rhs_node.pose ||
+        lhs_node.trav_properties != rhs_node.trav_properties)
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool same_node_properties(
+  const graphnav_msgs::msg::NavigationGraph& lhs,
+  const graphnav_msgs::msg::NavigationGraph& rhs)
+{
+  if (lhs.nodes.size() != rhs.nodes.size())
+  {
+    return false;
+  }
+  for (size_t index = 0; index < lhs.nodes.size(); ++index)
+  {
+    if (lhs.nodes[index].properties != rhs.nodes[index].properties)
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
+}  // namespace
+
 namespace detail
 {
 
@@ -248,10 +296,27 @@ Planner::ExplorationState Planner::exploration_state() const
   return exploration_state_;
 }
 
-void Planner::update_graph(graphnav_msgs::msg::NavigationGraph::ConstSharedPtr graph)
+Planner::GraphUpdate Planner::update_graph(
+  graphnav_msgs::msg::NavigationGraph::ConstSharedPtr graph)
 {
   // Update traversal history before replacing graph indices, UUIDs remain stable across frames
   update_traversal_memory(*graph);
+  if (latest_graph_msg_ && same_topology(*latest_graph_msg_, *graph))
+  {
+    if (same_node_properties(*latest_graph_msg_, *graph))
+    {
+      latest_graph_msg_ = graph;
+      return GraphUpdate::unchanged;
+    }
+    for (size_t index = 0; index < graph->nodes.size(); ++index)
+    {
+      graph_.get_vertex(index).properties = graph->nodes[index].properties;
+    }
+    frontier_score_nodes_.clear();
+    latest_graph_msg_ = graph;
+    return GraphUpdate::scores_only;
+  }
+  latest_graph_msg_ = graph;
   graph_ = graaf::undirected_graph<graphnav_msgs::msg::Node, double>();
   unexplored_space_map_.reset();
   frontier_score_nodes_.clear();
@@ -265,14 +330,14 @@ void Planner::update_graph(graphnav_msgs::msg::NavigationGraph::ConstSharedPtr g
     RCLCPP_WARN_ONCE(
       logger_,
       "收到空导航图, 保留探索状态并等待下一帧");
-    return;
+    return GraphUpdate::rebuilt;
   }
   auto trav_class_it = std::find(graph->trav_classes.begin(), graph->trav_classes.end(), trav_class_);
   if (trav_class_it == graph->trav_classes.end())
   {
     RCLCPP_WARN(logger_, "导航图中缺少可通行类别, 类别=%s", trav_class_.c_str());
     trav_class_idx_ = 0;
-    return;
+    return GraphUpdate::rebuilt;
   }
   trav_class_idx_ = std::distance(graph->trav_classes.begin(), trav_class_it);
   for (auto edge : graph->edges)
@@ -305,9 +370,10 @@ void Planner::update_graph(graphnav_msgs::msg::NavigationGraph::ConstSharedPtr g
     reset_frontier_branch();
     RCLCPP_WARN(logger_, "当前节点索引越界, 跳过规划器更新, 当前索引=%lu, 节点数=%zu",
                 static_cast<unsigned long>(current_node_idx_), graph->nodes.size());
-    return;
+    return GraphUpdate::rebuilt;
   }
   unexplored_space_map_ = compute_unexplored_space_map();
+  return GraphUpdate::rebuilt;
 }
 
 void Planner::update_traversal_memory(const graphnav_msgs::msg::NavigationGraph& graph)

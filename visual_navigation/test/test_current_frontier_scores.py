@@ -1,6 +1,16 @@
 import numpy as np
+from types import SimpleNamespace
 
-from visual_navigation.wildos.current_frontier_scores import CurrentFrontierScores
+from graphnav_msgs.msg import NavigationGraph, Node, NodeTraversabilityProperties
+
+from visual_navigation.utils.performance_stats import TimingWindow
+from visual_navigation.wildos.current_frontier_scores import (
+    CurrentFrontierScores,
+    frontier_score_snapshots_equal,
+    navigation_graph_content_equal,
+    scored_graph_publish_due,
+)
+from visual_navigation.wildos.nav import WildOS_Nav
 
 
 def test_drops_entries_not_observed_in_current_frame():
@@ -34,3 +44,83 @@ def test_default_score_does_not_replace_current_visual_score():
 
     assert frame.is_visual("frontier")
     np.testing.assert_allclose(frame.scores("frontier"), [0.6, 0.4])
+
+
+def test_score_snapshot_ignores_subthreshold_noise_but_tracks_score_source():
+    previous = {"frontier": (np.array([0.5, 0.6]), True)}
+
+    assert frontier_score_snapshots_equal(
+        previous,
+        {"frontier": (np.array([0.5005, 0.5995]), True)},
+        epsilon=0.001,
+    )
+    assert not frontier_score_snapshots_equal(
+        previous,
+        {"frontier": (np.array([0.5, 0.6]), False)},
+        epsilon=0.001,
+    )
+    assert not frontier_score_snapshots_equal(
+        previous,
+        {"frontier": (np.array([0.502, 0.6]), True)},
+        epsilon=0.001,
+    )
+
+
+def test_navigation_graph_heartbeat_ignores_only_header():
+    graph = SimpleNamespace(
+        header=SimpleNamespace(stamp=1),
+        trav_classes=["default"],
+        current_node_idx=0,
+        nodes=["node"],
+        edges=["edge"],
+    )
+    heartbeat = SimpleNamespace(**vars(graph))
+    heartbeat.header = SimpleNamespace(stamp=2)
+
+    assert navigation_graph_content_equal(graph, heartbeat)
+    heartbeat.current_node_idx = 1
+    assert not navigation_graph_content_equal(graph, heartbeat)
+
+
+def test_scored_graph_changes_publish_immediately_and_heartbeat_at_one_hz():
+    assert scored_graph_publish_due(True, 10.0, 10.1, 1.0)
+    assert not scored_graph_publish_due(False, 10.0, 10.999, 1.0)
+    assert scored_graph_publish_due(False, 10.0, 11.0, 1.0)
+
+
+def test_unchanged_scored_graph_reuses_cached_message_without_deepcopy():
+    nav = object.__new__(WildOS_Nav)
+    nav.frontier_uuid_to_scores = {}
+    nav.traversability_class = "default"
+    nav.num_cameras = 1
+    nav.std_for_frontier_heading = None
+    nav.std_for_default_scores = 30.0
+    nav.default_max_score = 0.5
+    nav.frontier_score_publish_epsilon = 0.001
+    nav._last_scored_source_graph = None
+    nav._last_scored_navgraph = None
+    nav._last_scored_signature = {}
+    nav._last_scored_graph_size_bytes = 0
+    nav._processing_timings = {"graph_copy": TimingWindow()}
+    nav.scorer = SimpleNamespace(
+        get_default_scores=lambda *args, **kwargs: np.array([0.5, 0.4])
+    )
+    node = Node()
+    node.uuid.id[0] = 1
+    node.trav_properties = [NodeTraversabilityProperties(is_frontier=True)]
+    graph = NavigationGraph(trav_classes=["default"], nodes=[node])
+
+    first, _, _, first_changed = nav.update_navgraph_with_scores(
+        graph,
+        [None],
+        [{}],
+    )
+    second, _, _, second_changed = nav.update_navgraph_with_scores(
+        graph,
+        [None],
+        [{}],
+    )
+
+    assert first_changed
+    assert not second_changed
+    assert second is first
