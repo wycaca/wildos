@@ -87,3 +87,4 @@ tf_lookup_config:
     wait_for_oldest: false
     clear_buffer_on_process: true
     spin_thread: false
+    allow_latest_tf_on_past_extrapolation: false

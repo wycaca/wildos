@@ -47,7 +47,7 @@ class TFLookupSubscriber(Node, ABC):
         "wait_for_oldest": False,  # whether to wait when buffer is full
         "clear_buffer_on_process": False,  # whether to clear buffer after processing
         "spin_thread": False,     # whether to spin tf listener in a separate thread
-        "allow_latest_tf_on_past_extrapolation": True,  # fallback for sensor time skew
+        "allow_latest_tf_on_past_extrapolation": False,  # require measurement-time TF
     }
 
     def __init__(
@@ -212,7 +212,7 @@ class TFLookupSubscriber(Node, ABC):
         raise ValueError(f"Invalid boolean config value: {value}")
 
     def _lookup_transform_with_fallback(self, edge: TFEdge, stamp: Time):
-        """仿真启动期图像时间略早于 TF buffer 时, 回退使用 latest TF"""
+        """按测量时刻查询 TF, 仅显式仿真配置允许 latest 回退"""
         try:
             return self.tf_buffer.lookup_transform(
                 edge.target_frame,
