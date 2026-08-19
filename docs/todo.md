@@ -50,7 +50,7 @@
 | PLN-01 | P1 | `graphnav_planner` | 过期输入禁止继续规划 | 待验证 |
 | GC-03 | 其他 | 点云 relay | 禁止只修改 `frame_id` 冒充坐标变换 | 待验证 |
 | SEC-01 | 其他 | 模型加载 | 限制不安全 checkpoint 反序列化 | 待验证 |
-| SEC-02 | 其他 | Docker 和 DDS | 缩小容器和局域网攻击面 | 已批准 |
+| SEC-02 | 其他 | Docker 和 DDS | 缩小容器和局域网攻击面 | 待验证 |
 | PERF-01 | 性能 | 跨机点云 | 在 x86 发送前完成限频 | 已批准 |
 | PERF-02 | 性能 | 导航图链路 | 避免重复复制、重建和规划相同图 | 已批准 |
 | PERF-03 | 性能 | 目标融合 | 复用同一帧 LiDAR 处理结果 | 已批准 |
@@ -479,11 +479,13 @@ Goal Mux 使用字符串拼装状态, Planner 使用前缀和子字符串解析
 5. 评估非 root 用户运行相机和 WildOS 的可行性
 6. 如果网络包含不可信设备, 启用 DDS Security 身份认证和加密
 
-人工审核点:
+当前实现说明:
 
-- 相机驱动实际需要的 device、group 和 capability
-- DDS Security 的证书部署和故障恢复方式
-- host network 是否仍是当前发现机制的必要条件
+- camera 仅开放 USB major 189, 去除 `privileged` 并丢弃全部 Linux capabilities
+- 所有服务启用 `no-new-privileges`, 配置和模型挂载保持只读
+- host network 继续用于当前跨机 DDS 发现
+- 当前假定两台主机使用可信专用链路, VLAN 和主机防火墙由现场部署执行
+- DDS Security 和非 root 运行需要独立实机验证后再启用
 
 验收条件:
 

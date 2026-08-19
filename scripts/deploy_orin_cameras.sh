@@ -105,8 +105,11 @@ discover_realsense_cameras() {
   if command -v rs-enumerate-devices >/dev/null 2>&1; then
     inventory="$(rs-enumerate-devices)"
   elif docker image inspect "${camera_image}" >/dev/null 2>&1; then
-    inventory="$(docker run --rm --privileged \
-      -v /dev/bus/usb:/dev/bus/usb \
+    inventory="$(docker run --rm \
+      --cap-drop=ALL \
+      --device-cgroup-rule='c 189:* rmw' \
+      --security-opt=no-new-privileges \
+      -v /dev/bus/usb:/dev/bus/usb:rw \
       "${camera_image}" \
       bash -lc 'source /opt/ros/humble/setup.bash; rs-enumerate-devices')"
   else

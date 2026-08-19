@@ -210,7 +210,17 @@ ros2 topic hz /spot1/scored_nav_graph
 ros2 topic hz /spot1/model_visualization
 ```
 
-## 8. 推荐启动顺序
+## 8. 网络与容器权限边界
+
+- 当前部署假定 `192.168.50.1` 和 `192.168.50.2` 位于只有两台部署主机的可信专用链路
+- Fast DDS profile 只允许指定本机接口, 不能代替对端身份认证
+- 两台主机必须用 VLAN 或主机防火墙仅允许对端地址进入 ROS 2 使用的接口, 现场接口名和管理通道确认后再应用规则
+- 网络中存在其他设备且无法隔离时, 必须先部署 DDS Security 身份、权限和加密材料, 不能只依赖 `ROS_DOMAIN_ID`
+- host network 暂时保留用于跨机 DDS 发现, 取消前需要完成 discovery server 或静态发现验证
+- camera 容器仅开放 USB major 189, 所有运行服务均禁止提权并移除 Linux capabilities
+- 当前保持 root 用户运行以兼容 Jetson GPU、USB 热插拔和 ROS 日志目录, 非 root 切换需在实机验证设备 group、健康检查和重启行为后单独实施
+
+## 9. 推荐启动顺序
 
 1. 运行 `scripts/wildos_docker.sh x86 start lidar`
 2. 验证原始点云和 IMU
@@ -221,7 +231,7 @@ ros2 topic hz /spot1/model_visualization
 7. 运行 `scripts/wildos_docker.sh orin start wildos`
 8. 验证高程图、NavigationGraph、视觉输出和 Path
 
-## 9. 重建范围
+## 10. 重建范围
 
 | 修改 | 操作 |
 |---|---|
@@ -233,7 +243,7 @@ ros2 topic hz /spot1/model_visualization
 | WildOS 代码或配置 | `update wildos` |
 | 模型 | `restart wildos` |
 
-## 10. 常见故障
+## 11. 常见故障
 
 ### 没有雷达 topic
 
@@ -273,7 +283,7 @@ robot_blind_zone_elevation_search_radius=2.0
 
 当前健康检查主要检查进程和 DDS 发送线程, 必须继续执行 topic 频率、类型和单帧内容检查
 
-## 11. 日常状态
+## 12. 日常状态
 
 ```bash
 scripts/wildos_docker.sh x86 status

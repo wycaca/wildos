@@ -13,6 +13,10 @@ x-x86-runtime: &x86-runtime
   <<: *x86-image
   network_mode: host
   ipc: host
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
   restart: unless-stopped
 
 x-dds-environment: &dds-environment

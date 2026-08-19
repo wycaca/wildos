@@ -18,7 +18,12 @@ services:
         BASE_IMAGE: ros:humble-ros-base-jammy
     network_mode: host
     ipc: host
-    privileged: true
+    cap_drop:
+      - ALL
+    device_cgroup_rules:
+      - "c 189:* rmw"
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
     stop_grace_period: 20s
     environment:
@@ -35,7 +40,7 @@ services:
       LEFT_CAMERA_TRANSFORM: "${LEFT_CAMERA_TRANSFORM:-}"
       RIGHT_CAMERA_TRANSFORM: "${RIGHT_CAMERA_TRANSFORM:-}"
     volumes:
-      - /dev/bus/usb:/dev/bus/usb
+      - /dev/bus/usb:/dev/bus/usb:rw
       - ./docker/fastdds.wildos.xml:/etc/wildos/fastdds.xml:ro
       - camera_ros_logs:/root/.ros/log
 
@@ -50,6 +55,10 @@ services:
     network_mode: host
     ipc: host
     runtime: nvidia
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
     stop_grace_period: 30s
     depends_on:
