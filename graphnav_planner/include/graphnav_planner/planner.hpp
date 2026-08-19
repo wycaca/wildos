@@ -43,7 +43,13 @@ inline std::string uuid_to_string(const graphnav_msgs::msg::UUID& uuid)
 class UnexploredSpaceMap
 {
 public:
-  UnexploredSpaceMap(double min_x, double max_x, double min_y, double max_y, double margin, double resolution)
+  UnexploredSpaceMap(
+    double min_x,
+    double max_x,
+    double min_y,
+    double max_y,
+    double margin,
+    double resolution)
     : resolution_(resolution)
   {
     origin_x_ = min_x - margin;
@@ -83,7 +89,10 @@ public:
     dist_map_ = Eigen::MatrixXf::Constant(size_x_, size_y_, std::numeric_limits<float>::infinity());
     using Cell = std::pair<int, int>;
 
-    std::priority_queue<std::pair<float, Cell>, std::vector<std::pair<float, Cell>>, std::greater<>> pq;
+    std::priority_queue<
+      std::pair<float, Cell>,
+      std::vector<std::pair<float, Cell>>,
+      std::greater<>> pq;
 
     if (in_bounds(ix, iy))
     {
@@ -119,16 +128,24 @@ public:
       pq.pop();
       int x = cell.first, y = cell.second;
       if (cur_dist > dist_map_(x, y))
+      {
         continue;
+      }
       for (int dir = 0; dir < 8; ++dir)
       {
         int nx = x + dx[dir];
         int ny = y + dy[dir];
         if (!in_bounds(nx, ny))
+        {
           continue;
+        }
         if (map_(nx, ny) == 0)
-          continue;  // 跳过已探索区域
-        float new_dist = dist_map_(static_cast<int>(x), static_cast<int>(y)) + cost[dir] * resolution_;
+        {
+          continue;
+        }
+        float new_dist =
+          dist_map_(static_cast<int>(x), static_cast<int>(y)) +
+          cost[dir] * resolution_;
         if (new_dist < dist_map_(nx, ny))
         {
           dist_map_(nx, ny) = new_dist;
