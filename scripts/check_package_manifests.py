@@ -37,7 +37,6 @@ REQUIRED_DEPENDENCIES = {
         "rclcpp_components",
         "std_msgs",
         "tf2",
-        "tf2_eigen",
         "tf2_geometry_msgs",
         "tf2_ros",
         "visualization_msgs",

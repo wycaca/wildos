@@ -21,7 +21,6 @@ find_package(grid_map_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2 REQUIRED)
-find_package(tf2_eigen REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(graaf_vendor REQUIRED)
@@ -52,41 +51,16 @@ ament_target_dependencies(graphnav_planner_component
   grid_map_msgs
   tf2_ros
   tf2
-  tf2_eigen
   tf2_geometry_msgs
   graaf_vendor
 )
 target_link_libraries(graphnav_planner_component)
 rclcpp_components_register_node(graphnav_planner_component PLUGIN "graphnav_planner::PlannerNode" EXECUTABLE planner_node)
 
-
-add_library(path_follower_component SHARED src/path_follower_node.cpp)
-target_include_directories(path_follower_component PUBLIC
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  $<INSTALL_INTERFACE:include>
-  ${EIGEN3_INCLUDE_DIRS}
-)
-ament_target_dependencies(path_follower_component
-  rclcpp
-  rclcpp_components
-  nav_msgs
-  geometry_msgs
-  tf2_ros
-  tf2
-  tf2_eigen
-  tf2_geometry_msgs
-  geometry_msgs
-)
-target_link_libraries(path_follower_component)
-rclcpp_components_register_node(path_follower_component PLUGIN "graphnav_planner::PathFollowerNode" EXECUTABLE path_follower_node)
-
-
-
 # Install targets
 install(TARGETS
   graphnav_planner_component
   planner_node
-  path_follower_component
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}

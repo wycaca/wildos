@@ -60,7 +60,7 @@
 | MNT-01 | 可维护性 | ROS package | 补齐 package 依赖 | 待验证 |
 | MNT-02 | 可维护性 | 测试和 CI | 建立统一测试入口 | 待验证 |
 | MNT-03 | 可维护性 | C++ | 保持 C++ 代码格式统一 | 待验证 |
-| MNT-04 | 可维护性 | Planner | 删除自带 path follower | 已批准 |
+| MNT-04 | 可维护性 | Planner | 删除自带 path follower | 待验证 |
 | MNT-05 | 可维护性 | 文档和模型 | 补齐运行基线、模型来源和校验信息 | 已批准 |
 
 ## 4. `graph_construction`
@@ -623,6 +623,14 @@ Goal Mux 使用字符串拼装状态, Planner 使用前缀和子字符串解析
 2. 删除相关未使用依赖、安装项和文档入口
 3. Planner 保持发布 Path, 后续由其他导航算法负责路径执行
 4. 不在本仓库新增替代路径跟踪器
+
+当前实现说明:
+
+- 已删除 follower 源码、launch、CMake component 和安装 target
+- 删除 follower 独占的 `tf2_eigen` 依赖
+- Planner 仍发布 `nav_msgs/msg/Path`, 路径执行和底层避障由仓库外导航控制器负责
+- 仓库内没有替代路径跟踪实现
+- 清理单 package 旧构建产物后重新构建通过, 安装树只包含 `planner_node`, 3/3 CTest passed
 
 验收条件:
 

@@ -95,7 +95,7 @@ Use the consolidated startup script:
 ./scripts/start_wildos_elevation.sh
 ```
 
-The script launches the mapping backend, graph construction, odometry adapter, camera TF fallback, WildOS visual scoring, target fusion, goal mux, and graph planner. The optional `path_follower_node` is not part of this default chain.
+The script launches the mapping backend, graph construction, odometry adapter, camera TF fallback, WildOS visual scoring, target fusion, goal mux, and graph planner. Path execution is provided by an external navigation controller.
 
 Topic and frame names are selected by profile. Built-in profiles live in `graph_construction/configs/topic_profiles.yaml`:
 
@@ -252,9 +252,6 @@ ros2 launch visual_navigation lrn_launch.py ns:=spot1 do_object_search:=false
 ```bash
 # Launch only WildOS and the current target fusion adapter
 ros2 launch visual_navigation wildos_component.launch.py do_object_search:=true
-
-# Launch the optional path-to-goal adapter
-ros2 launch graphnav_planner path_follower.launch.py
 
 # Visualize ExploRFM outputs (debugging)
 ros2 run visual_navigation viz_net
