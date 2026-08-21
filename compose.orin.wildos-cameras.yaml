@@ -22,6 +22,7 @@ services:
       - ALL
     device_cgroup_rules:
       - "c 189:* rmw"
+      - "c 81:* rmw"
     security_opt:
       - no-new-privileges:true
     restart: unless-stopped
@@ -40,7 +41,8 @@ services:
       LEFT_CAMERA_TRANSFORM: "${LEFT_CAMERA_TRANSFORM:-}"
       RIGHT_CAMERA_TRANSFORM: "${RIGHT_CAMERA_TRANSFORM:-}"
     volumes:
-      - /dev/bus/usb:/dev/bus/usb:rw
+      - /dev:/dev:rw
+      - /run/udev:/run/udev:ro
       - ./docker/fastdds.wildos.xml:/etc/wildos/fastdds.xml:ro
       - camera_ros_logs:/root/.ros/log
 

@@ -18,6 +18,8 @@ trap cleanup EXIT
   "${REPO_ROOT}/compose.orin.wildos-cameras.yaml" \
   "${REPO_ROOT}/compose.x86_64.lidar-dlio.yaml"
 rg -q 'c 189:\* rmw' "${REPO_ROOT}/compose.orin.wildos-cameras.yaml"
+rg -q 'c 81:\* rmw' "${REPO_ROOT}/compose.orin.wildos-cameras.yaml"
+rg -q '/run/udev:/run/udev:ro' "${REPO_ROOT}/compose.orin.wildos-cameras.yaml"
 test "$(rg -c 'no-new-privileges:true' \
   "${REPO_ROOT}/compose.orin.wildos-cameras.yaml")" -eq 2
 test "$(rg -c 'no-new-privileges:true' \
