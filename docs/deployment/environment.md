@@ -34,14 +34,14 @@ x86 和相机 AGX 通过 `192.168.50.0/24` 有线网络通信
 | 相机 AGX | `eno1` | `192.168.123.99/24` | GO2 底层主机直连, 不得修改或断开 |
 | 相机 AGX | `enx00e03a151de5` | `192.168.50.2/24` | x86 DDS 专用链路, 无默认网关 |
 | 点云 x86 | `wlp1s0` | `10.72.249.164/23` | 无线管理 |
-| 点云 x86 | `eno1` | `192.168.11.50/24` | MID360 网段, 不得用于 DDS |
-| 点云 x86 | `enx00e03b8511b9` | `192.168.50.1/24` | 相机 AGX DDS 专用链路, 无默认网关 |
+| 点云 x86 | `eno1` | `192.168.50.1/24` | 相机 AGX DDS 专用链路, 无默认网关 |
+| 点云 x86 | `enx00e03b8511b9` | `192.168.1.50/24` | MID360 专用链路, 雷达地址为 `192.168.1.136` |
 
 在 x86 上配置或恢复 AGX 专用链路:
 
 ```bash
 cd /home/ks-x86/wildos_ws/src/nebula2-wildos
-bash scripts/configure_x86_agx_link.sh enx00e03b8511b9
+bash scripts/configure_x86_agx_link.sh eno1
 ```
 
 脚本只创建或更新 `wildos-agx-link`, 不会触碰雷达网卡、无线管理网卡或默认路由. 两端均应显示物理载波后再验证:
@@ -55,11 +55,12 @@ Domain 和 RMW 是实机 topic 契约的一部分，变更时必须同时修改�
 
 ## 3. x86 传感器和定位
 
-x86 环境文件只配置宿主机路径:
+x86 环境文件配置挂载路径和注册点云输出频率:
 
 ```dotenv
-MID360_CONFIG_FILE=/absolute/path/to/MID360_config.json
-DLIO_CONFIG_FILE=/absolute/path/to/graph_construction/configs/dlio/mid360.yaml
+MID360_CONFIG_FILE=./docker/config/MID360_config.json
+DLIO_CONFIG_FILE=./graph_construction/configs/dlio/mid360.yaml
+OUTPUT_POINTCLOUD_RATE_HZ=2.0
 ```
 
 MID360 JSON 中主机网卡地址和雷达地址必须与现场网络一致

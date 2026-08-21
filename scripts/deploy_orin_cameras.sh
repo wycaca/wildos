@@ -5,7 +5,6 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
 ENV_FILE="${REPO_ROOT}/.env.orin.wildos-cameras"
-ENV_TEMPLATE="${REPO_ROOT}/.env.orin.wildos-cameras.example"
 INVENTORY_FILE=""
 ASSIGN_ROLE=""
 REQUIRE_TRANSFORMS=false
@@ -54,11 +53,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ ! -f "${ENV_FILE}" ]]; then
-  cp "${ENV_TEMPLATE}" "${ENV_FILE}"
-  chmod 0600 "${ENV_FILE}"
-  echo "Created Compose environment file: ${ENV_FILE}"
-fi
+[[ -f "${ENV_FILE}" ]] || {
+  echo "Missing Compose environment file: ${ENV_FILE}" >&2
+  exit 1
+}
 
 set -a
 source "${ENV_FILE}"

@@ -12,11 +12,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-cp "${REPO_ROOT}/.env.orin.wildos-cameras.example" "${ENV_FILE}"
+cp "${REPO_ROOT}/.env.orin.wildos-cameras" "${ENV_FILE}"
 sed -i \
-  -e 's/FRONT_CAMERA_SERIAL=replace_with_front_serial/FRONT_CAMERA_SERIAL=front/' \
-  -e 's/LEFT_CAMERA_SERIAL=replace_with_left_serial/LEFT_CAMERA_SERIAL=left/' \
-  -e 's/RIGHT_CAMERA_SERIAL=replace_with_right_serial/RIGHT_CAMERA_SERIAL=right/' \
+  -e 's/^FRONT_CAMERA_SERIAL=.*/FRONT_CAMERA_SERIAL=front/' \
+  -e 's/^LEFT_CAMERA_SERIAL=.*/LEFT_CAMERA_SERIAL=left/' \
+  -e 's/^RIGHT_CAMERA_SERIAL=.*/RIGHT_CAMERA_SERIAL=right/' \
   "${ENV_FILE}"
 
 printf '%s\n' \

@@ -24,7 +24,7 @@ x86 主机, 192.168.50.1
 
 两台主机使用有线局域网、Domain 2 和 FastDDS
 
-相机 AGX 的 `eno1=192.168.123.99/24` 专供 GO2 底层主机直连, 不参与 Docker 或 DDS 配置, 不得断开. x86 的 `eno1=192.168.11.50/24` 专供 MID360. 跨机 DDS 只使用 `192.168.50.1/24` 和 `192.168.50.2/24`, 具体网卡和恢复命令见 [环境配置](environment.md)
+相机 AGX 的 `eno1=192.168.123.99/24` 专供 GO2 底层主机直连, 不参与 Docker 或 DDS 配置, 不得断开. x86 的 USB 网卡 `enx00e03b8511b9=192.168.1.50/24` 专供地址为 `192.168.1.136` 的 MID360. 跨机 DDS 使用 x86 `eno1=192.168.50.1/24` 和相机 AGX `192.168.50.2/24`, 具体恢复命令见 [环境配置](environment.md)
 
 ## 2. 配置和部署参数
 
@@ -42,7 +42,7 @@ x86 主机, 192.168.50.1
 
 | 平台 | 参数 |
 |---|---|
-| x86 | `MID360_CONFIG_FILE`、`DLIO_CONFIG_FILE` 宿主机路径 |
+| x86 | MID360、D-LIO 挂载路径和注册点云输出频率 |
 | 相机 AGX | 三台相机序列号、USB 路径、`base_link` 外参、`WILDOS_CKPT_DIR` |
 
 ## 3. Compose 文件
@@ -93,7 +93,6 @@ scripts/wildos_docker.sh <x86|orin> <action> [service...]
 
 | 操作 | 行为 | 示例 |
 |---|---|---|
-| `init` | 从模板创建平台 `.env` | `scripts/wildos_docker.sh x86 init` |
 | `config` | 验证 Compose 插值与结构 | `scripts/wildos_docker.sh orin config` |
 | `build` | 构建镜像 | `scripts/wildos_docker.sh orin build cameras` |
 | `update` | 拉取基础镜像、重建并重新创建容器 | `scripts/wildos_docker.sh x86 update localization` |
@@ -114,15 +113,12 @@ scripts/wildos_docker.sh x86 update --env-file /path/to/x86.env localization
 
 ## 6. x86 配置
 
-```bash
-scripts/wildos_docker.sh x86 init
-```
-
-至少填写:
+仓库已保存当前实机配置:
 
 ```dotenv
-MID360_CONFIG_FILE=/absolute/path/to/MID360_config.json
-DLIO_CONFIG_FILE=/absolute/path/to/graph_construction/configs/dlio/mid360.yaml
+MID360_CONFIG_FILE=./docker/config/MID360_config.json
+DLIO_CONFIG_FILE=./graph_construction/configs/dlio/mid360.yaml
+OUTPUT_POINTCLOUD_RATE_HZ=2.0
 ```
 
 MID360 配置中主机网卡地址和雷达 IP 必须与现场一致
@@ -147,11 +143,9 @@ ros2 run tf2_ros tf2_echo odom base_link
 
 ## 7. 相机 AGX 配置
 
-```bash
-scripts/wildos_docker.sh orin init
-```
+仓库已保存当前三台相机的序列号、USB 路径、近似外参和权重目录. 相机实测标定完成后直接更新 `.env.orin.wildos-cameras` 中的三条外参
 
-至少填写:
+关键参数:
 
 ```dotenv
 FRONT_CAMERA_SERIAL=...
@@ -160,7 +154,7 @@ RIGHT_CAMERA_SERIAL=...
 FRONT_CAMERA_TRANSFORM="x y z qx qy qz qw"
 LEFT_CAMERA_TRANSFORM="x y z qx qy qz qw"
 RIGHT_CAMERA_TRANSFORM="x y z qx qy qz qw"
-WILDOS_CKPT_DIR=/absolute/path/to/ckpts
+WILDOS_CKPT_DIR=./ckpts
 ```
 
 模型文件必须与仓库中的 `ckpts/manifest.json` 完全匹配。容器启动和模型反序列化前都会校验文件大小与 SHA256, 校验失败时直接停止, 不会自动下载替代文件

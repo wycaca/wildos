@@ -29,8 +29,7 @@ docker() {
 export -f docker
 export CALLS_FILE
 
-bash "${SCRIPT_DIR}/wildos_docker.sh" x86 init --env-file "${ENV_FILE}" >/dev/null
-test -f "${ENV_FILE}"
+cp "${REPO_ROOT}/.env.x86_64.lidar-dlio" "${ENV_FILE}"
 
 bash "${SCRIPT_DIR}/wildos_docker.sh" x86 update --env-file "${ENV_FILE}" localization
 
@@ -39,7 +38,7 @@ rg -q -Fx "${compose_prefix} config --quiet" "${CALLS_FILE}"
 rg -q -Fx "${compose_prefix} build --pull localization" "${CALLS_FILE}"
 rg -q -Fx "${compose_prefix} up --detach --force-recreate localization" "${CALLS_FILE}"
 
-cp "${REPO_ROOT}/.env.orin.wildos-cameras.example" "${ORIN_ENV_FILE}"
+cp "${REPO_ROOT}/.env.orin.wildos-cameras" "${ORIN_ENV_FILE}"
 : > "${CALLS_FILE}"
 
 bash "${SCRIPT_DIR}/wildos_docker.sh" orin start --env-file "${ORIN_ENV_FILE}" cameras

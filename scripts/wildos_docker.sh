@@ -10,7 +10,6 @@ usage() {
 Usage: wildos_docker.sh <x86|orin> <action> [options] [service...]
 
 Actions:
-  init       Create the platform environment file from its template
   config     Validate the Compose configuration
   build      Build one or all services
   update     Rebuild with updated base images and recreate services
@@ -49,12 +48,10 @@ shift 2
 case "${PLATFORM}" in
   x86)
     ENV_FILE="${REPO_ROOT}/.env.x86_64.lidar-dlio"
-    ENV_TEMPLATE="${REPO_ROOT}/.env.x86_64.lidar-dlio.example"
     COMPOSE_FILE="${REPO_ROOT}/compose.x86_64.lidar-dlio.yaml"
     ;;
   orin)
     ENV_FILE="${REPO_ROOT}/.env.orin.wildos-cameras"
-    ENV_TEMPLATE="${REPO_ROOT}/.env.orin.wildos-cameras.example"
     COMPOSE_FILE="${REPO_ROOT}/compose.orin.wildos-cameras.yaml"
     ;;
   *)
@@ -77,20 +74,8 @@ if [[ "${ENV_FILE}" != /* ]]; then
   ENV_FILE="${CALLER_DIR}/${ENV_FILE}"
 fi
 
-if [[ "${ACTION}" == "init" ]]; then
-  [[ $# -eq 0 ]] || fail "init does not accept service names"
-  if [[ -f "${ENV_FILE}" ]]; then
-    echo "Environment file already exists: ${ENV_FILE}"
-  else
-    cp "${ENV_TEMPLATE}" "${ENV_FILE}"
-    chmod 0600 "${ENV_FILE}"
-    echo "Created environment file: ${ENV_FILE}"
-  fi
-  exit 0
-fi
-
 command -v docker >/dev/null 2>&1 || fail "Docker is not installed or not in PATH"
-[[ -f "${ENV_FILE}" ]] || fail "Missing environment file: ${ENV_FILE}, run scripts/wildos_docker.sh ${PLATFORM} init"
+[[ -f "${ENV_FILE}" ]] || fail "Missing environment file: ${ENV_FILE}"
 
 cd "${REPO_ROOT}"
 compose=(docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}")
