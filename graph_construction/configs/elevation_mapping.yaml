@@ -25,9 +25,9 @@ elevation_mapping_node:
     enable_drift_corrected_TF_publishing: false
     enable_pointcloud_publishing: false
 
-    # 小推车 base_link 位于雷达中心, 实测雷达到地面约 0.90m
-    # 实机仅初始化脚下局部地面, 避免人工平面越过墙体
-    use_initializer_at_start: true
+    # GO2 新安装后未复测雷达到地面高度, 禁用旧启动先验避免错误填充
+    # 完成高度和盲区验证后再启用, 并更新 offset 和范围
+    use_initializer_at_start: false
     initialize_method: linear
     initialize_frame_id: ["base_link"]
     initialize_tf_offset: [-0.90]

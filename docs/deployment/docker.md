@@ -1,6 +1,6 @@
 # 实机 Docker 部署说明
 
-本文是 `sim2real` 分支当前部署入口
+本文是 `sim2real` 分支在 Unitree GO2 上的部署入口
 
 ## 1. 架构
 
@@ -23,6 +23,8 @@ x86 主机, 192.168.50.1
 ```
 
 两台主机使用有线局域网、Domain 2 和 FastDDS
+
+相机 AGX 的 `eno1=192.168.123.99/24` 专供 GO2 底层主机直连, 不参与 Docker 或 DDS 配置, 不得断开. x86 的 `eno1=192.168.11.50/24` 专供 MID360. 跨机 DDS 只使用 `192.168.50.1/24` 和 `192.168.50.2/24`, 具体网卡和恢复命令见 [环境配置](environment.md)
 
 ## 2. 配置和部署参数
 
@@ -165,7 +167,7 @@ WILDOS_CKPT_DIR=/absolute/path/to/ckpts
 
 更新模型时必须同步评审并更新清单中的版本、来源、大小和 SHA256。当前两个 head checkpoint 使用 `weights_only=True` 和固定类型 allowlist 加载；RADIO checkpoint 仍含模型构造元数据, 只允许在哈希校验通过后加载
 
-三台相机已经按前、左、右接入。主机没有 `rs-enumerate-devices` 时，先构建相机镜像，再逐台登记:
+相机服务只会打开环境文件中前、左、右三条序列号. GO2 狗头保留的额外 RealSense 即使被系统枚举也不会自动分配或启动. 主机没有 `rs-enumerate-devices` 时，先构建相机镜像，再逐台登记:
 
 ```bash
 scripts/wildos_docker.sh orin build cameras

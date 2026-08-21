@@ -2,7 +2,7 @@
 
 ## 1. 职责
 
-x86 主机上的 `localization` 容器使用 MID360 点云和内置 IMU 估计小推车连续位姿
+x86 主机上的 `localization` 容器使用 MID360 点云和内置 IMU 估计 GO2 连续位姿
 
 ```text
 /livox/lidar + /livox/imu
@@ -51,7 +51,7 @@ odom
 - `maxCorrespondenceDistance: 0.5`
 - `maxIterations: 32`
 
-MID360 安装相对水平面倾斜约 7 度, 当前精确 LiDAR 外参仍需测量
+GO2 新安装后的 MID360 相对水平姿态和精确 LiDAR 外参仍需测量
 
 ## 4. Topic 所有权
 

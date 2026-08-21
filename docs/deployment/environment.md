@@ -6,7 +6,7 @@
 |---|---|
 | `graph_construction/configs/topic_profiles.yaml` | `robot` profile 的 topic、frame 和 DDS |
 | `graph_construction/configs/dlio/mid360.yaml` | x86 D-LIO 参数和传感器外参 |
-| `graph_construction/configs/elevation_mapping.yaml` | 小推车高程图和启动先验 |
+| `graph_construction/configs/elevation_mapping.yaml` | GO2 高程图和启动先验 |
 | `graph_construction/configs/graph_construction_elevation.yaml` | 实机地图分类、盲区和图参数 |
 | `visual_navigation/configs/wildos_nav_conf.yaml` | 三相机视觉配置 |
 | `.env.x86_64.lidar-dlio` | x86 MID360 和 D-LIO 宿主机文件路径 |
@@ -25,6 +25,31 @@ RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 ```
 
 x86 和相机 AGX 通过 `192.168.50.0/24` 有线网络通信
+
+当前 GO2 网络分工:
+
+| 主机 | 网卡 | 地址 | 用途 |
+|---|---|---|---|
+| 相机 AGX | `wlP1p1s0` | `10.72.15.133/24` | 无线管理 |
+| 相机 AGX | `eno1` | `192.168.123.99/24` | GO2 底层主机直连, 不得修改或断开 |
+| 相机 AGX | `enx00e03a151de5` | `192.168.50.2/24` | x86 DDS 专用链路, 无默认网关 |
+| 点云 x86 | `wlp1s0` | `10.72.249.164/23` | 无线管理 |
+| 点云 x86 | `eno1` | `192.168.11.50/24` | MID360 网段, 不得用于 DDS |
+| 点云 x86 | `enx00e03b8511b9` | `192.168.50.1/24` | 相机 AGX DDS 专用链路, 无默认网关 |
+
+在 x86 上配置或恢复 AGX 专用链路:
+
+```bash
+cd /home/ks-x86/wildos_ws/src/nebula2-wildos
+bash scripts/configure_x86_agx_link.sh enx00e03b8511b9
+```
+
+脚本只创建或更新 `wildos-agx-link`, 不会触碰雷达网卡、无线管理网卡或默认路由. 两端均应显示物理载波后再验证:
+
+```bash
+ping -c 3 192.168.50.1  # 在相机 AGX 执行
+ping -c 3 192.168.50.2  # 在点云 x86 执行
+```
 
 Domain 和 RMW 是实机 topic 契约的一部分，变更时必须同时修改两台主机和 `robot` profile
 
@@ -73,19 +98,19 @@ odom -> dlio_odom -> base_link -> lidar_link
 
 ## 6. 高程图和图构建
 
-当前小推车参数:
+GO2 新安装后, 旧车体高度和盲区尺寸不能直接作为标定值. `use_initializer_at_start` 当前关闭, 以避免旧的人工地面先验越过真实墙体或桌面. 重新测量 LiDAR 到地面的高度、近场结构范围后，再更新以下参数并启用启动先验:
 
 | 参数 | 当前值 | 说明 |
 |---|---:|---|
 | `resolution` | 0.2 m | 高程图分辨率 |
 | `map_length` | 30 m | rolling map 边长 |
 | `max_height_range` | 1.0 m | 排除天花板 |
-| `initialize_tf_offset` | -0.90 m | 雷达到地面高度 |
+| `initialize_tf_offset` | -0.90 m | 历史值, 待按 GO2 安装高度复测 |
 | `initialize_tf_grid_size` | 1.0 m | 初始锚点方形边长 |
 | `dilation_size_initialize` | 2 cell | 初始化膨胀 |
-| `robot_blind_zone_radius` | 0.8 m | 脚下种子半径 |
-| `robot_blind_zone_elevation_search_radius` | 2.0 m | 最大连通搜索半径 |
-| `robot_ground_height_offset` | 0.90 m | odom 原点到地面 |
+| `robot_blind_zone_radius` | 0.8 m | 历史值, 待按 GO2 近场结构复测 |
+| `robot_blind_zone_elevation_search_radius` | 2.0 m | 历史值, 待按 GO2 近场结构复测 |
+| `robot_ground_height_offset` | 0.90 m | 历史值, 待按 GO2 安装高度复测 |
 
 调整启动先验时必须同时检查人工区域是否连接真实地面、是否越过墙体以及是否覆盖近场障碍
 
@@ -93,6 +118,7 @@ odom -> dlio_odom -> base_link -> lidar_link
 
 - 前相机 D435if
 - 左右相机 D435i
+- 狗头保留的 D435i 不在三台已配置序列号中, 容器不会打开它. 现场条件允许时应断开以释放 USB 带宽和供电余量
 - 驱动彩色流 640 × 480, 15 Hz
 - WildOS 处理 10 Hz
 - 图像 topic 使用压缩传输

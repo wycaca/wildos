@@ -78,6 +78,8 @@ add_camera() {
   local model="$2"
   local usb_path="$3"
   [[ -n "${serial}" ]] || return
+  # videoN 会随 USB 枚举变化, 只保存稳定的物理端口
+  usb_path="${usb_path%%/video4linux/*}"
   CAMERA_MODELS["${serial}"]="${model:-unknown}"
   CAMERA_PATHS["${serial}"]="${usb_path:-unknown}"
 }
@@ -147,8 +149,8 @@ fi
 if [[ -n "${ASSIGN_ROLE}" && ${#CAMERA_MODELS[@]} -lt 1 ]]; then
   echo "Expected at least 1 Intel RealSense device, found 0" >&2
   exit 1
-elif [[ -z "${ASSIGN_ROLE}" && ${#CAMERA_MODELS[@]} -ne 3 ]]; then
-  echo "Expected exactly 3 Intel RealSense devices, found ${#CAMERA_MODELS[@]}" >&2
+elif [[ -z "${ASSIGN_ROLE}" && ${#CAMERA_MODELS[@]} -lt 3 ]]; then
+  echo "Expected at least 3 Intel RealSense devices, found ${#CAMERA_MODELS[@]}" >&2
   exit 1
 fi
 
