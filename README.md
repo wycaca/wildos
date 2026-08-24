@@ -17,7 +17,7 @@ x86 主机运行 LiDAR 与 D-LIO. 相机 AGX 运行相机, 建图, 图构建, �
 | 要了解的内容 | 文档 |
 | --- | --- |
 | 当前架构和约束 | [系统总览](docs/system/overview.md), [实现原则](docs/system/principles.md) |
-| 实机部署和配置 | [部署说明](docs/deployment/docker.md), [环境配置](docs/deployment/environment.md), [运行基线与上线验收](docs/deployment/validation.md) |
+| 实机部署和配置 | [部署说明](docs/deployment/docker.md), [环境配置](docs/deployment/environment.md) |
 | 图构建 | [导航图更新](docs/graph_construction/graph_update.md) |
 | 目标搜索和定位 | [目标搜索](docs/object_search/target_search.md), [目标定位](docs/visual_navigation/target_localization.md) |
 | Planner 行为 | [Planner 说明](docs/graphnav_planner/README.md) |
@@ -33,7 +33,7 @@ x86 主机运行 LiDAR 与 D-LIO. 相机 AGX 运行相机, 建图, 图构建, �
 ./scripts/test_repo.sh
 ```
 
-该入口固定使用仓库 `.venv` 的 Python 3.10, 不执行 flake8 或 pep257. GPU、硬件和 10 分钟 rosbag 验证按 [运行基线与上线验收](docs/deployment/validation.md) 单独执行
+该入口固定使用仓库 `.venv` 的 Python 3.10, 不执行 flake8 或 pep257
 
 ## 主要模块
 
