@@ -16,16 +16,38 @@ LAUNCH_PATH = (
     / "launch"
     / "elevation_visual_navigation.launch.py"
 )
+DLIO_LAUNCH_PATH = (
+    REPO_ROOT
+    / "graph_construction"
+    / "launch"
+    / "dlio_localization.launch.py"
+)
 
 
-def _load_launch_module():
+def _load_launch_module(path=LAUNCH_PATH):
     spec = importlib.util.spec_from_file_location(
         "wildos_elevation_launch",
-        LAUNCH_PATH,
+        path,
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_dlio_launch_connects_lidar_and_imu_frames():
+    module = _load_launch_module(DLIO_LAUNCH_PATH)
+    nodes = [
+        action
+        for action in module.generate_launch_description().entities
+        if isinstance(action, Node)
+    ]
+    static_tf_names = {
+        node._Node__node_name
+        for node in nodes
+        if node.node_executable == "static_transform_publisher"
+    }
+
+    assert static_tf_names == {"base_to_lidar_tf", "base_to_imu_tf"}
 
 
 def _context_with_defaults(module):

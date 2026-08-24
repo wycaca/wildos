@@ -37,13 +37,12 @@ flowchart TD
 
 MID360 位于三相机结构上方, 雷达正下方存在近场盲区
 
-当前实机使用两层低置信度先验:
+当前实机关闭 elevation mapping 启动平面, 只保留 graph construction 的受限盲区修补:
 
-1. elevation mapping 以 `base_link` 为中心创建 1.0 m 方形地面锚点
-2. 初始化结果膨胀 2 cell
-3. graph construction 以 0.8 m 为盲区种子
-4. 只在 2.0 m 搜索半径内填充与种子相连的 unknown 分量
-5. 连接到外围原始 free 后保存固定世界坐标先验
+1. graph construction 以 0.4 m 为盲区种子
+2. 只在 1.0 m 搜索半径内填充与种子相连的 unknown 分量
+3. 优先使用附近真实地面高程, 附近无地面时使用 0.65 m 站立高度回退
+4. 连接到外围原始 free 后保存固定世界坐标先验
 
 当前参数:
 
@@ -51,12 +50,13 @@ MID360 位于三相机结构上方, 雷达正下方存在近场盲区
 |---|---:|
 | `initialize_tf_grid_size` | 1.0 m |
 | `dilation_size_initialize` | 2 cell |
-| `robot_blind_zone_radius` | 0.8 m |
-| `robot_blind_zone_elevation_search_radius` | 2.0 m |
-| `robot_ground_height_offset` | 0.90 m |
+| `robot_blind_zone_radius` | 0.4 m |
+| `robot_blind_zone_elevation_search_radius` | 1.0 m |
+| `robot_ground_height_offset` | 0.65 m |
+| `robot_ground_elevation_tolerance` | 0.2 m |
 | `min_obstacle_clearance` | 0.5 m |
 
-GO2 新安装后必须重新测量 LiDAR 到地面的高度和雷达下方结构尺寸. 在完成测量前, elevation mapping 的启动先验保持关闭, 不得把本节参数作为已验收值
+0.65 m 来自 GO2 站立状态的点云地面峰值, 固定高度只允许作为无真实地面样本时的回退值。趴下状态重新启动定位时不能沿用该值
 
 修补必须满足:
 

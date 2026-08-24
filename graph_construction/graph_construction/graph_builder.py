@@ -36,11 +36,11 @@ class GraphBuilderConfig:
     # 过滤局部高程尖峰和帘状面噪声
     grid_map_max_surface_step: float = 0.35
 
-    # 启动安全先验的种子半径和最大连通盲区搜索半径
-    robot_blind_zone_radius: float = 0.8
-    robot_blind_zone_elevation_search_radius: float = 2.0
-    robot_ground_height_offset: float = 0.90
-    robot_ground_elevation_tolerance: float = 0.5
+    # GO2 近场盲区修补参数, 固定高度仅作为无地面样本时的回退
+    robot_blind_zone_radius: float = 0.4
+    robot_blind_zone_elevation_search_radius: float = 1.0
+    robot_ground_height_offset: float = 0.65
+    robot_ground_elevation_tolerance: float = 0.2
 
     node_sample_count: int = 1000
     max_free_radius: float = 4.0

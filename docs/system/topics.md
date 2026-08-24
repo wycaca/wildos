@@ -29,7 +29,7 @@ x86:
 |---|---|---|---|---|
 | `/livox/lidar` | `sensor_msgs/msg/PointCloud2` | Livox 驱动 | D-LIO | 约 10 Hz, 含逐点 `timestamp` |
 | `/livox/imu` | `sensor_msgs/msg/Imu` | Livox 驱动 | D-LIO | 时间连续 |
-| `/cloud_registered` | `sensor_msgs/msg/PointCloud2` | D-LIO guard | 相机 AGX | 2 Hz, frame=`dlio_odom` |
+| `/cloud_registered` | `sensor_msgs/msg/PointCloud2` | D-LIO guard | 相机 AGX | 约 10 Hz, frame=`dlio_odom` |
 | `/odom` | `nav_msgs/msg/Odometry` | D-LIO TF adapter | 相机 AGX | parent=`odom`, child=`base_link` |
 | `/tf` | `tf2_msgs/msg/TFMessage` | D-LIO TF adapter | 两台主机 | 不能有重复 child owner |
 

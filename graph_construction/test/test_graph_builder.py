@@ -47,12 +47,13 @@ def _reachable_node_ids(graph: GraphState, start_node_id: int | None) -> set[int
     return reachable
 
 
-def test_graph_builder_defaults_match_paper_geometry():
-    """默认几何净空和连边半径应与论文参数一致"""
+def test_graph_builder_defaults_match_hardware_geometry():
+    """默认盲区范围适配 GO2, 图构建几何保持论文参数"""
     config = GraphBuilderConfig()
 
     assert config.node_sample_count == 1000
-    assert config.robot_blind_zone_elevation_search_radius == 2.0
+    assert config.robot_blind_zone_radius == 0.4
+    assert config.robot_blind_zone_elevation_search_radius == 1.0
     assert config.max_free_radius == 4.0
     assert config.min_obstacle_clearance == 0.5
     assert config.edge_radius == 8.0
@@ -582,8 +583,8 @@ def test_graph_builder_repairs_robot_blind_zone_from_nearby_ground():
     )
 
 
-def test_default_blind_zone_repairs_ground_out_to_1_2_metres():
-    """验证默认盲区修补填满脚下连通 unknown 并接到外部 free"""
+def test_default_blind_zone_does_not_repair_beyond_one_metre():
+    """验证 GO2 默认盲区修补不会越过一米边界"""
     resolution = 0.2
     size = 61
     center = 30
@@ -616,9 +617,10 @@ def test_default_blind_zone_repairs_ground_out_to_1_2_metres():
         stamp_seconds=1.0,
     )
 
-    assert result.classified_grid.is_free_index(center + 5, center)
-    assert result.classified_grid.is_free_index(center, center + 5)
-    assert not np.any(result.classified_grid.unknown[original_unknown])
+    repaired = original_unknown & result.classified_grid.free
+    assert np.all(repaired[distance <= 1.0])
+    assert not np.any(repaired[distance > 1.0])
+    assert np.any(result.classified_grid.unknown[original_unknown])
     assert (
         result.classified_grid.stats["robot_blind_zone_status"]
         == "repaired_connected"
@@ -762,7 +764,12 @@ def test_blind_zone_preserves_slope_step_pit_and_obstacle_surfaces():
     )
     robot_xy = ((center + 0.5) * resolution, (center + 0.5) * resolution)
     expected_ground = 0.05 * robot_xy[0]
-    builder = SparseGraphBuilder(GraphBuilderConfig(min_obstacle_clearance=0.0))
+    builder = SparseGraphBuilder(
+        GraphBuilderConfig(
+            min_obstacle_clearance=0.0,
+            robot_ground_height_offset=0.90,
+        )
+    )
 
     result = builder.update(
         grid,

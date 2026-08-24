@@ -25,12 +25,11 @@ elevation_mapping_node:
     enable_drift_corrected_TF_publishing: false
     enable_pointcloud_publishing: false
 
-    # GO2 新安装后未复测雷达到地面高度, 禁用旧启动先验避免错误填充
-    # 完成高度和盲区验证后再启用, 并更新 offset 和范围
+    # GO2 高度随站姿变化, 禁用固定高度启动先验避免错误填充
     use_initializer_at_start: false
     initialize_method: linear
     initialize_frame_id: ["base_link"]
-    initialize_tf_offset: [-0.90]
+    initialize_tf_offset: [-0.65]
     dilation_size_initialize: 2
     initialize_tf_grid_size: 1.0
 

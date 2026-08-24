@@ -17,7 +17,7 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("pointcloud_topic", default_value="/livox/lidar"),
         DeclareLaunchArgument("imu_topic", default_value="/livox/imu"),
         DeclareLaunchArgument("output_pointcloud_topic", default_value="/cloud_registered"),
-        DeclareLaunchArgument("output_pointcloud_rate_hz", default_value="2.0"),
+        DeclareLaunchArgument("output_pointcloud_rate_hz", default_value="0.0"),
         DeclareLaunchArgument("output_odom_topic", default_value="/odom"),
         DeclareLaunchArgument("output_tf_topic", default_value="/tf"),
         DeclareLaunchArgument("global_frame", default_value="odom"),
@@ -112,4 +112,30 @@ def generate_launch_description() -> LaunchDescription:
         ],
     )
 
-    return LaunchDescription([*arguments, dlio, tf_adapter, output_guard])
+    # D-LIO does not publish its configured sensor extrinsics
+    lidar_tf = Node(
+        package="tf2_ros",
+        executable="static_transform_publisher",
+        name="base_to_lidar_tf",
+        arguments=[
+            "--x", "0", "--y", "0", "--z", "0",
+            "--qx", "0", "--qy", "0", "--qz", "0", "--qw", "1",
+            "--frame-id", LaunchConfiguration("base_frame"),
+            "--child-frame-id", LaunchConfiguration("lidar_frame"),
+        ],
+    )
+    imu_tf = Node(
+        package="tf2_ros",
+        executable="static_transform_publisher",
+        name="base_to_imu_tf",
+        arguments=[
+            "--x", "0.011", "--y", "0.02329", "--z", "-0.04412",
+            "--qx", "0", "--qy", "0", "--qz", "0", "--qw", "1",
+            "--frame-id", LaunchConfiguration("base_frame"),
+            "--child-frame-id", LaunchConfiguration("imu_frame"),
+        ],
+    )
+
+    return LaunchDescription(
+        [*arguments, dlio, tf_adapter, output_guard, lidar_tf, imu_tf]
+    )

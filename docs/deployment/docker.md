@@ -118,7 +118,7 @@ scripts/wildos_docker.sh x86 update --env-file /path/to/x86.env localization
 ```dotenv
 MID360_CONFIG_FILE=./docker/config/MID360_config.json
 DLIO_CONFIG_FILE=./graph_construction/configs/dlio/mid360.yaml
-OUTPUT_POINTCLOUD_RATE_HZ=2.0
+OUTPUT_POINTCLOUD_RATE_HZ=0.0
 ```
 
 MID360 配置中主机网卡地址和雷达 IP 必须与现场一致
@@ -252,7 +252,7 @@ ros2 topic hz /spot1/model_visualization
 
 - 检查点云逐点时间和 IMU 时间
 - 检查 LiDAR/IMU frame 和外参
-- 检查 7 度安装倾角
+- 检查 10 度安装倾角和倾斜轴向
 - 检查近场 crop 是否误删有效结构
 - 修复后重启高程图, 不复用已污染地图
 
@@ -269,10 +269,10 @@ ros2 topic hz /spot1/model_visualization
 确认当前镜像加载:
 
 ```text
-initialize_tf_grid_size=1.0
-dilation_size_initialize=2
-robot_blind_zone_radius=0.8
-robot_blind_zone_elevation_search_radius=2.0
+use_initializer_at_start=false
+robot_blind_zone_radius=0.4
+robot_blind_zone_elevation_search_radius=1.0
+robot_ground_height_offset=0.65
 ```
 
 ### 容器 healthy 但没有数据

@@ -16,7 +16,7 @@ profiles:
     cam_frame: "{}_color_optical_frame"
     pointcloud_expected_frame: dlio_odom
 
-    # x86 已限制为 2 Hz, 本机只做 identity 扇出
+    # x86 保留原始 10 Hz 注册点云, 本机只做 identity 扇出
     pointcloud_input_topic: /cloud_registered
     aligned_lidar_topic: /spot1/cloud_registered_local
     pointcloud_output_rate_hz: 0.0

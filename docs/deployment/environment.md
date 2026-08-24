@@ -60,7 +60,7 @@ x86 环境文件配置挂载路径和注册点云输出频率:
 ```dotenv
 MID360_CONFIG_FILE=./docker/config/MID360_config.json
 DLIO_CONFIG_FILE=./graph_construction/configs/dlio/mid360.yaml
-OUTPUT_POINTCLOUD_RATE_HZ=2.0
+OUTPUT_POINTCLOUD_RATE_HZ=0.0
 ```
 
 MID360 JSON 中主机网卡地址和雷达地址必须与现场网络一致
@@ -70,7 +70,7 @@ MID360 JSON 中主机网卡地址和雷达地址必须与现场网络一致
 ```text
 /cloud_registered
   -> pointcloud_relay
-  -> /spot1/cloud_registered_local, 2 Hz, frame=dlio_odom
+  -> /spot1/cloud_registered_local, 约 10 Hz, frame=dlio_odom
   -> elevation mapping
 
 /odom
@@ -95,23 +95,26 @@ odom -> dlio_odom -> base_link -> lidar_link
                              -> right_link -> right_color_optical_frame
 ```
 
-三相机 `base_link -> <name>_link` 当前使用近似值, 结构固定后必须重新标定
+当前 `base_link` 是雷达参考原点。三相机位于雷达下方同一平面, 朝向分别为前、左、右；`base_link -> <name>_link` 当前使用近似值, 结构固定后必须重新标定
+
+MID360 当前安装倾角为 10 度。接入 GO2 机身 TF 后使用一条 `go2_base_link -> base_link` 表达安装外参, 不得再次修改 D-LIO 的雷达内部旋转
 
 ## 6. 高程图和图构建
 
-GO2 新安装后, 旧车体高度和盲区尺寸不能直接作为标定值. `use_initializer_at_start` 当前关闭, 以避免旧的人工地面先验越过真实墙体或桌面. 重新测量 LiDAR 到地面的高度、近场结构范围后，再更新以下参数并启用启动先验:
+`use_initializer_at_start` 当前关闭, 以避免人工地面先验越过真实墙体或障碍。站立状态注册点云的地面峰值约为 -0.44 m, 同时雷达原点约为 0.22 m, 因此站立高度回退值使用 0.65 m:
 
 | 参数 | 当前值 | 说明 |
 |---|---:|---|
 | `resolution` | 0.2 m | 高程图分辨率 |
 | `map_length` | 30 m | rolling map 边长 |
 | `max_height_range` | 1.0 m | 排除天花板 |
-| `initialize_tf_offset` | -0.90 m | 历史值, 待按 GO2 安装高度复测 |
+| `initialize_tf_offset` | -0.65 m | 当前禁用, 仅保留为站立状态无地面样本时的名义值 |
 | `initialize_tf_grid_size` | 1.0 m | 初始锚点方形边长 |
 | `dilation_size_initialize` | 2 cell | 初始化膨胀 |
-| `robot_blind_zone_radius` | 0.8 m | 历史值, 待按 GO2 近场结构复测 |
-| `robot_blind_zone_elevation_search_radius` | 2.0 m | 历史值, 待按 GO2 近场结构复测 |
-| `robot_ground_height_offset` | 0.90 m | 历史值, 待按 GO2 安装高度复测 |
+| `robot_blind_zone_radius` | 0.4 m | 只修补雷达正下方三相机结构盲区 |
+| `robot_blind_zone_elevation_search_radius` | 1.0 m | 从邻近可见地面估计盲区高程 |
+| `robot_ground_height_offset` | 0.65 m | 附近无可见地面时的站立状态回退值 |
+| `robot_ground_elevation_tolerance` | 0.2 m | 防止机身或低障碍被误选为地面 |
 
 调整启动先验时必须同时检查人工区域是否连接真实地面、是否越过墙体以及是否覆盖近场障碍
 

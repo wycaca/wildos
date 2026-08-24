@@ -20,6 +20,10 @@ RUN chmod +x /tmp/configure_apt_mirrors.sh /tmp/install_ros_humble.sh \
     && /tmp/install_ros_humble.sh \
     && rm /tmp/configure_apt_mirrors.sh /tmp/install_ros_humble.sh
 
+ENV PIP_CONFIG_FILE=/dev/null \
+    PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+    PIP_EXTRA_INDEX_URL=
+
 COPY nebula2-wildos/docker/requirements-runtime.txt /tmp/requirements-runtime.txt
 RUN /usr/bin/python3 -m pip install --no-cache-dir --upgrade pip \
     && sed -i '/^transforms3d/d' /tmp/requirements-runtime.txt \
