@@ -46,6 +46,7 @@ run_stage "build" \
     --packages-select \
       graphnav_msgs object_search_msgs triangulation3d \
       graph_construction visual_navigation graphnav_planner \
+      wildos_navigation \
     --cmake-args -DBUILD_TESTING=ON
 
 set +u
@@ -72,6 +73,11 @@ run_stage "triangulation3d functional tests" \
     --ignore="${REPO_ROOT}/triangulation3d/test/test_copyright.py" \
     --ignore="${REPO_ROOT}/triangulation3d/test/test_flake8.py" \
     --ignore="${REPO_ROOT}/triangulation3d/test/test_pep257.py"
+
+run_stage "wildos_navigation functional tests" \
+  "${VENV_PYTHON}" -m pytest \
+    "${REPO_ROOT}/wildos_navigation/test" \
+    -p no:cacheprovider
 
 run_stage "Planner CTest" \
   ctest --test-dir "${WORKSPACE_ROOT}/build/graphnav_planner" \

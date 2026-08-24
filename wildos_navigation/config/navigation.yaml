@@ -1,0 +1,56 @@
+wildos_navigation_controller:
+  ros__parameters:
+    # 当前 GO2 实机 Topic 和 frame 契约
+    path_topic: /spot1/graphnav_planner/path
+    odom_topic: /odom
+    pointcloud_topic: /cloud_registered
+    cmd_vel_topic: /wildos/cmd_vel
+    world_frame: odom
+    base_frame: base_link
+    expected_cloud_frame: dlio_odom
+
+    # 首次运动使用保守速度, 实测制动和转向后再调高
+    control_frequency: 20.0
+    target_linear_speed: 0.2
+    turn_linear_speed: 0.1
+    max_angular_speed: 0.5
+    max_linear_acceleration: 0.4
+    max_angular_acceleration: 1.0
+    lookahead_distance: 0.6
+    goal_tolerance: 0.25
+    slow_turn_angle: 0.35
+    rotate_in_place_angle: 0.8
+
+    # 点云先转换到 base_link, 高度范围相对雷达原点
+    safety_radius: 0.35
+    simulation_horizon: 1.0
+    simulation_step: 0.1
+    obstacle_min_height: -0.55
+    obstacle_max_height: 0.3
+    self_filter_radius: 0.45
+    max_obstacle_range: 4.0
+    max_obstacle_points: 512
+
+    # D-LIO 或跨机输入断流时立即停车
+    odom_timeout_sec: 0.5
+    cloud_timeout_sec: 0.5
+    path_initial_max_age_sec: 2.0
+    future_tolerance_sec: 0.1
+    tf_timeout_sec: 0.05
+
+wildos_velocity_sender:
+  ros__parameters:
+    input_topic: /wildos/cmd_vel
+    target_ip: 192.168.50.2
+    target_port: 9999
+
+wildos_velocity_receiver:
+  ros__parameters:
+    output_topic: /cmd_vel
+    bind_ip: 192.168.50.2
+    bind_port: 9999
+    expected_source_ip: 192.168.50.1
+    command_timeout_sec: 0.25
+    max_linear_x: 0.2
+    max_linear_y: 0.0
+    max_angular_z: 0.5

@@ -23,7 +23,20 @@ rg -q '/run/udev:/run/udev:ro' "${REPO_ROOT}/compose.orin.wildos-cameras.yaml"
 test "$(rg -c 'no-new-privileges:true' \
   "${REPO_ROOT}/compose.orin.wildos-cameras.yaml")" -eq 2
 test "$(rg -c 'no-new-privileges:true' \
-  "${REPO_ROOT}/compose.x86_64.lidar-dlio.yaml")" -eq 1
+  "${REPO_ROOT}/compose.x86_64.lidar-dlio.yaml")" -eq 2
+rg -q '^  navigation:' "${REPO_ROOT}/compose.x86_64.lidar-dlio.yaml"
+rg -q 'wildos-navigation:x86_64' "${REPO_ROOT}/compose.x86_64.lidar-dlio.yaml"
+rg -q '/wildos_navigation/config/navigation.yaml:/config/navigation.yaml:ro' \
+  "${REPO_ROOT}/compose.x86_64.lidar-dlio.yaml"
+rg -q 'export ROS_DOMAIN_ID=0' "${REPO_ROOT}/scripts/go2_motion_gateway.sh"
+rg -q 'NetworkInterface name="eno1"' \
+  "${REPO_ROOT}/scripts/go2_motion_gateway.sh"
+rg -Fq 'systemctl disable "${SERVICE_NAME}"' \
+  "${REPO_ROOT}/scripts/go2_motion_gateway.sh"
+bash -n \
+  "${REPO_ROOT}/docker/entrypoint.navigation.x86_64.sh" \
+  "${REPO_ROOT}/docker/healthcheck.navigation.x86_64.sh" \
+  "${REPO_ROOT}/scripts/go2_motion_gateway.sh"
 
 docker() {
   printf '%s\n' "$*" >> "${CALLS_FILE}"

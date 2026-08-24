@@ -19,6 +19,22 @@ x-x86-runtime: &x86-runtime
     - no-new-privileges:true
   restart: unless-stopped
 
+x-navigation-runtime: &navigation-runtime
+  image: wildos-navigation:x86_64
+  platform: linux/amd64
+  build:
+    context: ..
+    dockerfile: nebula2-wildos/docker/Dockerfile.navigation.x86_64
+    args:
+      BASE_IMAGE: ros:humble-ros-base-jammy
+  network_mode: host
+  ipc: host
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  restart: unless-stopped
+
 x-dds-environment: &dds-environment
   ROS_DOMAIN_ID: "2"
   ROS_LOCALHOST_ONLY: "0"
@@ -66,6 +82,21 @@ services:
       memlock: -1
       stack: 67108864
 
+  navigation:
+    <<: *navigation-runtime
+    stop_grace_period: 10s
+    depends_on:
+      localization:
+        condition: service_healthy
+    volumes:
+      - navigation_ros_logs:/root/.ros/log
+      - ./docker/fastdds.wildos.xml:/etc/wildos/fastdds.xml:ro
+      - ./wildos_navigation/config/navigation.yaml:/config/navigation.yaml:ro
+    environment:
+      <<: *dds-environment
+      NAVIGATION_CONFIG_FILE: /config/navigation.yaml
+
 volumes:
   lidar_ros_logs:
   localization_ros_logs:
+  navigation_ros_logs:

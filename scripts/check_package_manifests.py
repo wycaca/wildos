@@ -41,6 +41,20 @@ REQUIRED_DEPENDENCIES = {
         "tf2_ros",
         "visualization_msgs",
     },
+    "wildos_navigation": {
+        "ament_index_python",
+        "geometry_msgs",
+        "launch",
+        "launch_ros",
+        "motion",
+        "nav_msgs",
+        "python3-numpy",
+        "rclpy",
+        "ros2launch",
+        "sensor_msgs",
+        "sensor_msgs_py",
+        "tf2_ros",
+    },
 }
 
 

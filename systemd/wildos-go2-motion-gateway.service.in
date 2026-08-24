@@ -1,0 +1,16 @@
+[Unit]
+Description=WildOS GO2 motion safety gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@SERVICE_USER@
+WorkingDirectory=@REPO_ROOT@
+ExecStart=@REPO_ROOT@/scripts/go2_motion_gateway.sh run
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -10,7 +10,7 @@
 | target fusion | 多视角粒子滤波和 LiDAR 距离精修 |
 | Goal Mux | 高层目标、状态切换和最终完成 |
 | Planner | 图上路线、探索记忆和 Path |
-| 外部控制器 | Path 执行、局部避障和停车 |
+| `wildos_navigation` | Path 执行、局部避障和停车 |
 
 Goal Mux 是高层目标和最终完成状态的唯一 owner
 
@@ -79,11 +79,11 @@ ros2 topic pub --once /spot1/object_search_target \
 - `visual_navigation/configs/object_search_goal_mux.yaml`
 - `graphnav_planner/config/planner.yaml`
 
-## Planner 与外部控制器
+## Planner 与局部导航
 
 Planner 发布 Path 变化事件, 不是心跳. graph 过期且 odom 新鲜时最多发布一次 hold Path, odom 过期或时间戳异常时停止发布
 
-外部控制器必须独立检查 odom 和 Path 新鲜度, 故障时停车并丢弃缓存路线. 具体契约见 [Planner](../graphnav_planner/README.md)
+局部导航独立检查 odom、点云和 Path 契约, 故障时停车并丢弃无效路线. 具体契约见 [Planner](../graphnav_planner/README.md)和[局部导航](navigation.md)
 
 ## 代码入口
 

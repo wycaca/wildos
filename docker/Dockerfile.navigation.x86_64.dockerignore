@@ -1,0 +1,15 @@
+**
+!nebula2-wildos/
+!nebula2-wildos/docker/
+!nebula2-wildos/docker/configure_apt_mirrors.sh
+!nebula2-wildos/docker/entrypoint.navigation.x86_64.sh
+!nebula2-wildos/docker/healthcheck.navigation.x86_64.sh
+!nebula2-wildos/wildos_navigation/
+!nebula2-wildos/wildos_navigation/**
+
+**/.git
+**/.pytest_cache
+**/__pycache__
+**/*.egg-info
+**/docs
+**/test
