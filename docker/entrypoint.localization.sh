@@ -29,5 +29,5 @@ fi
 
 exec ros2 launch graph_construction dlio_localization.launch.py \
   dlio_config_file:="${DLIO_CONFIG_FILE}" \
-  output_pointcloud_rate_hz:="${OUTPUT_POINTCLOUD_RATE_HZ:-2.0}" \
+  output_pointcloud_rate_hz:="${OUTPUT_POINTCLOUD_RATE_HZ:-0.0}" \
   log_level:=info

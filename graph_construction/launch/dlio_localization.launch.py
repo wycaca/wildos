@@ -17,7 +17,7 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("pointcloud_topic", default_value="/livox/lidar"),
         DeclareLaunchArgument("imu_topic", default_value="/livox/imu"),
         DeclareLaunchArgument("output_pointcloud_topic", default_value="/cloud_registered"),
-        DeclareLaunchArgument("output_pointcloud_rate_hz", default_value="2.0"),
+        DeclareLaunchArgument("output_pointcloud_rate_hz", default_value="0.0"),
         DeclareLaunchArgument("output_odom_topic", default_value="/odom"),
         DeclareLaunchArgument("output_tf_topic", default_value="/tf"),
         DeclareLaunchArgument("global_frame", default_value="odom"),
