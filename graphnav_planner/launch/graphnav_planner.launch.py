@@ -22,7 +22,7 @@ def generate_launch_description():
         DeclareLaunchArgument("goal_topic", default_value="/goal_pose"),
         DeclareLaunchArgument(
             "object_search_status_topic",
-            default_value="/spot1/object_search_status_v2",
+            default_value="/spot1/object_search_status",
         ),
         Node(
             package="graphnav_planner",

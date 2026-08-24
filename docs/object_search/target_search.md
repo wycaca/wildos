@@ -26,7 +26,7 @@
 
 Goal Mux 是高层目标和最终完成状态的唯一 owner
 
-Goal Mux 通过强类型 `ObjectSearchStatus` 把状态和 `pending_protection` 发送给 Planner. `/spot1/object_search_status` 字符串只在迁移期提供给外部监控
+Goal Mux 通过 `/spot1/object_search_status` 的强类型 `ObjectSearchStatus` 把状态和 `pending_protection` 发送给 Planner
 
 ## 3. 运行时更改搜索目标
 

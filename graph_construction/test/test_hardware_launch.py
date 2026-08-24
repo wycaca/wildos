@@ -173,7 +173,7 @@ def test_planner_uses_the_canonical_path_topic():
     ) in _remappings(context, planner)
 
 
-def test_planner_uses_typed_object_search_status_topic():
+def test_planner_and_mux_use_object_search_status():
     module = _load_launch_module()
     context = _context_with_defaults(module)
     nodes = list(_all_nodes(module._launch_setup(context)))
@@ -196,10 +196,10 @@ def test_planner_uses_typed_object_search_status_topic():
 
     assert (
         "~/object_search_status",
-        "/spot1/object_search_status_v2",
+        "/spot1/object_search_status",
     ) in _remappings(context, planner)
-    assert mux_parameters["typed_status_topic"] == "/spot1/object_search_status_v2"
     assert mux_parameters["status_topic"] == "/spot1/object_search_status"
+    assert "typed_status_topic" not in mux_parameters
 
 
 def test_all_python_nodes_use_uv_environment_python():

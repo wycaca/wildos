@@ -33,7 +33,6 @@ class ObjectSearchGoalMux(Node):
 
         self.declare_parameter("output_goal_topic", "/spot1/graphnav_goal_pose")
         self.declare_parameter("status_topic", "/spot1/object_search_status")
-        self.declare_parameter("typed_status_topic", "/spot1/object_search_status_v2")
         self.declare_parameter("object_target_estimate_topic", "/spot1/object_target_estimate")
         self.declare_parameter("object_reached_topic", "/spot1/object_search_reached")
         self.declare_parameter("completion_topic", "/spot1/object_search_completed")
@@ -101,7 +100,6 @@ class ObjectSearchGoalMux(Node):
 
         self.output_goal_topic = self._param_str("output_goal_topic")
         self.status_topic = self._param_str("status_topic")
-        self.typed_status_topic = self._param_str("typed_status_topic")
         self.object_target_estimate_topic = self._param_str("object_target_estimate_topic")
         self.object_reached_topic = self._param_str("object_reached_topic")
         self.completion_topic = self._param_str("completion_topic")
@@ -364,10 +362,9 @@ class ObjectSearchGoalMux(Node):
         self.policy = ObjectSearchGoalPolicy()
 
         self.goal_pub = self.create_publisher(PoseStamped, self.output_goal_topic, 10)
-        self.status_pub = self.create_publisher(String, self.status_topic, 10)
-        self.typed_status_pub = self.create_publisher(
+        self.status_pub = self.create_publisher(
             ObjectSearchStatus,
-            self.typed_status_topic,
+            self.status_topic,
             10,
         )
         self.completion_pub = self.create_publisher(Bool, self.completion_topic, 10)
@@ -1599,10 +1596,7 @@ class ObjectSearchGoalMux(Node):
             }
             and self._pending_evidence_protection_active(now)
         )
-        self.typed_status_pub.publish(typed_status)
-        status = String()
-        status.data = self._status_text(state, goal, now)
-        self.status_pub.publish(status)
+        self.status_pub.publish(typed_status)
         if state == self._last_state:
             return
         self._last_state = state
@@ -1617,27 +1611,6 @@ class ObjectSearchGoalMux(Node):
             f"{goal.pose.position.y:.2f}, "
             f"{goal.pose.position.z:.2f})"
         )
-
-    def _status_text(self, state: str, goal: PoseStamped | None, now=None) -> str:
-        if goal is None:
-            return f"state={state}"
-        parts = [
-            f"state={state}",
-            f"goal_frame={goal.header.frame_id}",
-            f"goal=({goal.pose.position.x:.2f},"
-            f"{goal.pose.position.y:.2f},"
-            f"{goal.pose.position.z:.2f})",
-        ]
-        if (
-            state in {
-                ObjectSearchState.SEARCHING_WITH_INITIAL_GOAL,
-                ObjectSearchState.TARGET_PENDING_OBSERVATION,
-                ObjectSearchState.TARGET_PENDING_REPOSITION,
-            }
-            and self._pending_evidence_protection_active(now or self.get_clock().now())
-        ):
-            parts.append("pending_protection=true")
-        return ", ".join(parts)
 
     def _pending_evidence_protection_active(self, now) -> bool:
         return self._age_seconds(now, self.pending_evidence_time) <= (

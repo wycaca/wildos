@@ -80,14 +80,13 @@ x86:
 | `/spot1/object_target_estimate` | `TargetEstimate` | target fusion | Goal Mux |
 | `/spot1/object_search_reached` | `std_msgs/msg/Bool` | WildOS | Goal Mux |
 | `/spot1/object_search_completed` | `std_msgs/msg/Bool` | Goal Mux | WildOS、target fusion |
-| `/spot1/object_search_status_v2` | `object_search_msgs/msg/ObjectSearchStatus` | Goal Mux | Planner |
-| `/spot1/object_search_status` | `std_msgs/msg/String` | Goal Mux | 迁移期外部监控 |
+| `/spot1/object_search_status` | `object_search_msgs/msg/ObjectSearchStatus` | Goal Mux | Planner |
 | `/spot1/object_target_estimate_viz` | `visualization_msgs/msg/Marker` | target fusion | RViz |
 | `/spot1/object_target_particles` | `sensor_msgs/msg/PointCloud2` | target fusion | RViz |
 
 `object_search_reached` 是视觉证据, `object_search_completed` 才是最终完成状态
 
-`object_search_status_v2` 的 `state` 使用固定 enum, `pending_protection` 明确控制 Planner 的探索失败计时冻结. 旧 String topic 仅用于兼容外部监控, 新代码不得解析它
+`object_search_status` 的 `state` 使用固定 enum, `pending_protection` 明确控制 Planner 的探索失败计时冻结
 
 运行时切换目标:
 

@@ -357,10 +357,14 @@ def test_single_view_pending_estimate_holds_position_and_uses_bearing(mux_node):
     assert goal.pose.position.x == pytest.approx(2.0)
     assert goal.pose.position.y == pytest.approx(1.0)
     assert _yaw(goal) == pytest.approx(math.atan2(5.0, 10.0))
-    assert "pending_protection=true" in mux_node._status_text(state, goal)
+    assert mux_node._pending_evidence_protection_active(
+        mux_node.get_clock().now()
+    )
 
     mux_node.pending_evidence_protection_sec = -1.0
-    assert "pending_protection=true" not in mux_node._status_text(state, goal)
+    assert not mux_node._pending_evidence_protection_active(
+        mux_node.get_clock().now()
+    )
 
 
 def test_stale_pending_observation_resumes_original_exploration_goal(mux_node):

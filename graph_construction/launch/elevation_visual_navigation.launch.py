@@ -369,7 +369,6 @@ def _launch_setup(context):
             {"use_sim_time": use_sim_time},
             {"output_goal_topic": goal_pose_topic},
             {"status_topic": _value(context, profile, "object_search_status_topic", "object_search_status_topic")},
-            {"typed_status_topic": _value(context, profile, "object_search_status_v2_topic", "object_search_status_v2_topic")},
             {"object_target_estimate_topic": _value(context, profile, "object_target_estimate_topic", "object_target_estimate_topic")},
             {"object_reached_topic": _value(context, profile, "object_reached_topic", "object_reached_topic")},
             {"completion_topic": _value(context, profile, "object_search_completed_topic", "object_search_completed_topic")},
@@ -409,7 +408,7 @@ def _launch_setup(context):
         planner_odom_topic,
         goal_pose_topic,
         scored_nav_graph_topic,
-        _value(context, profile, "object_search_status_v2_topic", "object_search_status_v2_topic"),
+        _value(context, profile, "object_search_status_topic", "object_search_status_topic"),
         planner_path_topic,
     )
 

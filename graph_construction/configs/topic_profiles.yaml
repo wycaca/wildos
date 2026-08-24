@@ -47,7 +47,6 @@ profiles:
     object_reached_topic: /spot1/object_search_reached
     object_search_completed_topic: /spot1/object_search_completed
     object_search_status_topic: /spot1/object_search_status
-    object_search_status_v2_topic: /spot1/object_search_status_v2
     goal_pose_topic: /goal_pose
 
     # 实机场景调节项
