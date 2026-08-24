@@ -7,7 +7,7 @@
 | 范围 | 文档 |
 | --- | --- |
 | 架构 | [系统总览](system/overview.md) |
-| 代码整改计划 | [代码整改 TODO](todo.md) |
+| 当前待办 | [当前待办](todo.md) |
 | 不可破坏的行为 | [实现原则](system/principles.md) |
 | ROS topic 与 owner | [Topic 契约](system/topics.md) |
 | 实机验收与运行约束 | [实机验收](system/issues.md) |
