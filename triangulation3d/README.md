@@ -43,5 +43,3 @@ ros2 launch visual_navigation wildos_component.launch.py do_object_search:=true
 ```bash
 python3 -m pytest triangulation3d/test/test_target_particle_filter.py
 ```
-
-Legacy batch triangulation, random-camera demos, teleoperation, particle generators, and point-cloud helpers were removed because they were not used by the current recursive fusion path

@@ -2,7 +2,7 @@
 
 WildOS 是一个用于非结构化环境开放词汇目标搜索的 ROS 2 系统. 它从 elevation `GridMap` 构建持久导航图, 用 ExploRFM 评分可达 Frontier, 再通过多视角目标融合引导安全搜索
 
-## 当前实机链路
+## 系统链路
 
 ```text
 MID360 + IMU -> D-LIO -> 注册点云, odom, TF
@@ -12,18 +12,18 @@ MID360 + IMU -> D-LIO -> 注册点云, odom, TF
 
 x86 主机运行 LiDAR 与 D-LIO. 相机 AGX 运行相机, 建图, 图构建, 视觉推理, 目标融合和规划. Planner 只发布 Path, 底层运动执行由仓库外控制器负责
 
-## 快速入口
+## 文档入口
 
-| 要了解的内容 | 文档 |
+| 内容 | 文档 |
 | --- | --- |
-| 当前架构和约束 | [系统总览](docs/system/overview.md), [实现原则](docs/system/principles.md) |
-| 实机部署和配置 | [部署说明](docs/deployment/docker.md), [环境配置](docs/deployment/environment.md) |
-| 图构建 | [导航图更新](docs/graph_construction/graph_update.md) |
-| 目标搜索和定位 | [目标搜索](docs/object_search/target_search.md), [目标定位](docs/visual_navigation/target_localization.md) |
-| Planner 行为 | [Planner 说明](docs/graphnav_planner/README.md) |
-| 全部当前文档与包文档 | [文档索引](docs/README.md) |
+| 系统架构、模块和接口边界 | [架构](docs/architecture.md) |
+| 实机配置、启动、验证和排障 | [部署](docs/deployment.md) |
+| 高程图到持久导航图 | [图构建](docs/graph.md) |
+| 探索、目标融合和完成状态 | [目标搜索](docs/object_search.md) |
+| Planner 路径行为 | [Planner](graphnav_planner/README.md) |
+| 尚未完成的工作 | [TODO](docs/todo.md) |
 
-当前行为以 `docs/` 和代码为准. `docs/history/` 中的日期记录只保留历史上下文, 不能作为部署依据
+开发 Agent 先读取 [agent.md](agent.md), 再按任务读取一份领域文档. 当前行为以代码、配置和上述文档为准
 
 ## 测试
 
@@ -46,4 +46,21 @@ x86 主机运行 LiDAR 与 D-LIO. 相机 AGX 运行相机, 建图, 图构建, �
 | `explorfm` | 视觉推理模型 |
 | `explorfm_trainer` | 视觉 Head 训练流程 |
 
-原始的论文介绍, 安装步骤, checkpoints 与引用信息保存在 [README_OLD.md](README_OLD.md)
+## 研究来源
+
+- 论文: [WildOS: Open-Vocabulary Object Search in the Wild](https://arxiv.org/abs/2602.19308)
+- 项目主页: [leggedrobotics.github.io/wildos](https://leggedrobotics.github.io/wildos/)
+- 数据集: [Hugging Face WildOS](https://huggingface.co/datasets/leggedrobotics/wildos)
+- 模型来源、版本和 SHA256: [ckpts/manifest.json](ckpts/manifest.json)
+- License: [Apache 2.0](LICENSE)
+
+```bibtex
+@misc{shah2026wildosopenvocabularyobjectsearch,
+  title={WildOS: Open-Vocabulary Object Search in the Wild},
+  author={Hardik Shah and Erica Tevere and Deegan Atha and Marcel Kaufmann and Shehryar Khattak and Manthan Patel and Marco Hutter and Jonas Frey and Patrick Spieler},
+  year={2026},
+  eprint={2602.19308},
+  archivePrefix={arXiv},
+  primaryClass={cs.RO}
+}
+```
