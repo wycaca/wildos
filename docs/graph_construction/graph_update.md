@@ -40,9 +40,10 @@ MID360 位于三相机结构上方, 雷达正下方存在近场盲区
 当前实机关闭 elevation mapping 启动平面, 只保留 graph construction 的受限盲区修补:
 
 1. graph construction 以 0.4 m 为盲区种子
-2. 只在 1.0 m 搜索半径内填充与种子相连的 unknown 分量
-3. 优先使用附近真实地面高程, 附近无地面时使用 0.65 m 站立高度回退
-4. 连接到外围原始 free 后保存固定世界坐标先验
+2. 只在 1.5 m 搜索半径内填充与种子相连的 unknown 分量
+3. 从机器人到候选栅格的射线不得穿过墙体或受保护高程突变
+4. 优先使用附近真实地面高程, 附近无地面时使用 0.65 m 站立高度回退
+5. 连接到外围原始 free 后保存固定世界坐标先验
 
 当前参数:
 
@@ -51,7 +52,7 @@ MID360 位于三相机结构上方, 雷达正下方存在近场盲区
 | `initialize_tf_grid_size` | 1.0 m |
 | `dilation_size_initialize` | 2 cell |
 | `robot_blind_zone_radius` | 0.4 m |
-| `robot_blind_zone_elevation_search_radius` | 1.0 m |
+| `robot_blind_zone_elevation_search_radius` | 1.5 m |
 | `robot_ground_height_offset` | 0.65 m |
 | `robot_ground_elevation_tolerance` | 0.2 m |
 | `min_obstacle_clearance` | 0.5 m |

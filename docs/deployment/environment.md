@@ -112,7 +112,7 @@ MID360 当前安装倾角为 10 度。接入 GO2 机身 TF 后使用一条 `go2_
 | `initialize_tf_grid_size` | 1.0 m | 初始锚点方形边长 |
 | `dilation_size_initialize` | 2 cell | 初始化膨胀 |
 | `robot_blind_zone_radius` | 0.4 m | 只修补雷达正下方三相机结构盲区 |
-| `robot_blind_zone_elevation_search_radius` | 1.0 m | 从邻近可见地面估计盲区高程 |
+| `robot_blind_zone_elevation_search_radius` | 1.5 m | 只修补与机器人直连且未被墙体遮挡的盲区 |
 | `robot_ground_height_offset` | 0.65 m | 附近无可见地面时的站立状态回退值 |
 | `robot_ground_elevation_tolerance` | 0.2 m | 防止机身或低障碍被误选为地面 |
 

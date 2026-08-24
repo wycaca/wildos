@@ -271,7 +271,7 @@ ros2 topic hz /spot1/model_visualization
 ```text
 use_initializer_at_start=false
 robot_blind_zone_radius=0.4
-robot_blind_zone_elevation_search_radius=1.0
+robot_blind_zone_elevation_search_radius=1.5
 robot_ground_height_offset=0.65
 ```
 

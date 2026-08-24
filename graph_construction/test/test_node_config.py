@@ -97,7 +97,7 @@ def test_deployment_config_limits_go2_blind_zone():
     builder_config = _builder_config(_load_config(str(config_path)))
 
     assert builder_config.robot_blind_zone_radius == 0.4
-    assert builder_config.robot_blind_zone_elevation_search_radius == 1.0
+    assert builder_config.robot_blind_zone_elevation_search_radius == 1.5
 
 
 def test_take_latest_inputs_processes_each_grid_once():

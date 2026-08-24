@@ -12,7 +12,11 @@ from scipy import ndimage
 from graph_construction.edge_builder import EdgeBuilder
 from graph_construction.frontier_detector import FrontierDetector
 from graph_construction.graph_memory import EdgeKey, GraphState, normalize_edge_key
-from graph_construction.grid_types import ClassifiedGrid, distance_to_mask
+from graph_construction.grid_types import (
+    ClassifiedGrid,
+    bresenham_line,
+    distance_to_mask,
+)
 
 
 _FOUR_CONNECTED_STRUCTURE = np.asarray(
@@ -38,7 +42,7 @@ class GraphBuilderConfig:
 
     # GO2 近场盲区修补参数, 固定高度仅作为无地面样本时的回退
     robot_blind_zone_radius: float = 0.4
-    robot_blind_zone_elevation_search_radius: float = 1.0
+    robot_blind_zone_elevation_search_radius: float = 1.5
     robot_ground_height_offset: float = 0.65
     robot_ground_elevation_tolerance: float = 0.2
 
@@ -660,6 +664,15 @@ class SparseGraphBuilder:
         restored = np.zeros((grid.height, grid.width), dtype=bool)
         if grid.elevation is None or not self._blind_zone_prior:
             return restored
+        if self._blind_zone_anchor_position is None:
+            return restored
+        anchor = grid.world_to_grid(
+            self._blind_zone_anchor_position[0],
+            self._blind_zone_anchor_position[1],
+        )
+        if anchor is None:
+            return restored
+        wall_mask = grid.obstacle | protected_unknown
         for world_x, world_y, world_z in self._blind_zone_prior.values():
             grid_index = grid.world_to_grid(world_x, world_y)
             if grid_index is None:
@@ -669,6 +682,7 @@ class SparseGraphBuilder:
                 not grid.unknown[iy, ix]
                 or grid.obstacle[iy, ix]
                 or protected_unknown[iy, ix]
+                or _line_crosses_wall(wall_mask, anchor, (ix, iy))
             ):
                 continue
             grid.unknown[iy, ix] = False
@@ -784,12 +798,24 @@ class SparseGraphBuilder:
                 min_x:max_x,
             ]
 
+        # 不允许人工地面从墙端绕到墙后或穿过高程突变栅格
+        local_center = (center_x - min_x, center_y - min_y)
+        local_walls = region_obstacle.copy()
+        if protected_unknown is not None:
+            local_walls |= protected_unknown[min_y:max_y, min_x:max_x]
+        for candidate_y, candidate_x in np.argwhere(blind_candidates):
+            if _line_crosses_wall(
+                local_walls,
+                local_center,
+                (int(candidate_x), int(candidate_y)),
+            ):
+                blind_candidates[candidate_y, candidate_x] = False
+
         # 填充所有接触机器人种子范围的 unknown 分量, 而不是只画固定半径圆
         blind_labels, _ = ndimage.label(
             blind_candidates,
             structure=_FOUR_CONNECTED_STRUCTURE,
         )
-        local_center = (center_x - min_x, center_y - min_y)
         original_free_labels, _ = ndimage.label(
             local_original_free,
             structure=_FOUR_CONNECTED_STRUCTURE,
@@ -1466,6 +1492,24 @@ def _free_component_reaches_target(
     )
     start_label = int(labels[start_y, start_x])
     return start_label > 0 and bool(np.any(target & (labels == start_label)))
+
+
+def _line_crosses_wall(
+    wall: np.ndarray,
+    start: tuple[int, int],
+    end: tuple[int, int],
+) -> bool:
+    """检查栅格射线是否穿过墙体或受保护高程突变"""
+    return any(
+        wall[cell_y, cell_x]
+        for cell_x, cell_y in bresenham_line(
+            start[0],
+            start[1],
+            end[0],
+            end[1],
+        )
+        if (cell_x, cell_y) != start
+    )
 
 
 def _snapshot_grid_state(grid: ClassifiedGrid) -> _GridStateSnapshot:
