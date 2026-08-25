@@ -163,7 +163,7 @@ def test_hardware_launch_relays_registered_cloud_locally():
     assert "output_frame" not in relay_parameters
     assert (
         "/elevation_mapping_node/elevation_map_raw",
-        "/elevation_mapping_node/elevation_map_unrepaired",
+        "/_wildos/elevation_map_source",
     ) in _remappings(context, elevation_mapping)
 
 

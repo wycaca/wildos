@@ -11,7 +11,7 @@ from ament_index_python.packages import get_package_share_directory
 from graph_construction.topic_profiles import load_topic_profile
 
 
-_UNREPAIRED_ELEVATION_TOPIC = "/elevation_mapping_node/elevation_map_unrepaired"
+_ELEVATION_SOURCE_TOPIC = "/_wildos/elevation_map_source"
 
 
 def generate_launch_description():
@@ -156,7 +156,7 @@ def _launch_setup(context):
         {
             "global_frame": global_frame,
             "odom_topic": odom_output_topic,
-            "grid_map_topic": _UNREPAIRED_ELEVATION_TOPIC,
+            "grid_map_topic": _ELEVATION_SOURCE_TOPIC,
             "output_grid_map_topic": _value(
                 context,
                 profile,
@@ -251,7 +251,7 @@ def _launch_setup(context):
             ("/livox/lidar_aligned", aligned_lidar_topic),
             (
                 "/elevation_mapping_node/elevation_map_raw",
-                _UNREPAIRED_ELEVATION_TOPIC,
+                _ELEVATION_SOURCE_TOPIC,
             ),
         ],
     )

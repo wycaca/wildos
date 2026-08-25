@@ -28,8 +28,10 @@ from graph_construction.grid_adapter import (
 
 def test_repaired_grid_map_writes_filled_elevation_in_circular_buffer_order():
     elevation = np.full((3, 4), np.nan, dtype=np.float32)
+    traversability = np.ones((3, 4), dtype=np.float32)
+    traversability[2, 0] = np.nan
     msg = _grid_map_message(
-        np.ones((3, 4), dtype=np.float32),
+        traversability,
         elevation=elevation,
         outer_start_index=1,
         inner_start_index=2,
@@ -54,9 +56,18 @@ def test_repaired_grid_map_writes_filled_elevation_in_circular_buffer_order():
     repaired, filled = build_repaired_grid_map(msg, grid)
 
     decoded = decode_grid_map_layer("elevation", repaired.data[1], repaired)
+    decoded_traversability = decode_grid_map_layer(
+        "traversability",
+        repaired.data[0],
+        repaired,
+    )
     assert filled == 1
     assert np.isclose(decoded[1, 2], -0.65)
+    assert np.isclose(decoded_traversability[1, 2], 1.0)
     assert np.isnan(decode_grid_map_layer("elevation", msg.data[1], msg)[1, 2])
+    assert np.isnan(
+        decode_grid_map_layer("traversability", msg.data[0], msg)[1, 2]
+    )
 
 
 def test_grid_map_decode_uses_data_offset_and_rolling_indices():

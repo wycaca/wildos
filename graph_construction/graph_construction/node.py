@@ -28,7 +28,7 @@ from graph_construction.viz import GraphVisualizer
 DEFAULT_CONFIG: Dict[str, Any] = {
     "global_frame": "map",
     "odom_topic": "/odom",
-    "grid_map_topic": "/elevation_mapping_node/elevation_map_unrepaired",
+    "grid_map_topic": "/_wildos/elevation_map_source",
     "output_grid_map_topic": "/elevation_mapping_node/elevation_map_raw",
     "nav_graph_topic": "/spot1/nav_graph",
     "viz_topic": "/spot1/graph_construction_viz",

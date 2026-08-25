@@ -14,6 +14,7 @@ from graph_construction.grid_types import ClassifiedGrid, GridIndex
 
 _TRAVERSABILITY_MIN = 0.0
 _TRAVERSABILITY_MAX = 1.0
+_FREE_TRAVERSABILITY = 1.0
 
 
 def classify_grid_map(
@@ -342,22 +343,51 @@ def build_repaired_grid_map(
     msg: GridMap,
     grid: ClassifiedGrid,
     elevation_layer: str = "elevation",
+    traversability_layer: str = "traversability",
 ) -> tuple[GridMap, int]:
-    """把分类阶段补出的 free 高程写回独立 GridMap 消息"""
+    """把分类阶段补出的 free 栅格写回发布消息"""
     try:
-        layer_index = list(msg.layers).index(elevation_layer)
+        elevation_index = list(msg.layers).index(elevation_layer)
+        traversability_index = list(msg.layers).index(traversability_layer)
     except ValueError as exc:
-        raise ValueError(f"GridMap layer '{elevation_layer}' not found") from exc
+        raise ValueError("GridMap repair layers not found") from exc
 
     repaired = deepcopy(msg)
-    original = decode_grid_map_layer(elevation_layer, repaired.data[layer_index], repaired)
-    if grid.elevation is None or grid.elevation.shape != original.shape:
+    original_elevation = decode_grid_map_layer(
+        elevation_layer,
+        repaired.data[elevation_index],
+        repaired,
+    )
+    original_traversability = decode_grid_map_layer(
+        traversability_layer,
+        repaired.data[traversability_index],
+        repaired,
+    )
+    if grid.elevation is None or grid.elevation.shape != original_elevation.shape:
         raise ValueError("Classified elevation shape does not match GridMap layer")
 
-    fill = grid.free & ~np.isfinite(original) & np.isfinite(grid.elevation)
-    patched = original.copy()
-    patched[fill] = grid.elevation[fill]
-    _encode_grid_map_layer(repaired.data[layer_index], repaired, patched)
+    fill = (
+        grid.free
+        & np.isfinite(grid.elevation)
+        & (
+            ~np.isfinite(original_elevation)
+            | ~np.isfinite(original_traversability)
+        )
+    )
+    patched_elevation = original_elevation.copy()
+    patched_elevation[fill] = grid.elevation[fill]
+    patched_traversability = original_traversability.copy()
+    patched_traversability[fill] = _FREE_TRAVERSABILITY
+    _encode_grid_map_layer(
+        repaired.data[elevation_index],
+        repaired,
+        patched_elevation,
+    )
+    _encode_grid_map_layer(
+        repaired.data[traversability_index],
+        repaired,
+        patched_traversability,
+    )
     return repaired, int(np.count_nonzero(fill))
 
 
