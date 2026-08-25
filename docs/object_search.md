@@ -57,11 +57,33 @@ Goal Mux 通过 `/spot1/object_search_status` 发布强类型 `ObjectSearchStatu
 运行时切换目标:
 
 ```bash
-ros2 topic pub --once /spot1/object_search_target \
-  std_msgs/msg/String "{data: 'red fire extinguisher'}"
+scripts/go2_search_test.sh target "red fire extinguisher"
 ```
 
 切换目标会清理旧文本特征、Mask 确认窗口、粒子、目标估计、完成锁存和搜索方向. 更早时间戳的数据不能污染新任务
+
+## GO2 实机测试
+
+在 x86 主机运行统一脚本. 脚本复用现有 Docker 和运动网关控制脚本, 默认通过 `agx@192.168.50.2` 管理相机 AGX. 首次连接会要求确认 SSH 主机指纹和输入 AGX 密码
+
+```bash
+# 启动传感器、定位、视觉和运动链路, 最后发布搜索目标
+scripts/go2_search_test.sh start "chair"
+
+# 测试过程中切换目标
+scripts/go2_search_test.sh target "red fire extinguisher"
+
+# 查看整体状态或单个模块的持续日志
+scripts/go2_search_test.sh status
+scripts/go2_search_test.sh logs wildos
+scripts/go2_search_test.sh logs navigation
+scripts/go2_search_test.sh logs gateway
+
+# 结束运动测试, 保留相机、雷达、定位和 WildOS 服务
+scripts/go2_search_test.sh stop
+```
+
+`stop` 固定先停止 x86 导航速度源, 等待网关超时发布零速度后再停止 AGX 网关. 网络变化时通过 `AGX_HOST` 和 `AGX_REPO_ROOT` 覆盖默认连接参数
 
 ## 目标融合边界
 

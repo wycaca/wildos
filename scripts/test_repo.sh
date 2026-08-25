@@ -85,6 +85,8 @@ run_stage "Planner CTest" \
 
 run_stage "Docker contract tests" bash "${SCRIPT_DIR}/test_wildos_docker.sh"
 
+run_stage "GO2 search test controller" bash "${SCRIPT_DIR}/test_go2_search_test.sh"
+
 run_stage "camera deployment script" bash "${SCRIPT_DIR}/test_deploy_orin_cameras.sh"
 
 run_stage "x86 AGX network script" bash "${SCRIPT_DIR}/test_configure_x86_agx_link.sh"
