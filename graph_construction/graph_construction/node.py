@@ -19,7 +19,7 @@ from std_msgs.msg import Header
 from visualization_msgs.msg import MarkerArray
 
 from graph_construction.graph_builder import GraphBuilderConfig, SparseGraphBuilder
-from graph_construction.grid_adapter import classify_grid_map
+from graph_construction.grid_adapter import build_repaired_grid_map, classify_grid_map
 from graph_construction.msg_utils import GraphMessageCache, graph_to_msg
 from graph_construction.performance_stats import EventRate, TimingWindow
 from graph_construction.viz import GraphVisualizer
@@ -29,6 +29,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "global_frame": "map",
     "odom_topic": "/odom",
     "grid_map_topic": "/elevation_mapping_node/elevation_map_raw",
+    "repaired_grid_map_topic": "/spot1/elevation_map_repaired",
     "nav_graph_topic": "/spot1/nav_graph",
     "viz_topic": "/spot1/graph_construction_viz",
     "viz_show_radius_markers": False,
@@ -151,6 +152,11 @@ class GraphConstructionNode(Node):
             self.config["nav_graph_topic"],
             10,
         )
+        self.repaired_grid_map_pub = self.create_publisher(
+            GridMap,
+            self.config["repaired_grid_map_topic"],
+            1,
+        )
         self.viz_pub = self.create_publisher(MarkerArray, self.config["viz_topic"], 10)
 
         self.create_subscription(
@@ -260,6 +266,12 @@ class GraphConstructionNode(Node):
         self._timings["message"].add_seconds(time.perf_counter() - stage_started)
 
         self.nav_graph_pub.publish(nav_graph)
+        repaired_grid_map, _ = build_repaired_grid_map(
+            grid_msg,
+            update_result.classified_grid,
+            _GRID_MAP_ELEVATION_LAYER,
+        )
+        self.repaired_grid_map_pub.publish(repaired_grid_map)
 
         now = time.monotonic()
         viz_rate = max(float(self.config["viz_publish_rate_hz"]), 0.01)

@@ -154,6 +154,12 @@ def _launch_setup(context):
             "global_frame": global_frame,
             "odom_topic": odom_output_topic,
             "grid_map_topic": _value(context, profile, "elevation_grid_map_topic", "elevation_grid_map_topic"),
+            "repaired_grid_map_topic": _value(
+                context,
+                profile,
+                "repaired_elevation_grid_map_topic",
+                "repaired_elevation_grid_map_topic",
+            ),
             "nav_graph_topic": nav_graph_topic,
             "viz_topic": _value(context, profile, "graph_construction_viz_topic", "graph_construction_viz_topic"),
         }

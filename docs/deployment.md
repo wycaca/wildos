@@ -139,6 +139,7 @@ ros2 topic hz /spot1/realsense/front/color/image_raw/compressed
 ros2 topic hz /spot1/realsense/left/color/image_raw/compressed
 ros2 topic hz /spot1/realsense/right/color/image_raw/compressed
 ros2 topic hz /elevation_mapping_node/elevation_map_raw
+ros2 topic hz /spot1/elevation_map_repaired
 ros2 topic hz /spot1/nav_graph
 ros2 topic hz /spot1/scored_nav_graph
 ros2 run tf2_ros tf2_echo odom base_link

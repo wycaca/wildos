@@ -32,6 +32,7 @@ profiles:
     odom_output_topic: /spot1/odom_for_scoring
     planner_odom_topic: odom_for_scoring
     elevation_grid_map_topic: /elevation_mapping_node/elevation_map_raw
+    repaired_elevation_grid_map_topic: /spot1/elevation_map_repaired
     nav_graph_topic: /spot1/nav_graph
     graph_construction_viz_topic: /spot1/graph_construction_viz
     scored_nav_graph_topic: /spot1/scored_nav_graph

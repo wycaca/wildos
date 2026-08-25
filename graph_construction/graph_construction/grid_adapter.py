@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from math import atan2
 from typing import Tuple
 
@@ -335,6 +336,69 @@ def decode_grid_map_layer(name: str, array_msg: Float32MultiArray, msg: GridMap)
         outer_start_index=int(msg.outer_start_index),
         inner_start_index=int(msg.inner_start_index),
     )
+
+
+def build_repaired_grid_map(
+    msg: GridMap,
+    grid: ClassifiedGrid,
+    elevation_layer: str = "elevation",
+) -> tuple[GridMap, int]:
+    """把分类阶段补出的 free 高程写回独立 GridMap 消息"""
+    try:
+        layer_index = list(msg.layers).index(elevation_layer)
+    except ValueError as exc:
+        raise ValueError(f"GridMap layer '{elevation_layer}' not found") from exc
+
+    repaired = deepcopy(msg)
+    original = decode_grid_map_layer(elevation_layer, repaired.data[layer_index], repaired)
+    if grid.elevation is None or grid.elevation.shape != original.shape:
+        raise ValueError("Classified elevation shape does not match GridMap layer")
+
+    fill = grid.free & ~np.isfinite(original) & np.isfinite(grid.elevation)
+    patched = original.copy()
+    patched[fill] = grid.elevation[fill]
+    _encode_grid_map_layer(repaired.data[layer_index], repaired, patched)
+    return repaired, int(np.count_nonzero(fill))
+
+
+def _encode_grid_map_layer(
+    array_msg: Float32MultiArray,
+    msg: GridMap,
+    logical_layer: np.ndarray,
+) -> None:
+    """按原始 MultiArray layout 和 circular buffer 顺序写回 layer"""
+    raw_layer = np.roll(
+        logical_layer,
+        shift=(int(msg.outer_start_index), int(msg.inner_start_index)),
+        axis=(0, 1),
+    )
+    dims = array_msg.layout.dim
+    data_offset = max(0, int(array_msg.layout.data_offset))
+    data = np.asarray(array_msg.data, dtype=np.float32).copy()
+
+    if len(dims) >= 2 and dims[0].label == "row_index" and dims[1].label == "column_index":
+        row_stride, col_stride = int(dims[0].stride), int(dims[1].stride)
+        rows, cols = int(dims[0].size), int(dims[1].size)
+    elif len(dims) >= 2 and dims[0].label == "column_index" and dims[1].label == "row_index":
+        row_stride, col_stride = int(dims[1].stride), int(dims[0].stride)
+        rows, cols = int(dims[1].size), int(dims[0].size)
+    else:
+        data[data_offset:data_offset + raw_layer.size] = raw_layer.reshape(-1)
+        array_msg.data = data.tolist()
+        return
+
+    if raw_layer.shape != (rows, cols):
+        raise ValueError("GridMap layer shape does not match MultiArray layout")
+    max_index = data_offset + (rows - 1) * row_stride + (cols - 1) * col_stride
+    if row_stride <= 0 or col_stride <= 0 or max_index >= data.size:
+        order = "F" if dims[0].label == "column_index" else "C"
+        data[data_offset:data_offset + raw_layer.size] = raw_layer.reshape(-1, order=order)
+        array_msg.data = data.tolist()
+        return
+    row_offsets = np.arange(rows, dtype=np.int64) * row_stride
+    col_offsets = np.arange(cols, dtype=np.int64) * col_stride
+    data[data_offset + row_offsets[:, None] + col_offsets[None, :]] = raw_layer
+    array_msg.data = data.tolist()
 
 
 def decode_multiarray(name: str, array_msg: Float32MultiArray) -> np.ndarray:

@@ -18,7 +18,7 @@ GridMap + odom
   -> 更新历史节点并采样新节点
   -> 更新 Frontier 和 current node
   -> 只重查变化区域影响的边
-  -> 发布完整 NavigationGraph
+  -> 发布完整 NavigationGraph 和修补后高程图
 ```
 
 ## 关键边界
@@ -33,7 +33,7 @@ GridMap + odom
 
 ## GO2 脚下盲区
 
-MID360 下方存在三相机结构遮挡. 当前关闭 elevation mapping 的启动平面, 只在 graph construction 中修补与机器人直接连通的近场 unknown
+MID360 下方存在三相机结构遮挡. 当前关闭 elevation mapping 的启动平面, graph construction 修补与机器人直接连通的近场 unknown, 并将相同结果发布到 `/spot1/elevation_map_repaired` 供 RViz 显示
 
 修补必须满足:
 
@@ -60,6 +60,7 @@ Frontier 是 free 与 unknown 的边界, 挂在附近安全节点上. rolling ma
 
 实机检查:
 
+- `ros2 topic hz /spot1/elevation_map_repaired`
 - 脚下修补不穿墙、不覆盖机身和近场障碍
 - 运动后历史节点和边保持稳定
 - 新障碍删除危险拓扑

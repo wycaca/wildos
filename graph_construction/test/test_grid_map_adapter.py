@@ -19,10 +19,44 @@ except ImportError:
     sys.modules["std_msgs.msg"].Float32MultiArray = object
 
 from graph_construction.grid_adapter import (
+    build_repaired_grid_map,
     classify_grid_map,
     decode_grid_map_layer,
     postprocess_classification,
 )
+
+
+def test_repaired_grid_map_writes_filled_elevation_in_circular_buffer_order():
+    elevation = np.full((3, 4), np.nan, dtype=np.float32)
+    msg = _grid_map_message(
+        np.ones((3, 4), dtype=np.float32),
+        elevation=elevation,
+        outer_start_index=1,
+        inner_start_index=2,
+        data_offset=2,
+    )
+    grid = classify_grid_map(
+        msg,
+        traversability_layer="traversability",
+        elevation_layer="elevation",
+        free_threshold=0.5,
+        obstacle_threshold=0.1,
+        z_offset=0.0,
+        min_free_component_cells=1,
+        fill_hole_max_cells=0,
+        fill_hole_min_free_neighbor_ratio=0.0,
+        majority_fill_iterations=0,
+        majority_fill_min_neighbors=1,
+    )
+    grid.free[1, 2] = True
+    grid.elevation[1, 2] = -0.65
+
+    repaired, filled = build_repaired_grid_map(msg, grid)
+
+    decoded = decode_grid_map_layer("elevation", repaired.data[1], repaired)
+    assert filled == 1
+    assert np.isclose(decoded[1, 2], -0.65)
+    assert np.isnan(decode_grid_map_layer("elevation", msg.data[1], msg)[1, 2])
 
 
 def test_grid_map_decode_uses_data_offset_and_rolling_indices():
