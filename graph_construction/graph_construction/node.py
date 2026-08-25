@@ -28,8 +28,8 @@ from graph_construction.viz import GraphVisualizer
 DEFAULT_CONFIG: Dict[str, Any] = {
     "global_frame": "map",
     "odom_topic": "/odom",
-    "grid_map_topic": "/elevation_mapping_node/elevation_map_raw",
-    "repaired_grid_map_topic": "/spot1/elevation_map_repaired",
+    "grid_map_topic": "/elevation_mapping_node/elevation_map_unrepaired",
+    "output_grid_map_topic": "/elevation_mapping_node/elevation_map_raw",
     "nav_graph_topic": "/spot1/nav_graph",
     "viz_topic": "/spot1/graph_construction_viz",
     "viz_show_radius_markers": False,
@@ -152,9 +152,9 @@ class GraphConstructionNode(Node):
             self.config["nav_graph_topic"],
             10,
         )
-        self.repaired_grid_map_pub = self.create_publisher(
+        self.output_grid_map_pub = self.create_publisher(
             GridMap,
-            self.config["repaired_grid_map_topic"],
+            self.config["output_grid_map_topic"],
             1,
         )
         self.viz_pub = self.create_publisher(MarkerArray, self.config["viz_topic"], 10)
@@ -271,7 +271,7 @@ class GraphConstructionNode(Node):
             update_result.classified_grid,
             _GRID_MAP_ELEVATION_LAYER,
         )
-        self.repaired_grid_map_pub.publish(repaired_grid_map)
+        self.output_grid_map_pub.publish(repaired_grid_map)
 
         now = time.monotonic()
         viz_rate = max(float(self.config["viz_publish_rate_hz"]), 0.01)

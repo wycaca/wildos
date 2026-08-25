@@ -1,8 +1,8 @@
 # 输入输出 fallback, 集成 launch 会使用 topic profile 覆盖
 global_frame: odom
 odom_topic: /spot1/odom_for_scoring
-grid_map_topic: /elevation_mapping_node/elevation_map_raw
-repaired_grid_map_topic: /spot1/elevation_map_repaired
+grid_map_topic: /elevation_mapping_node/elevation_map_unrepaired
+output_grid_map_topic: /elevation_mapping_node/elevation_map_raw
 nav_graph_topic: /spot1/nav_graph
 viz_topic: /spot1/graph_construction_viz
 publish_rate_hz: 2.0

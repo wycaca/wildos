@@ -139,6 +139,11 @@ def test_hardware_launch_relays_registered_cloud_locally():
         for node in nodes
         if _expanded(context, node.node_executable) == "pointcloud_relay"
     )
+    elevation_mapping = next(
+        node
+        for node in nodes
+        if _expanded(context, node.node_executable) == "elevation_mapping_node.py"
+    )
     relay_parameters = {
         key: value
         for parameters in evaluate_parameters(context, relay._Node__parameters)
@@ -156,6 +161,10 @@ def test_hardware_launch_relays_registered_cloud_locally():
     assert relay_parameters["expected_frame"] == "dlio_odom"
     assert relay_parameters["max_output_rate_hz"] == 0.0
     assert "output_frame" not in relay_parameters
+    assert (
+        "/elevation_mapping_node/elevation_map_raw",
+        "/elevation_mapping_node/elevation_map_unrepaired",
+    ) in _remappings(context, elevation_mapping)
 
 
 def test_planner_uses_the_canonical_path_topic():

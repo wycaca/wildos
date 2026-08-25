@@ -180,7 +180,7 @@ Visualization Manager:
         Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /spot1/elevation_map_repaired
+        Value: /elevation_mapping_node/elevation_map_raw
       Use Rainbow: true
       Value: true
     - Class: rviz_default_plugins/Image

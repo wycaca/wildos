@@ -36,8 +36,7 @@ Topic 名称以 `graph_construction/configs/topic_profiles.yaml` 的 `robot` pro
 | --- | --- | --- |
 | 注册点云 | `/cloud_registered` | x86 D-LIO guard |
 | canonical odom | `/spot1/odom_for_scoring` | AGX odom adapter |
-| 高程图 | `/elevation_mapping_node/elevation_map_raw` | elevation mapping |
-| 修补后高程图 | `/spot1/elevation_map_repaired` | graph construction |
+| 高程图 | `/elevation_mapping_node/elevation_map_raw` | graph construction |
 | 几何导航图 | `/spot1/nav_graph` | graph construction |
 | 视觉评分图 | `/spot1/scored_nav_graph` | WildOS |
 | 目标 Mask | `/spot1/object_mask` | WildOS |
