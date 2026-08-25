@@ -20,12 +20,14 @@ setup(
     zip_safe=True,
     maintainer="WildOS Maintainers",
     maintainer_email="todo@example.com",
-    description="GO2 local path following and point cloud collision avoidance",
+    description="Migrated GO2 navigation algorithm and velocity gateway",
     license="Apache-2.0",
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
+            "astar = wildos_navigation.astar:main",
             "controller = wildos_navigation.controller_node:main",
+            "map_pub = wildos_navigation.map_pub:main",
             "velocity_sender = wildos_navigation.velocity_sender:main",
             "velocity_receiver = wildos_navigation.velocity_receiver:main",
         ],

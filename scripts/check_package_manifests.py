@@ -49,10 +49,13 @@ REQUIRED_DEPENDENCIES = {
         "motion",
         "nav_msgs",
         "python3-numpy",
+        "python3-opencv",
+        "python3-scipy",
         "rclpy",
         "ros2launch",
         "sensor_msgs",
         "sensor_msgs_py",
+        "tf2_geometry_msgs",
         "tf2_ros",
     },
 }

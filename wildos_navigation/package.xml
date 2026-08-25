@@ -3,7 +3,7 @@
 <package format="3">
   <name>wildos_navigation</name>
   <version>0.1.0</version>
-  <description>GO2 local path following and point cloud collision avoidance.</description>
+  <description>Migrated GO2 navigation algorithm and velocity gateway.</description>
   <maintainer email="todo@example.com">WildOS Maintainers</maintainer>
   <license>Apache-2.0</license>
 
@@ -14,10 +14,13 @@
   <exec_depend>motion</exec_depend>
   <exec_depend>nav_msgs</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-scipy</exec_depend>
   <exec_depend>rclpy</exec_depend>
   <exec_depend>ros2launch</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>sensor_msgs_py</exec_depend>
+  <exec_depend>tf2_geometry_msgs</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
 
   <test_depend>python3-pytest</test_depend>

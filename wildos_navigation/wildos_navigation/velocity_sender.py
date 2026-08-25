@@ -15,7 +15,7 @@ class VelocitySender(Node):
 
     def __init__(self) -> None:
         super().__init__("wildos_velocity_sender")
-        self.declare_parameter("input_topic", "/wildos/cmd_vel")
+        self.declare_parameter("input_topic", "/cmd_vel")
         self.declare_parameter("target_ip", "192.168.50.2")
         self.declare_parameter("target_port", 9999)
         self.input_topic = str(self.get_parameter("input_topic").value)

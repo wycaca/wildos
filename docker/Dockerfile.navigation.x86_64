@@ -16,9 +16,12 @@ RUN chmod +x /tmp/configure_apt_mirrors.sh \
       procps \
       python3-colcon-common-extensions \
       python3-numpy \
+      python3-opencv \
+      python3-scipy \
       ros-humble-rmw-fastrtps-cpp \
       ros-humble-ros2launch \
       ros-humble-sensor-msgs-py \
+      ros-humble-tf2-geometry-msgs \
       ros-humble-tf2-ros \
     && /tmp/configure_apt_mirrors.sh https \
     && rm /tmp/configure_apt_mirrors.sh \

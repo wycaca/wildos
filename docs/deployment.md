@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | x86 | `lidar` | MID360 点云和 IMU |
 | x86 | `localization` | D-LIO、注册点云、odom 和 TF |
-| x86 | `navigation` | Path 跟踪、局部点云避障和安全速度生成 |
+| x86 | `navigation` | 局部代价地图、A*、路径跟踪和速度生成 |
 | 相机 AGX | `cameras` | 三路 RealSense 和静态 TF |
 | 相机 AGX | `wildos` | 高程图、导航图、视觉、目标融合和 Planner |
 | 相机 AGX 宿主机 | `wildos-go2-motion-gateway` | 最终限速、断流停车和 Unitree Sport API |
@@ -130,8 +130,11 @@ ros2 topic hz /livox/lidar
 ros2 topic hz /livox/imu
 ros2 topic hz /cloud_registered
 ros2 topic hz /odom
+ros2 topic info /goal_pose -v
+ros2 topic hz /combined_grid
+ros2 topic info /path -v
 ros2 topic info /spot1/graphnav_planner/path -v
-ros2 topic hz /wildos/cmd_vel
+ros2 topic hz /cmd_vel
 ros2 topic hz /spot1/realsense/front/color/image_raw/compressed
 ros2 topic hz /spot1/realsense/left/color/image_raw/compressed
 ros2 topic hz /spot1/realsense/right/color/image_raw/compressed

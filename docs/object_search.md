@@ -9,8 +9,8 @@
 | WildOS | Frontier 评分、目标 Mask 和近距离视觉证据 |
 | target fusion | 多视角粒子滤波和 LiDAR 距离精修 |
 | Goal Mux | 高层目标、状态切换和最终完成 |
-| Planner | 图上路线、探索记忆和 Path |
-| `wildos_navigation` | Path 执行、局部避障和停车 |
+| Planner | 图上路线、探索记忆和 Path 验证 |
+| `wildos_navigation` | 目标点到局部路径、避障和停车 |
 
 Goal Mux 是高层目标和最终完成状态的唯一 owner
 
@@ -83,7 +83,7 @@ ros2 topic pub --once /spot1/object_search_target \
 
 Planner 发布 Path 变化事件, 不是心跳. graph 过期且 odom 新鲜时最多发布一次 hold Path, odom 过期或时间戳异常时停止发布
 
-局部导航独立检查 odom、点云和 Path 契约, 故障时停车并丢弃无效路线. 具体契约见 [Planner](../graphnav_planner/README.md)和[局部导航](navigation.md)
+Goal Mux 发布 `/goal_pose`. 导航算法使用 odom 和注册点云构建局部代价地图, 通过 A* 生成控制路径并发布 `/cmd_vel`. GraphNav Planner Path 不直接驱动已迁移的路径跟随器. 具体契约见 [Planner](../graphnav_planner/README.md)和[导航](navigation.md)
 
 ## 代码入口
 
