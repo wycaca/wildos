@@ -42,7 +42,7 @@ class GraphBuilderConfig:
 
     # GO2 近场盲区修补参数, 固定高度仅作为无地面样本时的回退
     robot_blind_zone_radius: float = 0.4
-    robot_blind_zone_elevation_search_radius: float = 2.0
+    robot_blind_zone_elevation_search_radius: float = 3.5
     robot_ground_height_offset: float = 0.65
     robot_ground_elevation_tolerance: float = 0.2
 

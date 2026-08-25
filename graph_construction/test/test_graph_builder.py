@@ -53,7 +53,7 @@ def test_graph_builder_defaults_match_hardware_geometry():
 
     assert config.node_sample_count == 1000
     assert config.robot_blind_zone_radius == 0.4
-    assert config.robot_blind_zone_elevation_search_radius == 2.0
+    assert config.robot_blind_zone_elevation_search_radius == 3.5
     assert config.max_free_radius == 4.0
     assert config.min_obstacle_clearance == 0.5
     assert config.edge_radius == 8.0
@@ -583,14 +583,14 @@ def test_graph_builder_repairs_robot_blind_zone_from_nearby_ground():
     )
 
 
-def test_default_blind_zone_does_not_repair_beyond_two_metres():
-    """验证 GO2 默认盲区修补不会越过 2 米边界"""
+def test_default_blind_zone_does_not_repair_beyond_three_point_five_metres():
+    """验证 GO2 默认盲区修补不会越过 3.5 米边界"""
     resolution = 0.2
     size = 61
     center = 30
     offset_y, offset_x = np.ogrid[-center:size - center, -center:size - center]
     distance = np.hypot(offset_x * resolution, offset_y * resolution)
-    unknown = distance <= 2.3
+    unknown = distance <= 3.8
     original_unknown = unknown.copy()
     free = ~unknown
     elevation = np.zeros((size, size), dtype=float)
@@ -618,8 +618,8 @@ def test_default_blind_zone_does_not_repair_beyond_two_metres():
     )
 
     repaired = original_unknown & result.classified_grid.free
-    assert np.all(repaired[distance <= 2.0])
-    assert not np.any(repaired[distance > 2.0])
+    assert np.all(repaired[distance <= 3.5])
+    assert not np.any(repaired[distance > 3.5])
     assert np.any(result.classified_grid.unknown[original_unknown])
     assert (
         result.classified_grid.stats["robot_blind_zone_status"]
@@ -631,11 +631,11 @@ def test_default_blind_zone_does_not_repair_beyond_two_metres():
 def test_blind_zone_repair_does_not_fill_behind_wall():
     """验证人工地面不会从短墙端绕到墙后"""
     resolution = 0.2
-    size = 21
-    center = 10
+    size = 41
+    center = 20
     offset_y, offset_x = np.ogrid[-center:size - center, -center:size - center]
     distance = np.hypot(offset_x * resolution, offset_y * resolution)
-    unknown = distance <= 2.0
+    unknown = distance <= 3.5
     obstacle = np.zeros((size, size), dtype=bool)
     obstacle[center - 3:center + 4, center + 2] = True
     unknown[obstacle] = False
@@ -669,7 +669,7 @@ def test_blind_zone_repair_does_not_fill_behind_wall():
     assert result.classified_grid.is_free_index(center + 1, center)
     assert result.classified_grid.is_obstacle_index(center + 2, center)
     assert result.classified_grid.is_unknown_index(center + 4, center)
-    assert result.classified_grid.is_unknown_index(center + 8, center)
+    assert result.classified_grid.is_unknown_index(center + 15, center)
 
 
 def test_blind_zone_repair_only_runs_during_initialization():
