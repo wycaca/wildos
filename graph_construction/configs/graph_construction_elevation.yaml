@@ -22,7 +22,7 @@ grid_map_fill_elevation_radius_cells: 5
 # 仅修补雷达正下方结构造成的小范围盲区, 修补射线不得穿过墙体
 # GO2 站立时雷达原点到地面实测约 0.65m
 robot_blind_zone_radius: 0.4
-robot_blind_zone_elevation_search_radius: 1.5
+robot_blind_zone_elevation_search_radius: 2.0
 robot_ground_height_offset: 0.65
 robot_ground_elevation_tolerance: 0.2
 
