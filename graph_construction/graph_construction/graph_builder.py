@@ -42,7 +42,7 @@ class GraphBuilderConfig:
 
     # GO2 近场盲区修补参数, 固定高度仅作为无地面样本时的回退
     robot_blind_zone_radius: float = 0.4
-    robot_blind_zone_elevation_search_radius: float = 3.5
+    robot_blind_zone_elevation_search_radius: float = 4.0
     robot_ground_height_offset: float = 0.65
     robot_ground_elevation_tolerance: float = 0.2
 
@@ -672,7 +672,7 @@ class SparseGraphBuilder:
         )
         if anchor is None:
             return restored
-        wall_mask = grid.obstacle | protected_unknown
+        wall_mask = _wall_guard_mask(grid.obstacle | protected_unknown)
         for world_x, world_y, world_z in self._blind_zone_prior.values():
             grid_index = grid.world_to_grid(world_x, world_y)
             if grid_index is None:
@@ -803,6 +803,7 @@ class SparseGraphBuilder:
         local_walls = region_obstacle.copy()
         if protected_unknown is not None:
             local_walls |= protected_unknown[min_y:max_y, min_x:max_x]
+        local_walls = _wall_guard_mask(local_walls)
         for candidate_y, candidate_x in np.argwhere(blind_candidates):
             if _line_crosses_wall(
                 local_walls,
@@ -1509,6 +1510,15 @@ def _line_crosses_wall(
             end[1],
         )
         if (cell_x, cell_y) != start
+    )
+
+
+def _wall_guard_mask(wall: np.ndarray) -> np.ndarray:
+    """扩展一格墙体掩码, 封闭点云离散造成的小缺口"""
+    return ndimage.binary_dilation(
+        wall,
+        structure=_FOUR_CONNECTED_STRUCTURE,
+        iterations=1,
     )
 
 
