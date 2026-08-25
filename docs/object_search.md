@@ -66,6 +66,8 @@ scripts/go2_search_test.sh target "red fire extinguisher"
 
 在 x86 主机运行统一脚本. 脚本复用现有 Docker 和运动网关控制脚本, 默认通过 `agx@192.168.50.2` 管理相机 AGX. 首次连接会要求确认 SSH 主机指纹和输入 AGX 密码
 
+需要免除每次 SSH 密码输入时执行一次 `ssh-copy-id agx@192.168.50.2`. 运动网关仍按宿主机 sudo 策略要求确认权限
+
 ```bash
 # 启动传感器、定位、视觉和运动链路, 最后发布搜索目标
 scripts/go2_search_test.sh start "chair"

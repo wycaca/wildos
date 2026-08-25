@@ -36,7 +36,7 @@ agx() {
     printf -v quoted ' %q' "${argument}"
     command+="${quoted}"
   done
-  ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new "${AGX_HOST}" "${command}"
+  ssh -t -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new "${AGX_HOST}" "${command}"
 }
 
 publish_target() {
