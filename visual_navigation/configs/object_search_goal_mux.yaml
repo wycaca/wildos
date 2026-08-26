@@ -61,7 +61,6 @@
     pending_reposition_distance: 0.6
     pending_reposition_tolerance: 0.3
     pending_reposition_visibility_timeout_sec: 1.5
-    pending_reposition_max_attempts: 1
 
     # 稳定目标先到安全观察距离, 再静止确认或小范围换位
     final_observation_distance: 1.75

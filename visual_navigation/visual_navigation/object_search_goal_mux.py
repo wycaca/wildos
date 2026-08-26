@@ -1,4 +1,5 @@
 import copy
+import heapq
 import math
 
 import rclpy
@@ -70,7 +71,6 @@ class ObjectSearchGoalMux(Node):
             "pending_reposition_visibility_timeout_sec",
             1.5,
         )
-        self.declare_parameter("pending_reposition_max_attempts", 1)
         self.declare_parameter("final_observation_distance", 1.75)
         self.declare_parameter("final_observation_entry_tolerance", 0.4)
         self.declare_parameter("final_observation_duration_sec", 2.0)
@@ -207,10 +207,6 @@ class ObjectSearchGoalMux(Node):
             self._param_float("pending_reposition_visibility_timeout_sec"),
             0.1,
         )
-        self.pending_reposition_max_attempts = max(
-            int(self.get_parameter("pending_reposition_max_attempts").value),
-            0,
-        )
         self.final_observation_distance = max(
             self._param_float("final_observation_distance"),
             0.5,
@@ -338,6 +334,8 @@ class ObjectSearchGoalMux(Node):
         self.startup_insufficient_frames = 0
         self.startup_nav_graph_time = None
         self.startup_scored_graph_time = None
+        self.latest_nav_graph: NavigationGraph | None = None
+        self.used_reposition_goals: list[tuple[float, float]] = []
         self.startup_scan_phase = "WARMUP"
         self.startup_scan_phase_time = None
         self.startup_scan_phase_scored_frames = 0
@@ -442,9 +440,11 @@ class ObjectSearchGoalMux(Node):
         """累计连续有效原始图帧, 作为启动地图就绪条件"""
         if not self._graph_is_valid(msg):
             self.startup_nav_graph_frames = 0
+            self.latest_nav_graph = None
             return
         self.startup_nav_graph_frames += 1
         self.startup_nav_graph_time = self.get_clock().now()
+        self.latest_nav_graph = msg
 
     def _on_scored_nav_graph(self, msg: NavigationGraph) -> None:
         """累计连续有效评分图并检查初始朝向前方是否可探索"""
@@ -591,6 +591,8 @@ class ObjectSearchGoalMux(Node):
         self.metric_target_stable = bool(msg.stable)
         self.metric_target_state = str(msg.state)
         self._clear_pending_observation()
+        if target_moved:
+            self.used_reposition_goals.clear()
         if msg.stable:
             self._reset_target_observation()
             if target_moved:
@@ -661,6 +663,7 @@ class ObjectSearchGoalMux(Node):
         self.initial_search_goal = None
         self.exploration_heading_yaw = None
         self.target_reposition_attempts = 0
+        self.used_reposition_goals.clear()
         self._last_state = ""
         self._last_reached_gate_reason = ""
         self.completion_pub.publish(Bool(data=False))
@@ -731,6 +734,180 @@ class ObjectSearchGoalMux(Node):
             return None
         return math.atan2(bearing_y, bearing_x)
 
+    def _select_reposition_position(
+        self,
+        bearing_yaw: float,
+        distance: float,
+        tolerance: float,
+    ) -> tuple[float, float] | None:
+        """从当前连通图的安全覆盖区域选择未访问横向观察点
+
+        导航图节点稀疏, free_radius 才表示节点周围已确认安全的连续区域
+        候选同时比较左右两侧, 墙边无安全覆盖时会自然选择开阔侧
+        """
+        graph = self.latest_nav_graph
+        odom = self.latest_odom
+        if graph is None or odom is None or self.startup_nav_graph_time is None:
+            return None
+        if self._age_seconds(
+            self.get_clock().now(),
+            self.startup_nav_graph_time,
+        ) > self.startup_graph_timeout_sec:
+            return None
+        if graph.header.frame_id and graph.header.frame_id != odom.header.frame_id:
+            return None
+
+        graph_costs = self._reachable_graph_costs(graph)
+        if not graph_costs:
+            return None
+
+        robot_x = float(odom.pose.pose.position.x)
+        robot_y = float(odom.pose.pose.position.y)
+        self._remember_reposition_goal(robot_x, robot_y, tolerance)
+        tangent_x = -math.sin(bearing_yaw)
+        tangent_y = math.cos(bearing_yaw)
+        bearing_x = math.cos(bearing_yaw)
+        bearing_y = math.sin(bearing_yaw)
+        trav_index = self._default_traversability_index(graph)
+        best = None
+
+        for side in (1.0, -1.0):
+            ideal_x = robot_x + side * tangent_x * distance
+            ideal_y = robot_y + side * tangent_y * distance
+            for node_index, graph_cost in graph_costs.items():
+                node = graph.nodes[node_index]
+                free_radius = self._node_free_radius(node, trav_index)
+                safe_radius = free_radius - tolerance
+                if safe_radius <= 0.0:
+                    continue
+
+                node_x = float(node.pose.position.x)
+                node_y = float(node.pose.position.y)
+                to_ideal_x = ideal_x - node_x
+                to_ideal_y = ideal_y - node_y
+                to_ideal = math.hypot(to_ideal_x, to_ideal_y)
+                scale = min(1.0, safe_radius / max(to_ideal, 1e-9))
+                candidate_x = node_x + to_ideal_x * scale
+                candidate_y = node_y + to_ideal_y * scale
+                delta_x = candidate_x - robot_x
+                delta_y = candidate_y - robot_y
+                lateral = side * (delta_x * tangent_x + delta_y * tangent_y)
+                radial = abs(delta_x * bearing_x + delta_y * bearing_y)
+                move_distance = math.hypot(delta_x, delta_y)
+                if (
+                    lateral < tolerance
+                    or radial > tolerance
+                    or move_distance > distance + tolerance
+                    or self._reposition_goal_was_used(
+                        candidate_x,
+                        candidate_y,
+                        tolerance,
+                    )
+                ):
+                    continue
+
+                node_to_candidate = math.hypot(
+                    candidate_x - node_x,
+                    candidate_y - node_y,
+                )
+                remaining_clearance = free_radius - node_to_candidate
+                score = (
+                    math.hypot(candidate_x - ideal_x, candidate_y - ideal_y),
+                    radial,
+                    graph_cost + node_to_candidate,
+                    -remaining_clearance,
+                )
+                if best is None or score < best[0]:
+                    best = (score, candidate_x, candidate_y)
+
+        if best is None:
+            return None
+        self.used_reposition_goals.append((best[1], best[2]))
+        return best[1], best[2]
+
+    @staticmethod
+    def _default_traversability_index(graph: NavigationGraph) -> int:
+        if "default" in graph.trav_classes:
+            return list(graph.trav_classes).index("default")
+        return 0
+
+    @classmethod
+    def _reachable_graph_costs(
+        cls,
+        graph: NavigationGraph,
+    ) -> dict[int, float]:
+        """使用公开边代价计算 current node 所在连通分量"""
+        node_count = len(graph.nodes)
+        start = int(graph.current_node_idx)
+        if start >= node_count:
+            return {}
+        trav_index = cls._default_traversability_index(graph)
+        adjacency: list[list[tuple[int, float]]] = [
+            [] for _ in range(node_count)
+        ]
+        for edge in graph.edges:
+            source = int(edge.from_idx)
+            target = int(edge.to_idx)
+            if source >= node_count or target >= node_count:
+                continue
+            weight = math.hypot(
+                graph.nodes[source].pose.position.x
+                - graph.nodes[target].pose.position.x,
+                graph.nodes[source].pose.position.y
+                - graph.nodes[target].pose.position.y,
+            )
+            if trav_index < len(edge.traversability):
+                configured = float(
+                    edge.traversability[trav_index].traversability_cost
+                )
+                if math.isfinite(configured) and configured > 0.0:
+                    weight = configured
+            if not math.isfinite(weight) or weight <= 0.0:
+                continue
+            adjacency[source].append((target, weight))
+            adjacency[target].append((source, weight))
+
+        costs = {start: 0.0}
+        queue = [(0.0, start)]
+        while queue:
+            current_cost, node_index = heapq.heappop(queue)
+            if current_cost > costs[node_index]:
+                continue
+            for neighbor, weight in adjacency[node_index]:
+                candidate_cost = current_cost + weight
+                if candidate_cost >= costs.get(neighbor, math.inf):
+                    continue
+                costs[neighbor] = candidate_cost
+                heapq.heappush(queue, (candidate_cost, neighbor))
+        return costs
+
+    @staticmethod
+    def _node_free_radius(node, trav_index: int) -> float:
+        if trav_index >= len(node.trav_properties):
+            return 0.0
+        value = float(node.trav_properties[trav_index].free_radius)
+        return value if math.isfinite(value) and value > 0.0 else 0.0
+
+    def _remember_reposition_goal(
+        self,
+        x: float,
+        y: float,
+        tolerance: float,
+    ) -> None:
+        if not self._reposition_goal_was_used(x, y, tolerance):
+            self.used_reposition_goals.append((x, y))
+
+    def _reposition_goal_was_used(
+        self,
+        x: float,
+        y: float,
+        tolerance: float,
+    ) -> bool:
+        return any(
+            math.hypot(x - used_x, y - used_y) <= tolerance
+            for used_x, used_y in self.used_reposition_goals
+        )
+
     def _pending_observation_is_active(self, now) -> bool:
         """判断当前单视角静止观察阶段是否仍在进行"""
         if (
@@ -755,7 +932,7 @@ class ObjectSearchGoalMux(Node):
         self,
         now,
     ) -> tuple[str | None, PoseStamped | None]:
-        """先静止观察单视角候选, 仍可见时只横向换位一次"""
+        """先静止观察单视角候选, 仍可见时选择新的安全观察点"""
         if (
             self.latest_odom is None
             or self.pending_bearing_yaw is None
@@ -799,36 +976,43 @@ class ObjectSearchGoalMux(Node):
                 self._build_pending_observation_goal(now),
             )
 
-        if (
-            evidence_fresh
-            and self.pending_reposition_attempts
-            < self.pending_reposition_max_attempts
-        ):
+        if evidence_fresh:
+            reposition_goal = self._start_pending_reposition(now)
+            if reposition_goal is not None:
+                return (
+                    ObjectSearchState.TARGET_PENDING_REPOSITION,
+                    reposition_goal,
+                )
+            self.pending_observation_started_time = now
+            self.pending_observation_complete = False
             return (
-                ObjectSearchState.TARGET_PENDING_REPOSITION,
-                self._start_pending_reposition(now),
+                ObjectSearchState.TARGET_PENDING_OBSERVATION,
+                self._build_pending_observation_goal(now),
             )
         return None, None
 
-    def _start_pending_reposition(self, now) -> PoseStamped:
-        """按目标射线切向移动, 不使用单视角目标距离"""
+    def _start_pending_reposition(self, now) -> PoseStamped | None:
+        """沿目标射线切向选择可达的新观察点"""
         assert self.latest_odom is not None
         assert self.pending_bearing_yaw is not None
         robot = self.latest_odom.pose.pose.position
-        side = 1.0 if self.pending_reposition_attempts % 2 == 0 else -1.0
-        tangent_x = -math.sin(self.pending_bearing_yaw) * side
-        tangent_y = math.cos(self.pending_bearing_yaw) * side
+        position = self._select_reposition_position(
+            self.pending_bearing_yaw,
+            self.pending_reposition_distance,
+            self.pending_reposition_tolerance,
+        )
+        if position is None:
+            self.get_logger().info(
+                "单视角目标附近暂无新的可达观察点, 保持当前位置"
+            )
+            return None
         goal = PoseStamped()
         goal.header.frame_id = (
             self.frame_id or self.latest_odom.header.frame_id
         )
         goal.header.stamp = now.to_msg()
-        goal.pose.position.x = (
-            robot.x + tangent_x * self.pending_reposition_distance
-        )
-        goal.pose.position.y = (
-            robot.y + tangent_y * self.pending_reposition_distance
-        )
+        goal.pose.position.x = position[0]
+        goal.pose.position.y = position[1]
         goal.pose.position.z = robot.z
         self._set_pose_yaw(goal, self.pending_bearing_yaw)
         self.pending_reposition_attempts += 1
@@ -941,30 +1125,28 @@ class ObjectSearchGoalMux(Node):
             f"target_yaw={math.degrees(self._final_observation_yaw()):.1f}deg"
         )
 
-    def _start_final_reposition(self, now, reason: str) -> PoseStamped:
-        """沿目标切向选择附近观察点, 避免完整原地旋转"""
+    def _start_final_reposition(self, now, reason: str) -> PoseStamped | None:
+        """沿目标切向选择可达且未访问的附近观察点"""
         assert self.metric_target is not None
         assert self.latest_odom is not None
-        target = self.metric_target.pose.position
         robot = self.latest_odom.pose.pose.position
-        radial_x = robot.x - target.x
-        radial_y = robot.y - target.y
-        radial_norm = math.hypot(radial_x, radial_y)
-        if radial_norm < 1e-6:
-            radial_x, radial_y, radial_norm = -1.0, 0.0, 1.0
-        side = 1.0 if self.final_reposition_attempts % 2 == 0 else -1.0
-        tangent_x = side * -radial_y / radial_norm
-        tangent_y = side * radial_x / radial_norm
+        position = self._select_reposition_position(
+            self._bearing_to_target(robot),
+            self.final_observation_reposition_distance,
+            self.final_observation_reposition_tolerance,
+        )
+        if position is None:
+            self.final_observation_started_time = now
+            self.get_logger().info(
+                "稳定目标附近暂无新的可达观察点, 保持当前位置"
+            )
+            return None
 
         goal = PoseStamped()
         goal.header.frame_id = self.metric_target.header.frame_id
         goal.header.stamp = now.to_msg()
-        goal.pose.position.x = (
-            robot.x + tangent_x * self.final_observation_reposition_distance
-        )
-        goal.pose.position.y = (
-            robot.y + tangent_y * self.final_observation_reposition_distance
-        )
+        goal.pose.position.x = position[0]
+        goal.pose.position.y = position[1]
         goal.pose.position.z = robot.z
         self._set_pose_yaw(goal, self._bearing_to_target(goal.pose.position))
         self.final_reposition_attempts += 1
@@ -1235,26 +1417,28 @@ class ObjectSearchGoalMux(Node):
             f"target_yaw={math.degrees(self._target_observation_yaw()):.1f}deg"
         )
 
-    def _start_target_reposition(self, now, reason: str) -> PoseStamped:
-        """沿目标切向移动, 产生粒子滤波所需的真实横向基线"""
+    def _start_target_reposition(self, now, reason: str) -> PoseStamped | None:
+        """沿目标切向选择可达且未访问的新观察点"""
         assert self.metric_target is not None
         assert self.latest_odom is not None
-        target = self.metric_target.pose.position
         robot = self.latest_odom.pose.pose.position
-        radial_x = robot.x - target.x
-        radial_y = robot.y - target.y
-        radial_norm = math.hypot(radial_x, radial_y)
-        if radial_norm < 1e-6:
-            radial_x, radial_y, radial_norm = -1.0, 0.0, 1.0
-        side = 1.0 if self.target_reposition_attempts % 2 == 0 else -1.0
-        tangent_x = side * -radial_y / radial_norm
-        tangent_y = side * radial_x / radial_norm
+        position = self._select_reposition_position(
+            self._bearing_to_target(robot),
+            self.target_observation_reposition_distance,
+            self.target_observation_reposition_tolerance,
+        )
+        if position is None:
+            self.target_observation_started_time = now
+            self.get_logger().info(
+                "粗目标附近暂无新的可达观察点, 保持当前位置"
+            )
+            return None
 
         goal = PoseStamped()
         goal.header.frame_id = self.metric_target.header.frame_id
         goal.header.stamp = now.to_msg()
-        goal.pose.position.x = robot.x + tangent_x * self.target_observation_reposition_distance
-        goal.pose.position.y = robot.y + tangent_y * self.target_observation_reposition_distance
+        goal.pose.position.x = position[0]
+        goal.pose.position.y = position[1]
         goal.pose.position.z = robot.z
         self._set_pose_yaw(goal, self._bearing_to_target(goal.pose.position))
         self.target_reposition_attempts += 1

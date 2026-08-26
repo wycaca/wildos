@@ -6,7 +6,13 @@ import pytest
 import rclpy
 from rclpy.duration import Duration
 from std_msgs.msg import Bool, String
-from graphnav_msgs.msg import NavigationGraph, Node, NodeTraversabilityProperties
+from graphnav_msgs.msg import (
+    Edge,
+    EdgeTraversability,
+    NavigationGraph,
+    Node,
+    NodeTraversabilityProperties,
+)
 from object_search_msgs.msg import ObjectSearchStatus, TargetEstimate
 
 from visual_navigation.object_search_goal_mux import (
@@ -89,22 +95,58 @@ def _target_estimate(
 
 def _graph(*, forward: bool, stamp: int = 1) -> NavigationGraph:
     """构造有前向候选或仅含机器人节点的评分图"""
+    positions = [(0.0, 0.0)]
+    if forward:
+        positions.extend([(1.0, 0.0), (2.0, 0.3), (3.0, -0.3)])
+    graph = _safe_graph(
+        positions,
+        [2.0] * len(positions),
+        [(index - 1, index) for index in range(1, len(positions))],
+        stamp=stamp,
+    )
+    for index in range(len(positions)):
+        graph.nodes[index].trav_properties[0].is_frontier = (
+            forward and index == len(positions) - 1
+        )
+    return graph
+
+
+def _safe_graph(
+    positions: list[tuple[float, float]],
+    free_radii: list[float],
+    edges: list[tuple[int, int]],
+    *,
+    current_node_idx: int = 0,
+    stamp: int = 1,
+) -> NavigationGraph:
+    """构造带安全覆盖半径和无向边的原始导航图"""
     graph = NavigationGraph()
     graph.header.frame_id = "odom"
     graph.header.stamp.sec = stamp
     graph.trav_classes = ["default"]
-    positions = [(0.0, 0.0)]
-    if forward:
-        positions.extend([(1.0, 0.0), (2.0, 0.3), (3.0, -0.3)])
-    for index, (x, y) in enumerate(positions):
+    for index, ((x, y), free_radius) in enumerate(
+        zip(positions, free_radii)
+    ):
         node = Node()
+        node.uuid.id = [0] * 15 + [index + 1]
         node.pose.position.x = x
         node.pose.position.y = y
         properties = NodeTraversabilityProperties()
-        properties.is_frontier = forward and index == len(positions) - 1
+        properties.free_radius = free_radius
         node.trav_properties = [properties]
         graph.nodes.append(node)
-    graph.current_node_idx = 0
+    for source, target in edges:
+        edge = Edge()
+        edge.from_idx = source
+        edge.to_idx = target
+        traversability = EdgeTraversability()
+        traversability.traversability_cost = math.hypot(
+            positions[source][0] - positions[target][0],
+            positions[source][1] - positions[target][1],
+        )
+        edge.traversability = [traversability]
+        graph.edges.append(edge)
+    graph.current_node_idx = current_node_idx
     return graph
 
 
@@ -397,11 +439,12 @@ def test_stale_pending_observation_resumes_original_exploration_goal(mux_node):
     )
 
 
-def test_visible_pending_target_repositions_once_for_new_view(mux_node):
-    """单视角静止观察后目标仍可见时只横向换位一次"""
+def test_visible_pending_target_repositions_to_safe_new_view(mux_node):
+    """单视角静止观察后目标仍可见时选择安全横向位置"""
     mux_node.pending_observation_duration_sec = 100.0
     mux_node.pending_reposition_visibility_timeout_sec = 100.0
     mux_node._on_odom(_odom(0.0, 0.0, 0.0))
+    mux_node._on_nav_graph(_graph(forward=False))
     mux_node._on_target_estimate(
         _target_estimate(
             12.0,
@@ -525,6 +568,7 @@ def test_unstable_observation_moves_sideways_for_new_view(mux_node):
     """静止观察超时后横向移动而不是完整原地旋转"""
     mux_node.target_observation_duration_sec = 100.0
     mux_node._on_odom(_odom(0.0, 0.0, 0.0))
+    mux_node._on_nav_graph(_graph(forward=False))
     mux_node._on_target_estimate(
         _target_estimate(2.8, 0.0, stable=False, confidence=0.51)
     )
@@ -537,7 +581,93 @@ def test_unstable_observation_moves_sideways_for_new_view(mux_node):
     assert next_state == ObjectSearchState.TARGET_APPROACH_COARSE
     assert reposition_goal.pose.position.x == pytest.approx(0.0)
     assert abs(reposition_goal.pose.position.y) == pytest.approx(0.75)
-    assert _yaw(reposition_goal) == pytest.approx(math.atan2(0.75, 2.8))
+    assert _yaw(reposition_goal) == pytest.approx(
+        math.atan2(-reposition_goal.pose.position.y, 2.8)
+    )
+
+
+def test_wall_side_without_safe_coverage_uses_open_side(mux_node):
+    """墙侧没有安全覆盖时只选择开阔侧观察点"""
+    mux_node._on_odom(_odom(0.0, 0.0, 0.0))
+    mux_node._on_nav_graph(
+        _safe_graph(
+            [(0.0, 0.0), (0.0, -0.75), (0.0, 0.75)],
+            [0.45, 0.8, 0.2],
+            [(0, 1), (0, 2)],
+        )
+    )
+
+    position = mux_node._select_reposition_position(0.0, 0.75, 0.4)
+
+    assert position is not None
+    assert position[0] == pytest.approx(0.0)
+    assert position[1] == pytest.approx(-0.75)
+
+
+def test_disconnected_wall_side_candidate_is_rejected(mux_node):
+    """几何位置合适但与 current node 断开的观察区域不可使用"""
+    mux_node._on_odom(_odom(0.0, 0.0, 0.0))
+    mux_node._on_nav_graph(
+        _safe_graph(
+            [(0.0, 0.0), (0.0, -0.75), (0.0, 0.75)],
+            [0.45, 0.8, 2.0],
+            [(0, 1)],
+        )
+    )
+
+    position = mux_node._select_reposition_position(0.0, 0.75, 0.4)
+
+    assert position is not None
+    assert position[1] == pytest.approx(-0.75)
+
+
+def test_retries_choose_new_observation_position(mux_node):
+    """持续重试可以选择新位置但不能返回已观察位置"""
+    first_graph = _safe_graph(
+        [(0.0, 0.0), (0.0, 0.75), (0.0, -0.75)],
+        [0.45, 0.8, 0.8],
+        [(0, 1), (0, 2)],
+    )
+    mux_node._on_odom(_odom(0.0, 0.0, 0.0))
+    mux_node._on_nav_graph(first_graph)
+    first = mux_node._select_reposition_position(0.0, 0.75, 0.4)
+    assert first is not None
+
+    mux_node._on_odom(_odom(first[0], first[1], 0.0))
+    mux_node._on_nav_graph(
+        _safe_graph(
+            [(0.0, 0.0), (0.0, 0.75), (0.0, -0.75), (0.0, 1.5)],
+            [0.45, 0.8, 0.8, 0.8],
+            [(0, 1), (0, 2), (1, 3)],
+            current_node_idx=1,
+            stamp=2,
+        )
+    )
+    second = mux_node._select_reposition_position(0.0, 0.75, 0.4)
+
+    assert second is not None
+    assert second[1] == pytest.approx(1.5)
+    assert math.hypot(second[0], second[1]) > 0.75
+
+
+def test_no_safe_reposition_position_keeps_observing(mux_node):
+    """附近没有安全覆盖时保持当前位置而不是发布墙内目标"""
+    mux_node.target_observation_duration_sec = 100.0
+    mux_node._on_odom(_odom(0.0, 0.0, 0.0))
+    mux_node._on_nav_graph(
+        _safe_graph([(0.0, 0.0)], [0.2], [])
+    )
+    mux_node._on_target_estimate(
+        _target_estimate(2.8, 0.0, stable=False, confidence=0.51)
+    )
+    mux_node._select_goal()
+    mux_node.target_observation_duration_sec = 0.0
+
+    state, goal = mux_node._select_goal()
+
+    assert state == ObjectSearchState.TARGET_OBSERVATION
+    assert goal.pose.position.x == pytest.approx(0.0)
+    assert goal.pose.position.y == pytest.approx(0.0)
 
 
 def test_observation_switches_to_metric_approach_when_target_stabilizes(mux_node):
@@ -577,6 +707,7 @@ def test_final_observation_repositions_when_evidence_stays_insufficient(mux_node
     """静止最终观察后仍无完成证据时横向更换观察点"""
     mux_node.final_observation_duration_sec = 100.0
     mux_node._on_odom(_odom(0.0, 0.0, 0.0))
+    mux_node._on_nav_graph(_graph(forward=False))
     mux_node._on_target_estimate(_target_estimate(1.8, 0.0, stable=True))
     first_state, _ = mux_node._select_goal()
     mux_node.final_observation_duration_sec = -1.0
