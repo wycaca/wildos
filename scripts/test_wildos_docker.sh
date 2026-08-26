@@ -33,6 +33,10 @@ rg -q 'NetworkInterface name="eno1"' \
   "${REPO_ROOT}/scripts/go2_motion_gateway.sh"
 rg -Fq 'systemctl disable "${SERVICE_NAME}"' \
   "${REPO_ROOT}/scripts/go2_motion_gateway.sh"
+! rg -Fq 'start|stop|restart|status)' \
+  "${REPO_ROOT}/scripts/go2_motion_gateway.sh"
+rg -Fq 'systemctl show "${SERVICE_NAME}"' \
+  "${REPO_ROOT}/scripts/go2_motion_gateway.sh"
 bash -n \
   "${REPO_ROOT}/docker/entrypoint.navigation.x86_64.sh" \
   "${REPO_ROOT}/docker/healthcheck.navigation.x86_64.sh" \

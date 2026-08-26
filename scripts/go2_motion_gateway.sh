@@ -66,8 +66,12 @@ case "$1" in
     # 实机运动验收前禁止开机自启, 现场确认安全后仍使用 start 手动启动
     sudo systemctl disable "${SERVICE_NAME}"
     ;;
-  start|stop|restart|status)
+  start|stop|restart)
     sudo systemctl "$1" "${SERVICE_NAME}"
+    ;;
+  status)
+    systemctl show "${SERVICE_NAME}" \
+      --property=LoadState --property=ActiveState --property=SubState
     ;;
   logs)
     journalctl -u "${SERVICE_NAME}" -n 200 -f

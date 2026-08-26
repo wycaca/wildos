@@ -31,12 +31,18 @@ fail() {
 
 agx() {
   local argument command quoted
+  local -a ssh_options=(-T)
+  if [[ "${1:-}" == "--tty" ]]; then
+    ssh_options=(-t)
+    shift
+  fi
   printf -v command 'cd %q &&' "${AGX_REPO_ROOT}"
   for argument in "$@"; do
     printf -v quoted ' %q' "${argument}"
     command+="${quoted}"
   done
-  ssh -t -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new "${AGX_HOST}" "${command}"
+  ssh "${ssh_options[@]}" -o ConnectTimeout=5 \
+    -o StrictHostKeyChecking=accept-new "${AGX_HOST}" "${command}"
 }
 
 publish_target() {
@@ -52,7 +58,7 @@ stop_motion() {
   # Stop the velocity source first, then let the gateway timeout publish zero velocity
   "${SCRIPT_DIR}/wildos_docker.sh" x86 stop navigation || true
   sleep 1
-  agx scripts/go2_motion_gateway.sh stop
+  agx --tty scripts/go2_motion_gateway.sh stop
 }
 
 [[ $# -ge 1 ]] || {
@@ -70,9 +76,9 @@ case "${action}" in
     target="$*"
     "${SCRIPT_DIR}/wildos_docker.sh" x86 start lidar localization
     agx scripts/wildos_docker.sh orin start cameras wildos
-    agx scripts/go2_motion_gateway.sh start
+    agx --tty scripts/go2_motion_gateway.sh start
     if ! "${SCRIPT_DIR}/wildos_docker.sh" x86 start navigation; then
-      agx scripts/go2_motion_gateway.sh stop || true
+      agx --tty scripts/go2_motion_gateway.sh stop || true
       fail "Navigation failed to start, motion gateway was stopped"
     fi
     if ! publish_target "${target}"; then
@@ -90,9 +96,12 @@ case "${action}" in
     ;;
   status)
     [[ $# -eq 0 ]] || fail "status does not accept arguments"
+    echo "== x86 Docker =="
     "${SCRIPT_DIR}/wildos_docker.sh" x86 status
+    echo "== camera AGX Docker =="
     agx scripts/wildos_docker.sh orin status
-    agx scripts/go2_motion_gateway.sh status || true
+    echo "== GO2 motion gateway =="
+    agx scripts/go2_motion_gateway.sh status
     ;;
   logs)
     [[ $# -eq 1 ]] || fail "logs requires one component"
@@ -104,7 +113,7 @@ case "${action}" in
         agx scripts/wildos_docker.sh orin logs -f "$1"
         ;;
       gateway)
-        agx scripts/go2_motion_gateway.sh logs
+        agx --tty scripts/go2_motion_gateway.sh logs
         ;;
       *)
         fail "Unsupported log component: $1"
