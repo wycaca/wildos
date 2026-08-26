@@ -1,0 +1,1 @@
+@SERVICE_USER@ ALL=(root) NOPASSWD: /usr/bin/systemctl start wildos-go2-motion-gateway.service, /usr/bin/systemctl stop wildos-go2-motion-gateway.service, /usr/bin/systemctl restart wildos-go2-motion-gateway.service

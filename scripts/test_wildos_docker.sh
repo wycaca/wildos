@@ -37,6 +37,14 @@ rg -Fq 'systemctl disable "${SERVICE_NAME}"' \
   "${REPO_ROOT}/scripts/go2_motion_gateway.sh"
 rg -Fq 'systemctl show "${SERVICE_NAME}"' \
   "${REPO_ROOT}/scripts/go2_motion_gateway.sh"
+rg -Fq 'sudo -n /usr/bin/systemctl "$1" "${SERVICE_NAME}"' \
+  "${REPO_ROOT}/scripts/go2_motion_gateway.sh"
+rg -Fq 'wildos-go2-motion-gateway.sudoers.in' \
+  "${REPO_ROOT}/scripts/go2_motion_gateway.sh"
+test "$(rg -o '/usr/bin/systemctl (start|stop|restart) wildos-go2-motion-gateway.service' \
+  "${REPO_ROOT}/systemd/wildos-go2-motion-gateway.sudoers.in" | wc -l)" -eq 3
+! rg -q 'NOPASSWD:[[:space:]]*ALL' \
+  "${REPO_ROOT}/systemd/wildos-go2-motion-gateway.sudoers.in"
 bash -n \
   "${REPO_ROOT}/docker/entrypoint.navigation.x86_64.sh" \
   "${REPO_ROOT}/docker/healthcheck.navigation.x86_64.sh" \

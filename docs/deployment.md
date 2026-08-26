@@ -92,6 +92,7 @@ scripts/go2_motion_gateway.sh stop
 ```
 
 `install` 构建宿主机 `wildos_navigation` package 并安装服务, 保持服务停止且禁止开机自启
+安装时仅授权 `agx` 用户免密启停和重启该网关服务, 其他 `sudo` 操作仍需密码
 
 ## D-LIO 和 TF
 

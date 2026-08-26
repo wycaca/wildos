@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 WORKSPACE_ROOT="$(cd -- "${REPO_ROOT}/../.." && pwd)"
 SERVICE_NAME="wildos-go2-motion-gateway.service"
+SUDOERS_NAME="wildos-go2-motion-gateway"
 MOTION_SETUP="${MOTION_SETUP:-/home/agx/agent_ws/install/setup.bash}"
 
 usage() {
@@ -55,19 +56,26 @@ case "$1" in
   install)
     build_gateway
     unit_file="$(mktemp)"
-    trap 'rm -f "${unit_file}"' EXIT
+    sudoers_file="$(mktemp)"
+    trap 'rm -f "${unit_file}" "${sudoers_file}"' EXIT
     sed \
       -e "s|@SERVICE_USER@|${USER}|g" \
       -e "s|@REPO_ROOT@|${REPO_ROOT}|g" \
       "${REPO_ROOT}/systemd/wildos-go2-motion-gateway.service.in" \
       > "${unit_file}"
+    sed \
+      -e "s|@SERVICE_USER@|${USER}|g" \
+      "${REPO_ROOT}/systemd/wildos-go2-motion-gateway.sudoers.in" \
+      > "${sudoers_file}"
+    sudo /usr/sbin/visudo -cf "${sudoers_file}"
     sudo install -m 0644 "${unit_file}" "/etc/systemd/system/${SERVICE_NAME}"
+    sudo install -m 0440 "${sudoers_file}" "/etc/sudoers.d/${SUDOERS_NAME}"
     sudo systemctl daemon-reload
     # 实机运动验收前禁止开机自启, 现场确认安全后仍使用 start 手动启动
     sudo systemctl disable "${SERVICE_NAME}"
     ;;
   start|stop|restart)
-    sudo systemctl "$1" "${SERVICE_NAME}"
+    sudo -n /usr/bin/systemctl "$1" "${SERVICE_NAME}"
     ;;
   status)
     systemctl show "${SERVICE_NAME}" \

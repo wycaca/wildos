@@ -70,6 +70,7 @@ scripts/go2_motion_gateway.sh stop
 ```
 
 `install` 不启动服务且禁止开机自启
+安装完成后, x86 可通过 SSH 免密启停网关, 权限仅限该 systemd 服务
 
 ## 无运动验证
 
