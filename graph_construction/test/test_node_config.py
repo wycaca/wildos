@@ -98,6 +98,7 @@ def test_deployment_config_limits_go2_blind_zone():
 
     assert builder_config.robot_blind_zone_radius == 0.4
     assert builder_config.robot_blind_zone_elevation_search_radius == 4.0
+    assert builder_config.robot_ground_height_offset == 0.70
 
 
 def test_take_latest_inputs_processes_each_grid_once():
