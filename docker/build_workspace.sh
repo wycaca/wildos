@@ -17,6 +17,7 @@ APPLICATION_PACKAGES=(
   visual_navigation
   graph_construction
   graphnav_planner
+  wildos_visualization
 )
 
 case "${BUILD_PHASE}" in

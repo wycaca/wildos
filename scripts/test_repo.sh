@@ -46,7 +46,7 @@ run_stage "build" \
     --packages-select \
       graphnav_msgs object_search_msgs triangulation3d \
       graph_construction visual_navigation graphnav_planner \
-      wildos_navigation \
+      wildos_navigation wildos_visualization \
     --cmake-args -DBUILD_TESTING=ON
 
 set +u
@@ -77,6 +77,11 @@ run_stage "triangulation3d functional tests" \
 run_stage "wildos_navigation functional tests" \
   "${VENV_PYTHON}" -m pytest \
     "${REPO_ROOT}/wildos_navigation/test" \
+    -p no:cacheprovider
+
+run_stage "wildos_visualization functional tests" \
+  "${VENV_PYTHON}" -m pytest \
+    "${REPO_ROOT}/wildos_visualization/test" \
     -p no:cacheprovider
 
 run_stage "Planner CTest" \

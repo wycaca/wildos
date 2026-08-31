@@ -164,7 +164,6 @@ def _launch_setup(context):
                 "elevation_grid_map_topic",
             ),
             "nav_graph_topic": nav_graph_topic,
-            "viz_topic": _value(context, profile, "graph_construction_viz_topic", "graph_construction_viz_topic"),
         }
     )
     visual_overrides = _config_override_args(
@@ -318,6 +317,27 @@ def _launch_setup(context):
         parameters=[{"use_sim_time": use_sim_time}],
         condition=IfCondition(LaunchConfiguration("launch_paper_rviz")),
     )
+    graph_visualizer = Node(
+        package="wildos_visualization",
+        executable="graph_visualizer",
+        output="screen",
+        **python_node_extra_args,
+        parameters=[
+            _package_config_path("wildos_visualization", "visualization.yaml"),
+            {"use_sim_time": use_sim_time},
+            {"nav_graph_topic": nav_graph_topic},
+            {"odom_topic": odom_output_topic},
+            {
+                "viz_topic": _value(
+                    context,
+                    profile,
+                    "graph_construction_viz_topic",
+                    "graph_construction_viz_topic",
+                )
+            },
+        ],
+        condition=IfCondition(LaunchConfiguration("launch_paper_rviz")),
+    )
 
     wildos = Node(
         package="visual_navigation",
@@ -454,6 +474,7 @@ def _launch_setup(context):
         pointcloud_relay,
         odom_adapter,
         paper_rviz,
+        graph_visualizer,
         elevation_mapping,
         pipeline_performance_monitor,
         TimerAction(period=LaunchConfiguration("graph_start_delay"), actions=[graph_construction]),

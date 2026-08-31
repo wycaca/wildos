@@ -34,6 +34,10 @@ def test_resolve_config_uses_graph_builder_defaults_once():
         "low_degree_retry_threshold",
         "random_seed",
         "robot_blind_zone_initial_only",
+        "viz_publish_rate_hz",
+        "viz_show_full_edges",
+        "viz_show_radius_markers",
+        "viz_topic",
     ],
 )
 def test_resolve_config_rejects_removed_or_misspelled_keys(name):
@@ -47,7 +51,6 @@ def test_resolve_config_rejects_removed_or_misspelled_keys(name):
         {"grid_input_type": "image"},
         {"publish_rate_hz": 0.0},
         {"diagnostics_period_sec": 0.0},
-        {"viz_publish_rate_hz": 0.0},
         {"max_grid_odom_time_delta_sec": 0.0},
         {"grid_map_free_threshold": 0.1, "grid_map_obstacle_threshold": 0.2},
     ],

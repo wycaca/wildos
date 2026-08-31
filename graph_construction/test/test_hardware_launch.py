@@ -220,6 +220,7 @@ def test_all_python_nodes_use_uv_environment_python():
     python_executables = {
         "elevation_mapping_node.py",
         "graph_construction",
+        "graph_visualizer",
         "object_search_goal_mux",
         "object_target_fusion",
         "odom_frame_adapter",
@@ -237,6 +238,38 @@ def test_all_python_nodes_use_uv_environment_python():
         assert _node_prefix(context, node).strip() == expected_python
 
     assert launched_python == python_executables
+
+
+def test_graph_visualization_is_an_optional_external_node():
+    module = _load_launch_module()
+    context = _context_with_defaults(module)
+    nodes = list(_all_nodes(module._launch_setup(context)))
+    visualizer = next(
+        node
+        for node in nodes
+        if _expanded(context, node.node_executable) == "graph_visualizer"
+    )
+    parameters = {
+        key: value
+        for values in evaluate_parameters(context, visualizer._Node__parameters)
+        if isinstance(values, dict)
+        for key, value in values.items()
+    }
+
+    assert visualizer._Node__package == "wildos_visualization"
+    assert parameters["nav_graph_topic"] == "/spot1/nav_graph"
+    assert parameters["odom_topic"] == "/spot1/odom_for_scoring"
+    assert parameters["viz_topic"] == "/spot1/graph_construction_viz"
+
+
+def test_paper_rviz_accepts_best_effort_graph_markers():
+    rviz_config = (REPO_ROOT / "graph_construction/rviz/wildos_paper.rviz").read_text(
+        encoding="utf-8"
+    )
+    topic_index = rviz_config.index("Value: /spot1/graph_construction_viz")
+    topic_block = rviz_config[rviz_config.rfind("Topic:", 0, topic_index):topic_index]
+
+    assert "Reliability Policy: Best Effort" in topic_block
 
 
 def test_system_python_is_rejected_for_python_nodes():

@@ -26,6 +26,7 @@ GraphNav Planner Path 用于图规划验证. `wildos_navigation` 使用 Goal Mux
 | AGX | `visual_navigation` | ExploRFM 评分、目标 Mask 和高层目标状态 |
 | AGX | `triangulation3d` | 多视角目标粒子滤波 |
 | AGX | `graphnav_planner` | 图路径、探索记忆和 Path |
+| 开发机或 AGX 按需 | `wildos_visualization` | 从公开消息生成 RViz 调试图元 |
 | AGX 宿主机 | GO2 motion gateway | 速度校验、限幅、断流停车和 Unitree Sport API |
 
 ## 主数据契约
@@ -78,6 +79,7 @@ odom -> dlio_odom -> base_link -> lidar_link
 - 速度链路或网关断流时必须发布零速度
 - debug topic 无订阅者时不构造高成本消息
 - 性能监控只消费轻量 diagnostics, 不新增跨机点云、图像、GridMap 或 NavigationGraph 订阅
+- 可视化只在显式开启 RViz 时以独立进程订阅公开输出, 不进入核心 executor
 - 不新增职责重复的 launch、Compose 或 adapter
 
 ## 配置入口
@@ -88,6 +90,7 @@ odom -> dlio_odom -> base_link -> lidar_link
 | D-LIO | `graph_construction/configs/dlio/mid360.yaml` |
 | 高程图 | `graph_construction/configs/elevation_mapping.yaml` |
 | 导航图 | `graph_construction/configs/graph_construction_elevation.yaml` |
+| 可视化 | `wildos_visualization/configs/visualization.yaml` |
 | 视觉与检测 | `visual_navigation/configs/wildos_nav_conf.yaml` |
 | Goal Mux | `visual_navigation/configs/object_search_goal_mux.yaml` |
 | Planner | `graphnav_planner/config/planner.yaml` |

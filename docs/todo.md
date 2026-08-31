@@ -62,8 +62,6 @@
 
 ### 2.3 把可视化迁出核心回调
 
-- 新建单一 visualization package, 使用独立进程订阅公开核心输出并生成 RViz Marker、调试图像和状态叠加
-- 图可视化只订阅 `NavigationGraph` 和 odom, 使用公开节点、边、Frontier、半径和 current node 字段, 不访问 `GraphState`
 - Planner 分数环从 scored graph 的公开属性生成, Planner 核心不再构造 MarkerArray 或调试 GridMap
 - 目标球、观测射线和协方差从 `TargetEstimate` 等公开结果生成, 不再从融合核心同步构造 marker
 - 模型可视化优先使用图像、Mask、scored graph 等现有输出重建, 精确热图确有调试需求时才发布低频、best effort、depth 1 的调试数据
@@ -73,8 +71,6 @@
 
 预计清理范围:
 
-- 从 `graph_construction/graph_construction/node.py` 移除 `GraphVisualizer`、Marker publisher 和同步构造逻辑
-- 迁移后删除 `graph_construction/graph_construction/viz.py` 及核心 package 的 `visualization_msgs` 依赖
 - 从 WildOS 核心回调移除 `visual_navigation/visual_navigation/wildos/viz.py` 和 `geofrontier_nav/viz.py` 的同步调用
 - 从目标融合移除 marker 和粒子点云发布职责
 - 从 Planner 移除 `planner_visualization.cpp`、debug publisher 和不再使用的 `visualization_msgs` 依赖
@@ -172,7 +168,6 @@ C++ 迁移门槛:
 
 测试清理:
 
-- graph visualizer 迁出后, 用新 package 的消息级测试替换 `graph_construction/test/test_graph_viz.py`, 删除旧 `GraphState` 可视化测试
 - Planner 分数环迁出后, 用外部 visualizer 测试替换 `graphnav_planner/test/test_frontier_score_visualization.cpp`, 删除旧 visualization 实现测试
 - WildOS 可视化迁出后, 删除无调用方的 `test_publish_gate.py` 和对应 helper, Marker 行为移入 visualization package
 - 目标融合测试保留融合、时间、TF 和安全门控, 删除或迁移只验证旧 marker 和粒子发布器的部分

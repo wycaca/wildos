@@ -21,6 +21,7 @@
 - D-LIO: `graph_construction/configs/dlio/mid360.yaml`
 - 高程图和图构建: `graph_construction/configs/*.yaml`
 - 视觉、Goal Mux 和 Planner: 对应 package 的 `configs/` 或 `config/`
+- RViz 图可视化: `wildos_visualization/configs/visualization.yaml`
 - 局部导航和速度网关: `wildos_navigation/config/navigation.yaml`
 
 `.env` 只保存主机路径、设备身份、标定和模型目录. 固定运行参数保存在 Compose、launch 和 YAML
@@ -54,6 +55,8 @@ scripts/wildos_docker.sh x86 start navigation
 ```
 
 `navigation` 必须最后启动. 停机时先停止 `navigation`, 等待网关断流归零后再停止网关
+
+生产入口默认使用 `launch_paper_rviz:=false`, 不启动 RViz 或可视化订阅. 现场调试时显式设为 `true`, 会启动独立 `wildos_visualization/graph_visualizer` 和 RViz; 两者停止不会停止图构建
 
 `update` 只重建镜像和容器, 不执行 Git 同步. 修改 `.env` 后使用 `start` 让 Compose 重建受影响服务, 只替换只读挂载的模型文件时使用 `restart`, 修改代码、Dockerfile 或依赖时使用 `update`
 

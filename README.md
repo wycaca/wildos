@@ -43,6 +43,7 @@ x86 主机运行 LiDAR 与 D-LIO. 相机 AGX 运行相机, 建图, 图构建, �
 | `visual_navigation` | ExploRFM 评分, 视觉证据, 目标融合适配和高层目标选择 |
 | `triangulation3d` | 递归多视角目标粒子滤波 |
 | `graphnav_planner` | 图路径规划与探索恢复 |
+| `wildos_visualization` | 独立消费公开输出并生成 RViz 调试图元 |
 | `explorfm` | 视觉推理模型 |
 | `explorfm_trainer` | 视觉 Head 训练流程 |
 

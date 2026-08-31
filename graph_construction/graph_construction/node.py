@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 from collections import deque
 from dataclasses import fields
-import math
 from pathlib import Path
 import time
 from typing import Any, Dict, Mapping
@@ -18,7 +17,6 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Header
-from visualization_msgs.msg import MarkerArray
 
 from graph_construction.graph_builder import GraphBuilderConfig, SparseGraphBuilder
 from graph_construction.grid_adapter import build_repaired_grid_map, classify_grid_map
@@ -29,7 +27,6 @@ from graph_construction.performance_stats import (
     diagnostic_status,
     timing_metrics,
 )
-from graph_construction.viz import GraphVisualizer
 
 
 DEFAULT_CONFIG: Dict[str, Any] = {
@@ -38,10 +35,6 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "grid_map_topic": "/_wildos/elevation_map_source",
     "output_grid_map_topic": "/elevation_mapping_node/elevation_map_raw",
     "nav_graph_topic": "/spot1/nav_graph",
-    "viz_topic": "/spot1/graph_construction_viz",
-    "viz_show_radius_markers": False,
-    "viz_show_full_edges": False,
-    "viz_publish_rate_hz": 1.0,
     "publish_rate_hz": 2.0,
     "diagnostics_enabled": True,
     "diagnostics_period_sec": 30.0,
@@ -106,14 +99,6 @@ class GraphConstructionNode(Node):
         self.config = _resolve_config(config)
         self.builder = SparseGraphBuilder(_builder_config(self.config))
         self._message_cache = GraphMessageCache()
-        self.visualizer = GraphVisualizer(
-            show_radius_markers=bool(
-                self.config.get("viz_show_radius_markers", False)
-            ),
-            show_full_edges=bool(
-                self.config.get("viz_show_full_edges", False)
-            ),
-        )
 
         self.latest_grid = None
         self.latest_odom = None
@@ -130,11 +115,10 @@ class GraphConstructionNode(Node):
         self._logged_first_odom = False
         self._logged_first_publish = False
         self._last_slow_warning = 0.0
-        self._last_viz_publish_time = -math.inf
         self._publish_rate = EventRate()
         self._timings = {
             name: TimingWindow()
-            for name in ("classify", "update", "message", "visualize", "total")
+            for name in ("classify", "update", "message", "total")
         }
         self._graph_update_timings = {
             name: TimingWindow()
@@ -165,7 +149,6 @@ class GraphConstructionNode(Node):
             self.config["output_grid_map_topic"],
             1,
         )
-        self.viz_pub = self.create_publisher(MarkerArray, self.config["viz_topic"], 10)
         self.diagnostics_pub = None
         if self.config["diagnostics_enabled"]:
             self.diagnostics_pub = self.create_publisher(
@@ -296,23 +279,6 @@ class GraphConstructionNode(Node):
         )
         self.output_grid_map_pub.publish(repaired_grid_map)
 
-        now = time.monotonic()
-        viz_rate = max(float(self.config["viz_publish_rate_hz"]), 0.01)
-        if (
-            self.viz_pub.get_subscription_count() > 0
-            and now - self._last_viz_publish_time >= 1.0 / viz_rate
-        ):
-            stage_started = time.perf_counter()
-            self.viz_pub.publish(
-                self.visualizer.build_markers(
-                    update_result.graph,
-                    header,
-                )
-            )
-            self._timings["visualize"].add_seconds(
-                time.perf_counter() - stage_started
-            )
-            self._last_viz_publish_time = now
         total_seconds = time.perf_counter() - cycle_started
         self._timings["total"].add_seconds(total_seconds)
         self._publish_rate.tick()
@@ -530,8 +496,6 @@ def _resolve_config(config: Mapping[str, Any]) -> Dict[str, Any]:
         raise ValueError("publish_rate_hz must be greater than 0")
     if float(resolved["diagnostics_period_sec"]) <= 0.0:
         raise ValueError("diagnostics_period_sec must be greater than 0")
-    if float(resolved["viz_publish_rate_hz"]) <= 0.0:
-        raise ValueError("viz_publish_rate_hz must be greater than 0")
     if float(resolved["max_grid_odom_time_delta_sec"]) <= 0.0:
         raise ValueError("max_grid_odom_time_delta_sec must be greater than 0")
     obstacle_threshold = float(resolved["grid_map_obstacle_threshold"])

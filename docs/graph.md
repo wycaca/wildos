@@ -57,10 +57,17 @@ Frontier 是 free 与 unknown 的边界, 挂在附近安全节点上. rolling ma
 
 `pipeline_performance_monitor` 是默认关闭的独立进程, 只订阅 `/diagnostics`. 它不订阅 PointCloud2、GridMap、NavigationGraph 或图像, 停止监控不会改变图构建输入、输出和调度
 
+## 可视化隔离
+
+图核心不再依赖 `visualization_msgs`, 也不创建 Marker publisher. `wildos_visualization/graph_visualizer` 只订阅公开 `NavigationGraph` 和 odom, 在独立进程生成节点、边、Frontier、current node、轨迹和可选半径 Marker. 无 RViz 订阅者时直接跳过 Marker 构建
+
+生产模式默认关闭 `launch_paper_rviz`. 开启该参数时才同时启动 RViz 和外部 graph visualizer. 在 1000 节点、999 边合成图上, 原核心同步构造 Marker 的中位耗时为 11.689 ms; 拆分后核心可视化耗时为 0 ms, 外部进程构造中位耗时为 17.637 ms. 外部耗时不占用图核心回调, 可视化关闭时也不产生图订阅和序列化开销
+
 ## 入口和验证
 
 - 实现: `graph_construction/graph_construction/graph_builder.py`
 - ROS adapter: `graph_construction/graph_construction/node.py`
+- RViz adapter: `wildos_visualization/wildos_visualization/graph_visualizer.py`
 - 配置: `graph_construction/configs/graph_construction_elevation.yaml`
 - 测试: `graph_construction/test/`
 

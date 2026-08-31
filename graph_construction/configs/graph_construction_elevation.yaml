@@ -4,13 +4,9 @@ odom_topic: /spot1/odom_for_scoring
 grid_map_topic: /_wildos/elevation_map_source
 output_grid_map_topic: /elevation_mapping_node/elevation_map_raw
 nav_graph_topic: /spot1/nav_graph
-viz_topic: /spot1/graph_construction_viz
 publish_rate_hz: 2.0
 diagnostics_enabled: true
 diagnostics_period_sec: 30.0
-viz_show_radius_markers: false
-viz_show_full_edges: false
-viz_publish_rate_hz: 1.0
 max_grid_odom_time_delta_sec: 0.5
 
 # GridMap 分类和小洞修复

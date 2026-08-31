@@ -33,7 +33,7 @@ Visualization Manager:
         Depth: 1
         Durability Policy: Volatile
         History Policy: Keep Last
-        Reliability Policy: Reliable
+        Reliability Policy: Best Effort
         Value: /spot1/graph_construction_viz
       Value: true
     - Alpha: 0.6499999761581421

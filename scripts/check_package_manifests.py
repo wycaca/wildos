@@ -23,7 +23,7 @@ REQUIRED_DEPENDENCIES = {
         "std_msgs",
         "tf2_msgs",
         "tf2_ros",
-        "visualization_msgs",
+        "wildos_visualization",
     },
     "visual_navigation": {
         "ament_index_python",
@@ -76,6 +76,14 @@ REQUIRED_DEPENDENCIES = {
         "sensor_msgs_py",
         "tf2_geometry_msgs",
         "tf2_ros",
+    },
+    "wildos_visualization": {
+        "geometry_msgs",
+        "graphnav_msgs",
+        "nav_msgs",
+        "rclpy",
+        "std_msgs",
+        "visualization_msgs",
     },
 }
 
