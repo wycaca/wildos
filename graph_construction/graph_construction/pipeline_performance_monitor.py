@@ -6,6 +6,12 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 
+from graph_construction.resource_monitor import (
+    DEFAULT_PROCESS_PATTERNS,
+    ResourceSampler,
+    format_resource_metrics,
+)
+
 
 def format_status(status: DiagnosticStatus) -> str:
     """只展开关键指标, 完整标量仍保留在 diagnostics 消息中"""
@@ -32,7 +38,20 @@ class PipelinePerformanceMonitor(Node):
     def __init__(self) -> None:
         super().__init__("pipeline_performance_monitor")
         self.declare_parameter("diagnostics_topic", "/diagnostics")
+        self.declare_parameter("resource_period_sec", 5.0)
+        self.declare_parameter(
+            "resource_process_patterns",
+            list(DEFAULT_PROCESS_PATTERNS),
+        )
         topic = str(self.get_parameter("diagnostics_topic").value)
+        resource_period_sec = float(
+            self.get_parameter("resource_period_sec").value
+        )
+        if resource_period_sec <= 0.0:
+            raise ValueError("resource_period_sec must be positive")
+        self._resource_sampler = ResourceSampler(
+            self.get_parameter("resource_process_patterns").value
+        )
         self.create_subscription(
             DiagnosticArray,
             topic,
@@ -43,11 +62,17 @@ class PipelinePerformanceMonitor(Node):
                 durability=DurabilityPolicy.VOLATILE,
             ),
         )
+        self.create_timer(resource_period_sec, self._report_resources)
         self.get_logger().info(f"性能监控已启动, diagnostics={topic}")
 
     def _on_diagnostics(self, msg: DiagnosticArray) -> None:
         for status in msg.status:
             self.get_logger().info(format_status(status))
+
+    def _report_resources(self) -> None:
+        metrics = self._resource_sampler.sample()
+        if metrics:
+            self.get_logger().info(format_resource_metrics(metrics))
 
 
 def main(args=None) -> None:

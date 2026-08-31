@@ -2,6 +2,8 @@
 
 性能优化遵循先隔离观察面、再测量核心、最后决定语言迁移的顺序. 核心节点只记录单调时钟、计数器和固定容量窗口, 每 30 或 60 秒向 `/diagnostics` 发布标量. `pipeline_performance_monitor` 和 `wildos_visualization` 是独立进程, 停止它们不会改变核心 Topic、Path、速度或停车逻辑
 
+性能 monitor 每 5 秒在自身进程读取 `/proc`、thermal sysfs 和 `nvidia-smi`, 汇总主机 CPU、内存、最高温度、GPU 利用率/显存/温度, 以及核心进程 CPU 和 RSS. 它不订阅图像、PointCloud2、GridMap 或 NavigationGraph. 当前主机单次资源采样中位耗时 16.543 ms、最大 20.388 ms, 折算约 3.31 ms/s, 全部发生在独立观察进程
+
 ## 可重复合成基线
 
 [performance_baseline.yaml](../scripts/performance_baseline.yaml) 固定随机种子、输入规模、预热次数、重复次数和周期预算. [benchmark_performance.py](../scripts/benchmark_performance.py) 使用真实 PointCloud2 解码、当前 NumPy/OpenCV 数据路径和当前图构建器, 输出包含环境、配置 SHA256、P50/P95/最大值、阶段耗时、输出契约和迁移门槛的 JSON

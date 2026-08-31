@@ -57,6 +57,8 @@ Frontier 是 free 与 unknown 的边界, 挂在附近安全节点上. rolling ma
 
 `pipeline_performance_monitor` 是默认关闭的独立进程, 只订阅 `/diagnostics`. 它不订阅 PointCloud2、GridMap、NavigationGraph 或图像, 停止监控不会改变图构建输入、输出和调度
 
+诊断模式下 monitor 还会每 5 秒从 `/proc`、thermal sysfs 和 `nvidia-smi` 读取主机 CPU、内存、温度、GPU、核心进程 CPU 和 RSS. 资源采集不进入核心 executor, 未安装 `nvidia-smi` 时自动省略 GPU 指标
+
 ## 可视化隔离
 
 图核心不再依赖 `visualization_msgs`, 也不创建 Marker publisher. `wildos_visualization/graph_visualizer` 只订阅公开 `NavigationGraph` 和 odom, 在独立进程生成节点、边、Frontier、current node、轨迹和可选半径 Marker. 无 RViz 订阅者时直接跳过 Marker 构建
