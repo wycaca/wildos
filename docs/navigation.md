@@ -49,6 +49,8 @@ x86 和 GO2 使用不同 DDS domain, 两端可以使用相同的 `/cmd_vel` 名�
 
 滚动窗口原点仍按 resolution 对齐, 障碍高度差、膨胀层级和机器人中心清空语义保持不变. 该优化只删除点云解码中的 Python 对象转换, 不调整导航算法参数
 
+`start_nav` 同样直接读取结构化点云, 使用 NumPy 掩码完成高度和机器人距离过滤. 原算法仍先把候选限制为 120 个, 再保留最近 35 个用于避障; 动态障碍邻域只在这 35 个候选上构造有界距离矩阵, Kalman 更新顺序、预测时域和速度门控保持不变
+
 ## 配置边界
 
 [navigation.yaml](../wildos_navigation/config/navigation.yaml) 保存原工作区的代价地图参数和当前部署接口. 路径跟踪速度、前视距离、安全半径和动态障碍预测参数仍保留在迁移源码中, 避免部署侧形成第二套算法配置
@@ -111,4 +113,4 @@ source install/setup.bash
 PYTHONPATH=wildos_navigation:${PYTHONPATH:-} python3 -m pytest wildos_navigation/test -p no:cacheprovider
 ```
 
-测试覆盖点云到代价地图、当前 Topic、启动节点、速度链路协议和网关边界. 导航算法行为以导航同事的原工作区测试结果为准
+测试覆盖点云到代价地图、障碍过滤和动态预测、当前 Topic、启动节点、速度链路协议和网关边界. 导航算法行为以导航同事的原工作区测试结果为准

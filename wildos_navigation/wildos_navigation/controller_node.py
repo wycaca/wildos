@@ -131,63 +131,57 @@ class AdvancedGeometricFollower(Node):
         if self.latest_pose is None:
             return
 
-        obstacles_temp = []
-        point_generator = pc2.read_points(
+        points = pc2.read_points(
             msg,
             field_names=("x", "y", "z"),
             skip_nans=True,
         )
-        for p in point_generator:
-            obs_x, obs_y, obs_z = p[0], p[1], p[2]
+        point_x = points["x"]
+        point_y = points["y"]
+        point_z = points["z"]
+        distance_to_dog = np.hypot(
+            point_x.astype(np.float64) - self.latest_pose[0],
+            point_y.astype(np.float64) - self.latest_pose[1],
+        )
+        valid = (
+            (point_z > 0.12)
+            & (point_z < 0.8)
+            & (distance_to_dog > 0.42)
+            & (distance_to_dog < 4.0)
+        )
+        obstacles = np.column_stack((point_x[valid], point_y[valid]))
 
-            if 0.12 < obs_z < 0.8:
-                dist_to_dog = math.hypot(
-                    obs_x - self.latest_pose[0],
-                    obs_y - self.latest_pose[1],
-                )
-                if 0.42 < dist_to_dog < 4.0:
-                    obstacles_temp.append([obs_x, obs_y])
-
-        if len(obstacles_temp) > 120:
-            obstacles_temp = random.sample(obstacles_temp, 120)
-        if len(obstacles_temp) > 35:
-            obstacles_temp.sort(
-                key=lambda obs: math.hypot(
-                    obs[0] - self.latest_pose[0],
-                    obs[1] - self.latest_pose[1],
-                )
+        if len(obstacles) > 120:
+            sample_indices = random.sample(range(len(obstacles)), 120)
+            obstacles = obstacles[sample_indices]
+        if len(obstacles) > 35:
+            distances = np.hypot(
+                obstacles[:, 0].astype(np.float64) - self.latest_pose[0],
+                obstacles[:, 1].astype(np.float64) - self.latest_pose[1],
             )
-            obstacles_temp = obstacles_temp[:35]
+            nearest = np.argsort(distances, kind="stable")[:35]
+            obstacles = obstacles[nearest]
 
-        self.real_obstacles = obstacles_temp
+        self.real_obstacles = obstacles.tolist()
 
         # 预测局部运动障碍在未来 1 秒内的位置
         self.predicted_dynamic_obs = []
-        if len(self.real_obstacles) > 0:
-            for pt_candidate in self.real_obstacles:
-                count_neighbors = sum(
-                    1
-                    for obs in self.real_obstacles
-                    if math.hypot(
-                        obs[0] - pt_candidate[0],
-                        obs[1] - pt_candidate[1],
-                    )
-                    < 0.3
-                )
+        if len(obstacles) > 0:
+            # 距离矩阵最多处理35个候选, 避免整帧点云进入二次复杂度路径
+            obstacle_xy = obstacles.astype(np.float64)
+            distance_matrix = np.hypot(
+                obstacle_xy[:, np.newaxis, 0] - obstacle_xy[np.newaxis, :, 0],
+                obstacle_xy[:, np.newaxis, 1] - obstacle_xy[np.newaxis, :, 1],
+            )
+            neighbor_counts = np.count_nonzero(distance_matrix < 0.3, axis=1)
+            for candidate_index, count_neighbors in enumerate(neighbor_counts):
                 if 3 <= count_neighbors <= 20:
-                    cluster_points = [
-                        obs
-                        for obs in self.real_obstacles
-                        if math.hypot(
-                            obs[0] - pt_candidate[0],
-                            obs[1] - pt_candidate[1],
-                        )
-                        < 0.4
+                    cluster_points = obstacles[
+                        distance_matrix[candidate_index] < 0.4
                     ]
                     if len(cluster_points) >= 3:
-                        obs_array = np.array(cluster_points)
-                        centroid_x = np.mean(obs_array[:, 0])
-                        centroid_y = np.mean(obs_array[:, 1])
+                        centroid_x = np.mean(cluster_points[:, 0])
+                        centroid_y = np.mean(cluster_points[:, 1])
                         estimated_state = self.kf_tracker.update(
                             np.array([centroid_x, centroid_y])
                         )

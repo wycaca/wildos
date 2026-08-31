@@ -85,8 +85,6 @@
 ### 2.4 先优化 Python 数据路径
 
 - 点云高度过滤、边界裁剪、栅格投影和 min/max 聚合继续使用 NumPy/OpenCV 的编译实现
-- `controller_node` 删除整帧 Python 逐点循环, 使用数组掩码批量完成高度、距离和数量限制
-- 障碍邻域和聚类先使用有界 NumPy 计算, 保留原速度门控、停车和动态障碍语义
 - 图分类、距离场和半径 pair 继续复用 NumPy、SciPy `ndimage` 和 `cKDTree`, 不重写已经在编译库中执行的路径
 - 根据阶段基线只优化 `fill_elevation`、Frontier 验证、边走线或消息转换中的实际热点
 - 修复 GridMap 和图消息的无订阅构造开销, 但不能因为无订阅者而停止核心消费者所需输出
