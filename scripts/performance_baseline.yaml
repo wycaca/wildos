@@ -1,0 +1,33 @@
+schema_version: 1
+seed: 7
+output_dir: /tmp/wildos-performance-baseline
+migration_hotspot_share: 0.30
+scenarios:
+  map_pub:
+    points: 200000
+    warmup: 5
+    repeats: 30
+    budget_ms: 100.0
+  controller_scan:
+    points: 200000
+    warmup: 5
+    repeats: 30
+    budget_ms: 100.0
+  controller_control:
+    warmup: 50
+    repeats: 2000
+    budget_ms: 20.0
+  graph_full:
+    width: 160
+    height: 160
+    resolution: 0.1
+    warmup: 1
+    repeats: 5
+    budget_ms: 500.0
+  graph_incremental:
+    width: 160
+    height: 160
+    resolution: 0.1
+    warmup: 1
+    repeats: 5
+    budget_ms: 500.0

@@ -21,6 +21,7 @@ x86 主机运行 LiDAR 与 D-LIO. 相机 AGX 运行相机, 建图, 图构建, �
 | 高程图到持久导航图 | [图构建](docs/graph.md) |
 | 探索、目标融合和完成状态 | [目标搜索](docs/object_search.md) |
 | Planner 路径行为 | [Planner](graphnav_planner/README.md) |
+| 性能基线、预算和 C++ 决策 | [性能](docs/performance.md) |
 | 尚未完成的工作 | [TODO](docs/todo.md) |
 
 开发 Agent 先读取 [agent.md](agent.md), 再按任务读取一份领域文档. 当前行为以代码、配置和上述文档为准

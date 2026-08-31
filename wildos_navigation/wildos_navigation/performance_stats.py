@@ -45,6 +45,9 @@ class TimingWindow:
             self._samples.clear()
         return result
 
+    def latest_ms(self) -> float | None:
+        return self._samples[-1] if self._samples else None
+
 
 class EventRate:
     """按 diagnostics 周期计算事件频率"""
@@ -65,7 +68,10 @@ class EventRate:
         return rate
 
 
-def timing_metrics(prefix: str, summary: TimingSummary) -> dict[str, float | int]:
+def timing_metrics(
+    prefix: str,
+    summary: TimingSummary,
+) -> dict[str, float | int]:
     return {
         f"{prefix}.count": summary.count,
         f"{prefix}.average_ms": summary.average_ms,

@@ -15,9 +15,11 @@ def test_timing_window_is_bounded_and_ignores_invalid_samples():
     for elapsed in (0.001, math.nan, -1.0, 0.002, 0.003, 0.004):
         window.add_seconds(elapsed)
 
+    assert window.latest_ms() == 4.0
     summary = window.summary(reset=True)
 
     assert summary == TimingSummary(3, 3.0, 4.0, 4.0)
+    assert window.latest_ms() is None
     assert window.summary() == TimingSummary(0, 0.0, 0.0, 0.0)
 
 
