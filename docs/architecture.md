@@ -26,7 +26,7 @@ GraphNav Planner Path 用于图规划验证. `wildos_navigation` 使用 Goal Mux
 | AGX | `visual_navigation` | ExploRFM 评分、目标 Mask 和高层目标状态 |
 | AGX | `triangulation3d` | 多视角目标粒子滤波 |
 | AGX | `graphnav_planner` | 图路径、探索记忆和 Path |
-| 开发机或 AGX 按需 | `wildos_visualization` | 从公开消息生成 RViz 调试图元 |
+| 开发机或 AGX 按需 | `wildos_visualization` | 从公开图、scored graph 和 odom 生成 RViz 调试图元 |
 | AGX 宿主机 | GO2 motion gateway | 速度校验、限幅、断流停车和 Unitree Sport API |
 
 ## 主数据契约

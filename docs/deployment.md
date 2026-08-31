@@ -56,7 +56,7 @@ scripts/wildos_docker.sh x86 start navigation
 
 `navigation` 必须最后启动. 停机时先停止 `navigation`, 等待网关断流归零后再停止网关
 
-生产入口默认使用 `launch_paper_rviz:=false`, 不启动 RViz 或可视化订阅. 现场调试时显式设为 `true`, 会启动独立 `wildos_visualization/graph_visualizer` 和 RViz; 两者停止不会停止图构建
+生产入口默认使用 `launch_paper_rviz:=false`, 不启动 RViz 或可视化订阅. 现场调试时显式设为 `true`, 会启动独立 `wildos_visualization/graph_visualizer` 和 RViz, 并从公开 graph 与 scored graph 生成拓扑和评分环; 两者停止不会停止图构建或视觉评分
 
 `update` 只重建镜像和容器, 不执行 Git 同步. 修改 `.env` 后使用 `start` 让 Compose 重建受影响服务, 只替换只读挂载的模型文件时使用 `restart`, 修改代码、Dockerfile 或依赖时使用 `update`
 

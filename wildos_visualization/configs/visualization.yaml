@@ -3,6 +3,8 @@ graph_visualizer:
     nav_graph_topic: /spot1/nav_graph
     odom_topic: /spot1/odom_for_scoring
     viz_topic: /spot1/graph_construction_viz
+    scored_graph_topic: /spot1/scored_nav_graph
+    score_ring_topic: /spot1/score_rings
     show_radius_markers: false
     show_full_edges: false
     trajectory_min_separation: 0.25

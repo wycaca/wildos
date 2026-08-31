@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
-from math import hypot, isfinite
+from math import cos, hypot, isfinite, pi, sin
 from typing import Iterable, Sequence
 
 from geometry_msgs.msg import Point
@@ -344,6 +344,71 @@ class GraphVisualizer:
         return point
 
 
+class ScoreRingVisualizer:
+    """从 scored graph 的公开属性生成方向评分环"""
+
+    ARC_SEGMENTS = 5
+    RING_RADIUS = 1.0
+
+    def build_markers(self, graph: NavigationGraph) -> MarkerArray:
+        markers = MarkerArray()
+        clear = Marker(header=graph.header, ns="score_rings_clear", id=0)
+        clear.action = Marker.DELETEALL
+        rings = Marker(header=graph.header, ns="geofrontier_score_ring", id=1)
+        rings.action = Marker.ADD
+        rings.type = Marker.LINE_LIST
+        rings.pose.orientation.w = 1.0
+        rings.scale.x = 0.12
+        for node in graph.nodes:
+            scores = _node_property(node, "frontier_scores")
+            if not scores:
+                continue
+            angle_per_bin = 2.0 * pi / len(scores)
+            for bin_index, score in enumerate(scores):
+                self._append_arc(
+                    rings,
+                    node,
+                    bin_index * angle_per_bin,
+                    (bin_index + 1) * angle_per_bin,
+                    score,
+                )
+        markers.markers = [clear]
+        if rings.points:
+            markers.markers.append(rings)
+        return markers
+
+    def _append_arc(self, marker, node, start_angle, end_angle, score) -> None:
+        color = self._score_color(score)
+        for segment in range(self.ARC_SEGMENTS):
+            first = segment / self.ARC_SEGMENTS
+            second = (segment + 1) / self.ARC_SEGMENTS
+            marker.points.append(self._ring_point(node, start_angle, end_angle, first))
+            marker.points.append(self._ring_point(node, start_angle, end_angle, second))
+            marker.colors.extend((color, color))
+
+    def _ring_point(self, node, start_angle, end_angle, ratio) -> Point:
+        angle = start_angle + (end_angle - start_angle) * ratio
+        return Point(
+            x=node.pose.position.x + self.RING_RADIUS * cos(angle),
+            y=node.pose.position.y + self.RING_RADIUS * sin(angle),
+            z=node.pose.position.z + 0.08,
+        )
+
+    @staticmethod
+    def _score_color(raw_score) -> ColorRGBA:
+        score = min(1.0, max(0.0, float(raw_score))) if isfinite(raw_score) else 0.0
+        if score < 0.5:
+            ratio = score / 0.5
+            return ColorRGBA(
+                r=0.0,
+                g=0.25 + 0.55 * ratio,
+                b=1.0 - 0.65 * ratio,
+                a=0.75,
+            )
+        ratio = (score - 0.5) / 0.5
+        return ColorRGBA(r=1.0, g=1.0 - 0.85 * ratio, b=0.0, a=0.75)
+
+
 class GraphVisualizerNode(Node):
     """独立订阅公开图和 odom, 不进入图构建 executor"""
 
@@ -352,6 +417,8 @@ class GraphVisualizerNode(Node):
         self.declare_parameter("nav_graph_topic", "/spot1/nav_graph")
         self.declare_parameter("odom_topic", "/spot1/odom_for_scoring")
         self.declare_parameter("viz_topic", "/spot1/graph_construction_viz")
+        self.declare_parameter("scored_graph_topic", "/spot1/scored_nav_graph")
+        self.declare_parameter("score_ring_topic", "/spot1/score_rings")
         self.declare_parameter("show_radius_markers", False)
         self.declare_parameter("show_full_edges", False)
         self.declare_parameter("trajectory_min_separation", 0.25)
@@ -361,6 +428,7 @@ class GraphVisualizerNode(Node):
             self.get_parameter("show_radius_markers").value,
             self.get_parameter("show_full_edges").value,
         )
+        self.score_ring_visualizer = ScoreRingVisualizer()
         self.trajectory_min_separation = float(
             self.get_parameter("trajectory_min_separation").value
         )
@@ -370,6 +438,15 @@ class GraphVisualizerNode(Node):
         self.publisher = self.create_publisher(
             MarkerArray,
             str(self.get_parameter("viz_topic").value),
+            QoSProfile(
+                depth=1,
+                reliability=ReliabilityPolicy.BEST_EFFORT,
+                durability=DurabilityPolicy.VOLATILE,
+            ),
+        )
+        self.score_ring_publisher = self.create_publisher(
+            MarkerArray,
+            str(self.get_parameter("score_ring_topic").value),
             QoSProfile(
                 depth=1,
                 reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -387,6 +464,12 @@ class GraphVisualizerNode(Node):
             str(self.get_parameter("odom_topic").value),
             self._on_odom,
             10,
+        )
+        self.create_subscription(
+            NavigationGraph,
+            str(self.get_parameter("scored_graph_topic").value),
+            self._on_scored_graph,
+            1,
         )
 
     def _on_odom(self, msg: Odometry) -> None:
@@ -411,6 +494,13 @@ class GraphVisualizerNode(Node):
                 tuple(self.trajectory),
                 self.latest_odom_position,
             )
+        )
+
+    def _on_scored_graph(self, msg: NavigationGraph) -> None:
+        if self.score_ring_publisher.get_subscription_count() == 0:
+            return
+        self.score_ring_publisher.publish(
+            self.score_ring_visualizer.build_markers(msg)
         )
 
 
@@ -441,6 +531,13 @@ def _edge_cost(edge) -> float:
     if not edge.traversability:
         return 0.0
     return float(edge.traversability[0].traversability_cost)
+
+
+def _node_property(node: GraphNode, key: str):
+    for property_value in node.properties:
+        if property_value.key == key:
+            return property_value.value
+    return None
 
 
 def main(args=None) -> None:

@@ -1,6 +1,5 @@
 from visualization_msgs.msg import MarkerArray, Marker
 from geometry_msgs.msg import Point
-from std_msgs.msg import ColorRGBA
 
 import numpy as np
 import cv2
@@ -22,80 +21,6 @@ class VisualizeGoalAgnosticGeoFrontierScoring(VisualizeGeoFrontierScoring):
         self.goal_cam_relative_headings = 0.0
         self.ring_radius = 1.0  # radius of the score ring in meters
 
-    def visualize_all_heading_scores(self, frontier_uuid_to_scores, removed_uuids, updated_uuids, frame_id, stamp):
-        """
-        Visualize the heading scores for all frontier nodes in RViz as a ring.
-
-        :param frontier_uuid_to_scores: Dictionary mapping frontier UUIDs to their heading scores.
-        :param removed_uuids: List of UUIDs that were removed in the latest update.
-        :param updated_uuids: Set of UUIDs that were updated in the latest update.
-        :param frame_id: The frame ID for the markers.
-        :param stamp: The timestamp for the markers.
-        :return: MarkerArray for visualization in RViz.
-        """
-        marker_array = MarkerArray()
-        self._append_delete_all(marker_array, frame_id, stamp, "score_rings_clear")
-
-        marker_id = 0
-        for _, (scores, node) in frontier_uuid_to_scores.items():
-            scores = np.nan_to_num(np.asarray(scores, dtype=np.float32), nan=0.0, posinf=1.0, neginf=0.0)
-            scores = np.clip(scores, 0.0, 1.0)
-
-            node_pos = np.array([
-                node.pose.position.x,
-                node.pose.position.y,
-                node.pose.position.z
-            ], dtype=np.float64)
-
-            for bin_idx, score in enumerate(scores):
-                score = float(np.clip(score, 0.0, 1.0))
-                color = self._score_ring_color(score)
-                angle_st = self.bin_starts[bin_idx]
-                angle_end = angle_st + self.discretization_angle
-
-                marker = Marker()
-                marker.header.frame_id = frame_id
-                marker.header.stamp = stamp
-                marker.ns = "geofrontier_score_ring"
-                marker.action = Marker.ADD
-                marker.id = marker_id
-                marker_id += 1
-                marker.type = Marker.LINE_STRIP
-
-                for angle in np.linspace(angle_st, angle_end, 6):
-                    pt = node_pos + self.ring_radius * np.array([np.cos(angle), np.sin(angle), 0.0])
-                    marker.points.append(Point(x=pt[0], y=pt[1], z=pt[2] + 0.08))
-
-                marker.scale.x = 0.12  # Line width
-                marker.color.r = color.r
-                marker.color.g = color.g
-                marker.color.b = color.b
-                marker.color.a = 0.75
-                marker_array.markers.append(marker)
-
-        return marker_array
-
-    @staticmethod
-    def _append_delete_all(marker_array, frame_id, stamp, namespace):
-        marker = Marker()
-        marker.header.frame_id = frame_id
-        marker.header.stamp = stamp
-        marker.ns = namespace
-        marker.id = 0
-        marker.action = Marker.DELETEALL
-        marker_array.markers.append(marker)
-
-    @staticmethod
-    def _score_ring_color(score):
-        """低分用冷色, 高分用黄红色突出显示"""
-        score = float(np.clip(score, 0.0, 1.0))
-        if score < 0.5:
-            t = score / 0.5
-            return ColorRGBA(r=0.0, g=0.25 + 0.55 * t, b=1.0 - 0.65 * t, a=1.0)
-
-        t = (score - 0.5) / 0.5
-        return ColorRGBA(r=1.0, g=1.0 - 0.85 * t, b=0.0, a=1.0)
-    
     def visualize_model_det_front(self, nav_data, all_cam_data):
         img_grid = {}
         num_rows = 1

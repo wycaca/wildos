@@ -2,12 +2,18 @@ from geometry_msgs.msg import Point
 from graphnav_msgs.msg import (
     Edge,
     EdgeTraversability,
+    KeyValue,
     NavigationGraph,
     Node,
     NodeTraversabilityProperties,
 )
+import pytest
 
-from wildos_visualization.graph_visualizer import GraphVisualizer, GraphVisualizerNode
+from wildos_visualization.graph_visualizer import (
+    GraphVisualizer,
+    GraphVisualizerNode,
+    ScoreRingVisualizer,
+)
 
 
 def _graph(node_count=4, complete=False):
@@ -109,3 +115,39 @@ def test_callback_skips_marker_build_without_rviz_subscriber():
     node.latest_odom_position = None
 
     node._on_graph(_graph())
+
+
+def test_score_rings_rebuild_public_frontier_scores():
+    graph = _graph(1)
+    graph.nodes[0].properties = [
+        KeyValue(key="frontier_scores", value=[0.0, 0.5, 1.0, 0.25])
+    ]
+
+    markers = ScoreRingVisualizer().build_markers(graph)
+
+    assert markers.markers[0].action == markers.markers[0].DELETEALL
+    rings = _marker(markers, "geofrontier_score_ring")
+    assert len(rings.points) == 40
+    assert len(rings.colors) == 40
+    assert rings.colors[0].b == 1.0
+    assert rings.colors[20].r == 1.0
+    assert rings.colors[20].g == pytest.approx(0.15)
+
+
+def test_score_ring_callback_skips_work_without_rviz_subscriber():
+    class Publisher:
+        def get_subscription_count(self):
+            return 0
+
+        def publish(self, _message):
+            raise AssertionError("must not publish")
+
+    class Visualizer:
+        def build_markers(self, *_args):
+            raise AssertionError("must not build markers")
+
+    node = GraphVisualizerNode.__new__(GraphVisualizerNode)
+    node.score_ring_publisher = Publisher()
+    node.score_ring_visualizer = Visualizer()
+
+    node._on_scored_graph(_graph())

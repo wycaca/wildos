@@ -112,7 +112,6 @@ class WildOS_Nav(TFLookupSubscriber):
         "scored_navgraph_topic": "/spot1/scored_nav_graph",
         "model_viz_topic": "model_visualization",
         "valid_geofrontiers_topic": "within_range_geofrontiers",
-        "score_ring_topic": "/spot1/score_rings",
         "object_mask_topic": "/spot1/object_mask",
         "object_reached_topic": "/spot1/object_search_reached",
         "object_completed_topic": "/spot1/object_search_completed",
@@ -534,11 +533,6 @@ class WildOS_Nav(TFLookupSubscriber):
             config.valid_geofrontiers_topic,
             10
         )
-        self.score_rings_pub = self.create_publisher(
-            MarkerArray,
-            config.score_ring_topic,
-            10
-        )
         if self.object_search_mode:
             self.object_mask_publisher = self.create_publisher(
                 ObjectMaskWithTf,
@@ -884,7 +878,7 @@ class WildOS_Nav(TFLookupSubscriber):
 
         # 发布评分后的 navgraph
         stage_started = time.perf_counter()
-        updated_navgraph, removed_uuids, updated_uuids, graph_changed = self.update_navgraph_with_scores(
+        updated_navgraph, _, _, graph_changed = self.update_navgraph_with_scores(
             navgraph_msg, geofrontiers, nav_data
         )
         now = time.monotonic()
@@ -923,16 +917,6 @@ class WildOS_Nav(TFLookupSubscriber):
                 )
                 model_viz_msg.header = image_msgs[0].header
                 self.model_viz_pub.publish(model_viz_msg)
-            if self._visualization_publisher_enabled(self.score_rings_pub):
-                self.score_rings_pub.publish(
-                    self.viz.visualize_all_heading_scores(
-                        self.frontier_uuid_to_scores,
-                        removed_uuids,
-                        updated_uuids,
-                        self.global_frame,
-                        self.get_clock().now().to_msg(),
-                    )
-                )
         self._processing_timings["publish"].add_seconds(time.perf_counter() - stage_started)
         self._finish_processing(processing_started)
 
@@ -941,7 +925,6 @@ class WildOS_Nav(TFLookupSubscriber):
         publishers = (
             self.withinrange_geofront_pub,
             self.model_viz_pub,
-            self.score_rings_pub,
         )
         if not any(self._visualization_publisher_enabled(pub) for pub in publishers):
             return False

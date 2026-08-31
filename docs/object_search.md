@@ -97,7 +97,13 @@ scripts/go2_search_test.sh stop
 - 附近没有新安全观察点时保持当前位置, 等待图或目标证据更新
 - Mask 与点云只在时间接近时融合
 - LiDAR 点先去地面并聚类, 连续一致后才能锁定
-- 调试 Marker 和粒子点云没有订阅者时不构造
+- 目标融合调试 Marker 和粒子点云没有订阅者时不构造
+
+## 评分可视化隔离
+
+WildOS 核心只把归一化 `frontier_scores` 写入公开 `/spot1/scored_nav_graph`, 不再同步生成或发布 score ring. `wildos_visualization/graph_visualizer` 在 RViz 模式下订阅 scored graph, 用单个 `LINE_LIST` 重建相同方向弧段和颜色
+
+在 100 个 Frontier、每个 16 个方向的合成输入上, 旧核心生成 1601 个 Marker 的中位耗时为 382.254 ms. 拆分后核心耗时为 0 ms; 外部进程生成 2 个 Marker 的中位耗时为 85.108 ms, 比旧构造快 4.49 倍. 生产模式关闭可视化时不订阅 scored graph
 
 具体门槛以以下配置为准:
 
@@ -118,5 +124,6 @@ Goal Mux 发布 `/goal_pose`. 导航算法使用 odom 和注册点云构建局�
 - ROS target fusion: `visual_navigation/visual_navigation/object_target_fusion.py`
 - 粒子滤波: `triangulation3d/triangulation3d/target_particle_filter.py`
 - Planner: `graphnav_planner/src/`
+- RViz score ring: `wildos_visualization/wildos_visualization/graph_visualizer.py`
 
 行为修改运行对应 package 测试, 全仓验证使用 `./scripts/test_repo.sh`

@@ -260,6 +260,8 @@ def test_graph_visualization_is_an_optional_external_node():
     assert parameters["nav_graph_topic"] == "/spot1/nav_graph"
     assert parameters["odom_topic"] == "/spot1/odom_for_scoring"
     assert parameters["viz_topic"] == "/spot1/graph_construction_viz"
+    assert parameters["scored_graph_topic"] == "/spot1/scored_nav_graph"
+    assert parameters["score_ring_topic"] == "/spot1/score_rings"
 
 
 def test_paper_rviz_accepts_best_effort_graph_markers():
@@ -270,6 +272,10 @@ def test_paper_rviz_accepts_best_effort_graph_markers():
     topic_block = rviz_config[rviz_config.rfind("Topic:", 0, topic_index):topic_index]
 
     assert "Reliability Policy: Best Effort" in topic_block
+
+    score_index = rviz_config.index("Value: /spot1/score_rings")
+    score_block = rviz_config[rviz_config.rfind("Topic:", 0, score_index):score_index]
+    assert "Reliability Policy: Best Effort" in score_block
 
 
 def test_system_python_is_rejected_for_python_nodes():
