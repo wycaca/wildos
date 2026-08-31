@@ -25,6 +25,10 @@
 
 Planner 核心只维护规划所需的内部 unexplored distance map. 每次成功规划不再检查两个 debug publisher, 也不在回调中序列化 MarkerArray 或双层 GridMap. 可视化订阅者不能增加 Planner 回调工作量
 
+规划与图更新回调只记录单调时钟耗时、计数器和最多 512 个样本. 独立的 30 秒定时器向 `/diagnostics` 发布规划和图更新的平均/P95/最大耗时、频率、路线变化及探索恢复计数, 使用 best effort、depth 1. `diagnostics_enabled=false` 时不创建 publisher 和 timer, 不改变规划输入、Path 或安全逻辑
+
+空闲节点以 1000 Hz 放大 diagnostics 构造开销进行三轮 3 秒对照时, 开启和关闭的进程 CPU 中位数均为 0.19 秒, 峰值 RSS 均为 24064 KB, 在 10 ms 计时分辨率内无可测增量. 生产周期为 30 秒, 观察开销远低于该放大测试
+
 ## 代码和验证
 
 - ROS adapter: `src/planner_node.cpp`

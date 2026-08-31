@@ -16,6 +16,7 @@ find_package(graphnav_msgs REQUIRED)
 find_package(object_search_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(diagnostic_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2 REQUIRED)
@@ -43,6 +44,7 @@ ament_target_dependencies(graphnav_planner_component
   object_search_msgs
   nav_msgs
   std_msgs
+  diagnostic_msgs
   geometry_msgs
   tf2_ros
   tf2
@@ -93,6 +95,7 @@ if(BUILD_TESTING)
     test/test_exploration_recovery.cpp
     test/test_direct_goal.cpp
     test/test_planning_input_health.cpp
+    test/test_performance_stats.cpp
   )
   target_link_libraries(test_exploration_state graphnav_planner_component)
 

@@ -56,7 +56,6 @@
 
 预计修改范围:
 
-- `graphnav_planner/src/planner_node.cpp` 只保留固定开销埋点
 - `wildos_navigation/wildos_navigation/map_pub.py` 和 `wildos_navigation/wildos_navigation/controller_node.py` 增加点云阶段埋点
 - 更新相关 `package.xml`、配置、launch、Docker 启动参数和部署文档, 不新增职责重复的 launch 或 Compose
 

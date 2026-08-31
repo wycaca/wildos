@@ -5,6 +5,9 @@
 #include <nav_msgs/msg/path.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <diagnostic_msgs/msg/diagnostic_array.hpp>
+#include <diagnostic_msgs/msg/diagnostic_status.hpp>
+#include <diagnostic_msgs/msg/key_value.hpp>
 #include <graphnav_msgs/msg/navigation_graph.hpp>
 #include <object_search_msgs/msg/object_search_status.hpp>
 #include <std_msgs/msg/header.hpp>
@@ -13,11 +16,13 @@
 #include <cmath>
 #include <deque>
 #include <limits>
-#include <numeric>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 #include "graphnav_planner/object_search_mode.hpp"
+#include "graphnav_planner/performance_stats.hpp"
 #include "graphnav_planner/planner.hpp"
 #include "graphnav_planner/planning_input_health.hpp"
 
@@ -27,8 +32,21 @@ namespace graphnav_planner
 namespace
 {
 
-constexpr double kDiagnosticsLogPeriodSec = 30.0;
 constexpr double kSlowPlanningWarningMs = 200.0;
+
+template<typename Value>
+void add_diagnostic_value(
+  diagnostic_msgs::msg::DiagnosticStatus& status,
+  const std::string& key,
+  const Value& value)
+{
+  std::ostringstream stream;
+  stream << value;
+  diagnostic_msgs::msg::KeyValue item;
+  item.key = key;
+  item.value = stream.str();
+  status.values.push_back(std::move(item));
+}
 
 }  // namespace
 
@@ -65,6 +83,8 @@ public:
     this->declare_parameter("max_odom_age_sec", 1.0);
     this->declare_parameter("odom_reset_distance", 3.0);
     this->declare_parameter("odom_reset_speed", 12.0);
+    this->declare_parameter("diagnostics_enabled", true);
+    this->declare_parameter("diagnostics_period_sec", 30.0);
 
     const auto nonnegative_parameter = [this](const std::string& name) {
       const double value = this->get_parameter(name).as_double();
@@ -117,6 +137,12 @@ public:
     max_odom_age_sec_ = nonnegative_parameter("max_odom_age_sec");
     odom_reset_distance_ = nonnegative_parameter("odom_reset_distance");
     odom_reset_speed_ = nonnegative_parameter("odom_reset_speed");
+    diagnostics_enabled_ = this->get_parameter("diagnostics_enabled").as_bool();
+    diagnostics_period_sec_ = this->get_parameter("diagnostics_period_sec").as_double();
+    if (diagnostics_period_sec_ <= 0.0)
+    {
+      throw std::invalid_argument("diagnostics_period_sec must be positive");
+    }
 
     planner_.set_trav_class("default");
 
@@ -204,9 +230,14 @@ public:
         });
 
     path_pub_ = this->create_publisher<nav_msgs::msg::Path>("~/path", 10);
-    diagnostics_timer_ = this->create_wall_timer(
-      std::chrono::duration<double>(kDiagnosticsLogPeriodSec),
-      [this]() { this->report_diagnostics(); });
+    if (diagnostics_enabled_)
+    {
+      diagnostics_pub_ = this->create_publisher<diagnostic_msgs::msg::DiagnosticArray>(
+        "/diagnostics", rclcpp::QoS(rclcpp::KeepLast(1)).best_effort());
+      diagnostics_timer_ = this->create_wall_timer(
+        std::chrono::duration<double>(diagnostics_period_sec_),
+        [this]() { this->publish_diagnostics(); });
+    }
   }
 
 private:
@@ -665,70 +696,62 @@ private:
     }
   }
 
-  void report_diagnostics()
+  void publish_diagnostics()
   {
-    if (!graph_update_timings_ms_.empty())
-    {
-      const double total = std::accumulate(
-        graph_update_timings_ms_.begin(), graph_update_timings_ms_.end(), 0.0);
-      const double maximum = *std::max_element(
-        graph_update_timings_ms_.begin(), graph_update_timings_ms_.end());
-      RCLCPP_INFO(
-        this->get_logger(),
-        "导航图处理性能, 耗时=平均%.1f/最大%.1fms, 更新=%zu/重建%zu/仅评分%zu/无变化%zu次",
-        total / graph_update_timings_ms_.size(),
-        maximum,
-        graph_updates_,
-        graph_rebuilds_,
-        graph_score_updates_,
-        graph_unchanged_);
-    }
-    if (planning_timings_ms_.empty())
-    {
-      graph_update_timings_ms_.clear();
-      graph_updates_ = 0;
-      graph_rebuilds_ = 0;
-      graph_score_updates_ = 0;
-      graph_unchanged_ = 0;
-      return;
-    }
-    std::vector<double> samples(planning_timings_ms_.begin(), planning_timings_ms_.end());
-    std::sort(samples.begin(), samples.end());
-    const size_t p95_index = std::min(
-      static_cast<size_t>(std::ceil(samples.size() * 0.95)) - 1,
-      samples.size() - 1);
-    const double average = std::accumulate(samples.begin(), samples.end(), 0.0) / samples.size();
-    const double rate = planning_calls_ / kDiagnosticsLogPeriodSec;
+    // 定时汇总标量并清空窗口, 不在规划回调中格式化或发布
+    const auto planning = summarize_timings(planning_timings_ms_);
+    const auto graph_update = summarize_timings(graph_update_timings_ms_);
     const auto exploration = planner_.take_exploration_diagnostics();
-    RCLCPP_INFO(
-      this->get_logger(),
-      "路径规划性能, 频率=%.2fHz, 规划耗时=平均%.1f/95%%上限%.1f/最大%.1fms, "
-      "路线变化=%zu次, 空路线=%zu次, Unity重置=%zu次",
-      rate,
-      average,
-      samples[p95_index],
-      samples.back(),
-      path_changes_,
-      empty_paths_,
-      manual_reset_events_);
-    RCLCPP_INFO(
-      this->get_logger(),
-      "探索路线统计, 分支变化=%zu, 正常延伸=%zu, 小变化保持=%zu, "
-      "负向延伸拒绝=%zu, 恢复=历史%zu/方向%zu/死路%zu, "
-      "释放=路径失效%zu/无进展%zu, 状态切换=%zu, "
-      "安全节点回退=%zu, 无路线周期=%zu",
-      exploration.route_changes,
-      exploration.continuation_updates,
-      exploration.held_updates,
-      exploration.negative_extension_rejections,
-      exploration.branch_recoveries,
-      exploration.directional_recoveries,
-      exploration.dead_end_recoveries,
-      exploration.invalid_path_releases,
-      exploration.stalled_releases,
-      exploration.state_transitions,
-      exploration.safe_node_fallbacks,
-      exploration.no_route_cycles);
+    diagnostic_msgs::msg::DiagnosticStatus status;
+    status.level = planning.p95_ms >= kSlowPlanningWarningMs ?
+      diagnostic_msgs::msg::DiagnosticStatus::WARN :
+      diagnostic_msgs::msg::DiagnosticStatus::OK;
+    status.name = "wildos/graphnav_planner";
+    status.message = planning.count == 0 ? "idle" :
+      (status.level == diagnostic_msgs::msg::DiagnosticStatus::WARN ?
+      "planning p95 exceeds budget" : "planning within budget");
+    status.hardware_id = "wildos";
+    add_diagnostic_value(status, "window.period_sec", diagnostics_period_sec_);
+    add_diagnostic_value(status, "cycle.total.sample_count", planning.count);
+    add_diagnostic_value(status, "cycle.total.rate_hz", planning_calls_ / diagnostics_period_sec_);
+    add_diagnostic_value(status, "cycle.total.average_ms", planning.average_ms);
+    add_diagnostic_value(status, "cycle.total.p95_ms", planning.p95_ms);
+    add_diagnostic_value(status, "cycle.total.maximum_ms", planning.maximum_ms);
+    add_diagnostic_value(status, "graph_update.sample_count", graph_update.count);
+    add_diagnostic_value(status, "graph_update.rate_hz", graph_updates_ / diagnostics_period_sec_);
+    add_diagnostic_value(status, "graph_update.average_ms", graph_update.average_ms);
+    add_diagnostic_value(status, "graph_update.p95_ms", graph_update.p95_ms);
+    add_diagnostic_value(status, "graph_update.maximum_ms", graph_update.maximum_ms);
+    add_diagnostic_value(status, "workload.path_changes", path_changes_);
+    add_diagnostic_value(status, "workload.empty_paths", empty_paths_);
+    add_diagnostic_value(status, "workload.manual_reset_events", manual_reset_events_);
+    add_diagnostic_value(status, "workload.graph_updates", graph_updates_);
+    add_diagnostic_value(status, "workload.graph_rebuilds", graph_rebuilds_);
+    add_diagnostic_value(status, "workload.graph_score_updates", graph_score_updates_);
+    add_diagnostic_value(status, "workload.graph_unchanged", graph_unchanged_);
+    add_diagnostic_value(status, "exploration.route_changes", exploration.route_changes);
+    add_diagnostic_value(
+      status, "exploration.continuation_updates", exploration.continuation_updates);
+    add_diagnostic_value(status, "exploration.held_updates", exploration.held_updates);
+    add_diagnostic_value(
+      status,
+      "exploration.negative_extension_rejections",
+      exploration.negative_extension_rejections);
+    add_diagnostic_value(status, "exploration.branch_recoveries", exploration.branch_recoveries);
+    add_diagnostic_value(
+      status, "exploration.directional_recoveries", exploration.directional_recoveries);
+    add_diagnostic_value(status, "exploration.dead_end_recoveries", exploration.dead_end_recoveries);
+    add_diagnostic_value(
+      status, "exploration.invalid_path_releases", exploration.invalid_path_releases);
+    add_diagnostic_value(status, "exploration.stalled_releases", exploration.stalled_releases);
+    add_diagnostic_value(status, "exploration.state_transitions", exploration.state_transitions);
+    add_diagnostic_value(
+      status, "exploration.safe_node_fallbacks", exploration.safe_node_fallbacks);
+    add_diagnostic_value(status, "exploration.no_route_cycles", exploration.no_route_cycles);
+    diagnostic_msgs::msg::DiagnosticArray message;
+    message.header.stamp = this->now();
+    message.status.push_back(std::move(status));
+    diagnostics_pub_->publish(message);
     planning_timings_ms_.clear();
     planning_calls_ = 0;
     path_changes_ = 0;
@@ -743,6 +766,7 @@ private:
 
   rclcpp::Subscription<graphnav_msgs::msg::NavigationGraph>::SharedPtr graph_sub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
+  rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diagnostics_pub_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
   rclcpp::Subscription<ObjectSearchStatus>::SharedPtr object_search_status_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
@@ -771,6 +795,8 @@ private:
   double max_odom_age_sec_;
   double odom_reset_distance_;
   double odom_reset_speed_;
+  bool diagnostics_enabled_;
+  double diagnostics_period_sec_;
   std::deque<double> planning_timings_ms_;
   std::deque<double> graph_update_timings_ms_;
   size_t planning_calls_ = 0;

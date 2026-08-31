@@ -125,6 +125,8 @@ WildOS 使用固定容量窗口记录解码、投影、推理、检测、评分�
 
 Planner 发布 Path 变化事件, 不是心跳. graph 过期且 odom 新鲜时最多发布一次 hold Path, odom 过期或时间戳异常时停止发布
 
+Planner 使用固定容量窗口记录规划和图更新耗时, 每 30 秒向 `/diagnostics` 发布标准标量, 不再生成三段周期性能日志. diagnostics 包含规划与图更新平均/P95/最大耗时、频率、图更新类型、路线变化、空路线、重置和探索恢复计数. 1000 Hz 放大对照下, 开启和关闭 diagnostics 的进程 CPU 中位数均为 0.19 秒/3 秒, 峰值 RSS 均为 24064 KB
+
 Goal Mux 发布 `/goal_pose`. 导航算法使用 odom 和注册点云构建局部代价地图, 通过 A* 生成控制路径并发布 `/cmd_vel`. GraphNav Planner Path 不直接驱动已迁移的路径跟随器. 具体契约见 [Planner](../graphnav_planner/README.md)和[导航](navigation.md)
 
 ## 代码入口
