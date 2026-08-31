@@ -29,6 +29,7 @@ REQUIRED_DEPENDENCIES = {
         "ament_index_python",
         "builtin_interfaces",
         "cv_bridge",
+        "diagnostic_msgs",
         "geometry_msgs",
         "graphnav_msgs",
         "launch",

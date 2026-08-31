@@ -3,14 +3,15 @@ from types import SimpleNamespace
 
 from graphnav_msgs.msg import NavigationGraph, Node, NodeTraversabilityProperties
 
-from visual_navigation.utils.performance_stats import TimingWindow
+from visual_navigation.utils.performance_stats import TimingSummary, TimingWindow
+from visual_navigation.utils.wildos_input_cache import WildOSInputCacheSnapshot
 from visual_navigation.wildos.current_frontier_scores import (
     CurrentFrontierScores,
     frontier_score_snapshots_equal,
     navigation_graph_content_equal,
     scored_graph_publish_due,
 )
-from visual_navigation.wildos.nav import WildOS_Nav
+from visual_navigation.wildos.nav import WildOS_Nav, _wildos_diagnostic_metrics
 
 
 def test_drops_entries_not_observed_in_current_frame():
@@ -124,3 +125,30 @@ def test_unchanged_scored_graph_reuses_cached_message_without_deepcopy():
     assert first_changed
     assert not second_changed
     assert second is first
+
+
+def test_wildos_diagnostics_keep_core_and_input_metrics_machine_readable():
+    timing = TimingSummary(4, 10.0, 12.0, 15.0)
+
+    metrics = _wildos_diagnostic_metrics(
+        {"total": timing, "inference": timing},
+        {"source_age": timing},
+        {"odom_delta": timing},
+        {"matched": 2.0},
+        1.5,
+        0.2,
+        0.3,
+        WildOSInputCacheSnapshot(3, 3, True),
+        {"nav_graph_stale": 2},
+        4,
+        1,
+        3,
+        4096,
+        {"gpu.memory.allocated_mib": 128.0},
+    )
+
+    assert metrics["cycle.total.p95_ms"] == 12.0
+    assert metrics["stage.inference.average_ms"] == 10.0
+    assert metrics["input.rate.matched_hz"] == 2.0
+    assert metrics["input.reject.nav_graph_stale_count"] == 2
+    assert metrics["output.scored_graph.size_bytes"] == 4096

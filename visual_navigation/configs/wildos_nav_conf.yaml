@@ -51,6 +51,8 @@ object_search_target_topic: /spot1/object_search_target
 processing_rate_hz: 10.0
 scored_graph_heartbeat_sec: 1.0
 frontier_score_publish_epsilon: 0.001
+diagnostics_enabled: true
+diagnostics_period_sec: 30.0
 
 # ROS2 subscriber params
 qos_history_depth: 1

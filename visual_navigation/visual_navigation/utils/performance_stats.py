@@ -4,6 +4,9 @@ from collections import deque
 from dataclasses import dataclass
 import math
 import time
+from typing import Mapping
+
+from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
 
 
 @dataclass(frozen=True)
@@ -60,9 +63,30 @@ class EventRate:
         return rate
 
 
-def format_timing(name: str, summary: TimingSummary) -> str:
-    """Format one compact timing group"""
-    return (
-        f"{name}=avg:{summary.average_ms:.1f}/p95:{summary.p95_ms:.1f}/"
-        f"max:{summary.maximum_ms:.1f}ms"
+def timing_metrics(prefix: str, summary: TimingSummary) -> dict[str, float | int]:
+    """把固定窗口统计转换为稳定指标名称"""
+    return {
+        f"{prefix}.count": summary.count,
+        f"{prefix}.average_ms": summary.average_ms,
+        f"{prefix}.p95_ms": summary.p95_ms,
+        f"{prefix}.maximum_ms": summary.maximum_ms,
+    }
+
+
+def diagnostic_status(
+    name: str,
+    metrics: Mapping[str, object],
+    level: int = DiagnosticStatus.OK,
+    message: str = "OK",
+) -> DiagnosticStatus:
+    """使用标准 diagnostics 消息承载轻量标量指标"""
+    return DiagnosticStatus(
+        level=level,
+        name=name,
+        message=message,
+        hardware_id="wildos",
+        values=[
+            KeyValue(key=key, value=str(value))
+            for key, value in metrics.items()
+        ],
     )
