@@ -49,7 +49,6 @@ REQUIRED_DEPENDENCIES = {
         "geometry_msgs",
         "graaf_vendor",
         "graphnav_msgs",
-        "grid_map_msgs",
         "nav_msgs",
         "object_search_msgs",
         "rclcpp",
@@ -58,7 +57,6 @@ REQUIRED_DEPENDENCIES = {
         "tf2",
         "tf2_geometry_msgs",
         "tf2_ros",
-        "visualization_msgs",
     },
     "wildos_navigation": {
         "ament_index_python",

@@ -4,7 +4,6 @@
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <nav_msgs/msg/odometry.hpp>
-#include <visualization_msgs/msg/marker_array.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <graphnav_msgs/msg/navigation_graph.hpp>
 #include <object_search_msgs/msg/object_search_status.hpp>
@@ -205,8 +204,6 @@ public:
         });
 
     path_pub_ = this->create_publisher<nav_msgs::msg::Path>("~/path", 10);
-    grid_map_debug_pub_ = this->create_publisher<grid_map_msgs::msg::GridMap>("~/unexplored_space_map", 10);
-    scores_debug_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("~/frontier_scores", 10);
     diagnostics_timer_ = this->create_wall_timer(
       std::chrono::duration<double>(kDiagnosticsLogPeriodSec),
       [this]() { this->report_diagnostics(); });
@@ -582,18 +579,6 @@ private:
           path_msg.poses.size(),
           path_msg.header.frame_id.c_str());
       }
-      if (grid_map_debug_pub_->get_subscription_count() > 0)
-      {
-        grid_map_msgs::msg::GridMap grid_map_msg = planner_.get_unexplored_debug_map();
-        grid_map_msg.header = *latest_graph_header_;
-        grid_map_debug_pub_->publish(grid_map_msg);
-      }
-      if (scores_debug_pub_->get_subscription_count() > 0)
-      {
-        visualization_msgs::msg::MarkerArray marker_array = planner_.get_score_visualization(
-          this->get_clock()->now(), latest_graph_header_->frame_id);
-        scores_debug_pub_->publish(marker_array);
-      }
       if (odom_)
       {
         try
@@ -761,8 +746,6 @@ private:
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
   rclcpp::Subscription<ObjectSearchStatus>::SharedPtr object_search_status_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
-  rclcpp::Publisher<grid_map_msgs::msg::GridMap>::SharedPtr grid_map_debug_pub_;
-  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr scores_debug_pub_;
   rclcpp::TimerBase::SharedPtr diagnostics_timer_;
 
   tf2_ros::Buffer tf_buffer_;

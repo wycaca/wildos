@@ -15,9 +15,7 @@
 
 #include "graphnav_msgs/msg/navigation_graph.hpp"
 #include "graphnav_msgs/msg/uuid.hpp"
-#include <grid_map_msgs/msg/grid_map.hpp>
 #include <queue>
-#include <visualization_msgs/msg/marker_array.hpp>
 
 #include "graphnav_planner/exploration_memory.hpp"
 
@@ -175,40 +173,6 @@ public:
     return min_dist;
   }
 
-  grid_map_msgs::msg::GridMap get_gridmap()
-  {
-    grid_map_msgs::msg::GridMap map_msg;
-    map_msg.info.resolution = resolution_;
-    map_msg.info.pose.position.x = origin_x_ + (size_x_ * resolution_) / 2.0;
-    map_msg.info.pose.position.y = origin_y_ + (size_y_ * resolution_) / 2.0;
-    map_msg.info.length_x = size_x_ * resolution_;
-    map_msg.info.length_y = size_y_ * resolution_;
-    map_msg.layers.push_back("unexplored");
-    map_msg.layers.push_back("distance");
-    map_msg.data.resize(2);
-    map_msg.data[0].layout.data_offset = 0;
-    map_msg.data[0].layout.dim.resize(2);
-    map_msg.data[0].layout.dim[0].label = "column_index";
-    map_msg.data[0].layout.dim[0].size = size_y_;
-    map_msg.data[0].layout.dim[0].stride = size_y_ * size_x_;
-    map_msg.data[0].layout.dim[1].label = "row_index";
-    map_msg.data[0].layout.dim[1].size = size_x_;
-    map_msg.data[0].layout.dim[1].stride = size_x_;
-    map_msg.data[1].layout = map_msg.data[0].layout;
-    map_msg.data[0].data.resize(size_x_ * size_y_);
-    map_msg.data[1].data.resize(size_x_ * size_y_);
-    for (size_t y = 0; y < size_y_; ++y)
-    {
-      for (size_t x = 0; x < size_x_; ++x)
-      {
-        int idx = (size_y_ - 1 - y) * size_x_ + (size_x_ - 1 - x);
-        map_msg.data[0].data[idx] = map_(x, y);
-        map_msg.data[1].data[idx] = dist_map_(x, y);
-      }
-    }
-    return map_msg;
-  }
-
 private:
   bool in_bounds(int x, int y)
   {
@@ -286,16 +250,6 @@ public:
     rclcpp::Time current_time,
     const std::optional<Eigen::Vector3d>& robot_position = std::nullopt,
     bool timing_inputs_healthy = true);
-
-  grid_map_msgs::msg::GridMap get_unexplored_debug_map()
-  {
-    grid_map_msgs::msg::GridMap map_msg;
-    if (!unexplored_space_map_)
-    {
-      return map_msg;
-    }
-    return unexplored_space_map_->get_gridmap();
-  }
 
 private:
   // Preserve the initial exploration axis while the virtual goal moves forward
@@ -483,10 +437,6 @@ public:
   double recovery_observe_duration_ = 3.0;
   double branch_recovery_cost_penalty_ = 3.0;
   double revisit_cost_factor_ = 1.0;
-
-  visualization_msgs::msg::MarkerArray get_score_visualization(
-    const rclcpp::Time& stamp,
-    std::string frame_id) const;
 
 };
 

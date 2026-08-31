@@ -8,6 +8,7 @@
 - Planner 选择图上路线并维护探索分支记忆
 - 仓库外控制器执行 Path、局部避障和停车
 - Planner 不把虚拟目标加入图, 不规划穿过 unknown 的路线
+- Planner 不发布 Marker 或调试 GridMap, `frontier_scores` 保留在公开 scored graph 中供规划和外部可视化消费
 
 探索路线保持、死路确认和岔路恢复见[目标搜索](../docs/object_search.md)
 
@@ -19,6 +20,10 @@
 - 输入恢复后重新验证当前路线
 
 外部控制器必须独立监测 odom, 拒绝过期或未来 Path, 故障时停车并丢弃缓存路线. 当前阈值以 `config/planner.yaml` 为准
+
+## 性能边界
+
+Planner 核心只维护规划所需的内部 unexplored distance map. 每次成功规划不再检查两个 debug publisher, 也不在回调中序列化 MarkerArray 或双层 GridMap. 可视化订阅者不能增加 Planner 回调工作量
 
 ## 代码和验证
 

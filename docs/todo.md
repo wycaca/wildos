@@ -73,7 +73,6 @@
 
 - 从 WildOS 核心回调移除 `visual_navigation/visual_navigation/wildos/viz.py` 和 `geofrontier_nav/viz.py` 的同步调用
 - 从目标融合移除 marker 和粒子点云发布职责
-- 从 Planner 移除 `planner_visualization.cpp`、debug publisher 和不再使用的 `visualization_msgs` 依赖
 - 复用现有 launch 增加显式 visualization 开关, 不保留新旧可视化双路径
 
 ### 2.4 先优化 Python 数据路径
@@ -168,7 +167,6 @@ C++ 迁移门槛:
 
 测试清理:
 
-- Planner 分数环迁出后, 用外部 visualizer 测试替换 `graphnav_planner/test/test_frontier_score_visualization.cpp`, 删除旧 visualization 实现测试
 - WildOS 可视化迁出后, 删除无调用方的 `test_publish_gate.py` 和对应 helper, Marker 行为移入 visualization package
 - 目标融合测试保留融合、时间、TF 和安全门控, 删除或迁移只验证旧 marker 和粒子发布器的部分
 - hardware launch 测试删除“生产 launch 必须包含旧性能监控节点”的断言, 改为验证生产、诊断和可视化模式边界

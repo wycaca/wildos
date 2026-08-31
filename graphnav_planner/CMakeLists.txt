@@ -14,10 +14,8 @@ find_package(rclcpp REQUIRED)
 find_package(rclcpp_components REQUIRED)
 find_package(graphnav_msgs REQUIRED)
 find_package(object_search_msgs REQUIRED)
-find_package(visualization_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
-find_package(grid_map_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2 REQUIRED)
@@ -31,7 +29,6 @@ add_library(graphnav_planner_component SHARED
   src/planner.cpp
   src/planner_exploration.cpp
   src/planner_planning.cpp
-  src/planner_visualization.cpp
   src/planner_node.cpp
 )
 target_include_directories(graphnav_planner_component PUBLIC
@@ -44,11 +41,9 @@ ament_target_dependencies(graphnav_planner_component
   rclcpp_components
   graphnav_msgs
   object_search_msgs
-  visualization_msgs
   nav_msgs
   std_msgs
   geometry_msgs
-  grid_map_msgs
   tf2_ros
   tf2
   tf2_geometry_msgs
@@ -104,10 +99,6 @@ if(BUILD_TESTING)
   ament_add_gtest(test_exploration_memory test/test_exploration_memory.cpp)
   target_link_libraries(test_exploration_memory graphnav_planner_component)
 
-  ament_add_gtest(test_frontier_score_visualization
-    test/test_frontier_score_visualization.cpp
-  )
-  target_link_libraries(test_frontier_score_visualization graphnav_planner_component)
 endif()
 
 ament_package()
