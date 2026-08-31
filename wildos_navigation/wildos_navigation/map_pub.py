@@ -94,8 +94,11 @@ class LocalObstacleGridNode(Node):
         origin_z = robot_z - 0.05  # 固定压低 5cm 贴紧地面
 
         # 2. 读取点云数据
-        points_gen = pc2.read_points(msg, field_names=("x", "y", "z"), skip_nans=True)
-        points_struct = np.array(list(points_gen))
+        points_struct = pc2.read_points(
+            msg,
+            field_names=("x", "y", "z"),
+            skip_nans=True,
+        )
         if len(points_struct) == 0:
             return
 

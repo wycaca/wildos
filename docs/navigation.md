@@ -43,6 +43,12 @@ GraphNav Planner 的 `/spot1/graphnav_planner/path` 不作为这套已测试算�
 
 x86 和 GO2 使用不同 DDS domain, 两端可以使用相同的 `/cmd_vel` 名称而不会形成回环. `motion_node` 只负责把 `Twist` 适配到 GO2 Sport API, 不属于导航算法
 
+## 点云到局部代价地图
+
+`map_pub` 直接使用 `sensor_msgs_py` 返回的结构化 NumPy 数组, 不把 PointCloud2 展开为 Python 点列表. 高度过滤、窗口裁剪、栅格 min/max 聚合和形态学膨胀分别由 NumPy 和 OpenCV 的编译实现批量执行
+
+滚动窗口原点仍按 resolution 对齐, 障碍高度差、膨胀层级和机器人中心清空语义保持不变. 该优化只删除点云解码中的 Python 对象转换, 不调整导航算法参数
+
 ## 配置边界
 
 [navigation.yaml](../wildos_navigation/config/navigation.yaml) 保存原工作区的代价地图参数和当前部署接口. 路径跟踪速度、前视距离、安全半径和动态障碍预测参数仍保留在迁移源码中, 避免部署侧形成第二套算法配置
@@ -102,7 +108,7 @@ ros2 topic echo /cmd_vel
 source /opt/ros/humble/setup.bash
 colcon build --packages-select wildos_navigation --symlink-install
 source install/setup.bash
-PYTHONPATH=wildos_navigation python3 -m pytest wildos_navigation/test -p no:cacheprovider
+PYTHONPATH=wildos_navigation:${PYTHONPATH:-} python3 -m pytest wildos_navigation/test -p no:cacheprovider
 ```
 
-测试覆盖当前 Topic、启动节点、速度链路协议和网关边界. 导航算法行为以导航同事的原工作区测试结果为准
+测试覆盖点云到代价地图、当前 Topic、启动节点、速度链路协议和网关边界. 导航算法行为以导航同事的原工作区测试结果为准
