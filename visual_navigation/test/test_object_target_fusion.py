@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -17,12 +18,17 @@ from visual_navigation.object_target_fusion import (
     _mask_array,
     _target_surface_measurement,
     _target_surface_measurement_with_reason,
+    _target_fusion_diagnostic_metrics,
     _mean_observation_bearing,
     _projected_mask_support,
     _xyz_points,
 )
 from visual_navigation.utils.object_search_utils import reference_image_stamp
-from visual_navigation.utils.performance_stats import EventRate, TimingWindow
+from visual_navigation.utils.performance_stats import (
+    EventRate,
+    TimingSummary,
+    TimingWindow,
+)
 
 
 def test_mask_array_decodes_object_mask_message():
@@ -40,6 +46,41 @@ def test_mask_array_decodes_object_mask_message():
     decoded = _mask_array(msg)
 
     assert np.array_equal(decoded, expected)
+
+
+def test_target_fusion_diagnostics_keep_stage_and_workload_metrics():
+    timing = TimingSummary(4, 10.0, 12.0, 15.0)
+    particle_filter = SimpleNamespace(
+        state="TRACKING",
+        accepted_views=2,
+        view_support=1.5,
+        weak_view_updates=1,
+        duplicate_views_rejected=3,
+        lidar_association_rejected=1,
+    )
+
+    metrics = _target_fusion_diagnostic_metrics(
+        {"total": timing, "lidar_decode": timing},
+        {"mask": timing},
+        2.0,
+        10.0,
+        8,
+        7,
+        1,
+        0,
+        0,
+        4,
+        3,
+        {"no_points_in_mask": 2},
+        {"cloud": 1000.0},
+        particle_filter,
+        5,
+    )
+
+    assert metrics["cycle.total.p95_ms"] == 12.0
+    assert metrics["stage.lidar_decode.average_ms"] == 10.0
+    assert metrics["lidar.failure.no_points_in_mask_count"] == 2
+    assert metrics["fusion.state"] == "TRACKING"
 
 
 def test_mask_callback_logs_exception_without_terminating_node():

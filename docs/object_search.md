@@ -103,6 +103,8 @@ scripts/go2_search_test.sh stop
 
 在 1500 粒子基线上, 旧核心 Marker 与粒子点云构造中位耗时合计 0.246 ms, 每次额外复制 18 KB 粒子数据. 拆分后核心可视化耗时和粒子调试带宽均为 0, 外部目标 Marker 构造中位耗时为 0.136 ms
 
+目标融合也使用固定容量窗口, 每 60 秒向 `/diagnostics` 发布 Mask/LiDAR 输入频率、阶段 P95、点云工作量、拒绝原因和融合状态. 满指标消息构造加序列化中位耗时为 0.281 ms, 大小 2669 bytes, 折算每秒核心开销约 0.0047 ms
+
 ## 评分可视化隔离
 
 WildOS 核心只把归一化 `frontier_scores` 写入公开 `/spot1/scored_nav_graph`, 不再同步生成或发布 score ring. `wildos_visualization/graph_visualizer` 在 RViz 模式下订阅 scored graph, 用单个 `LINE_LIST` 重建相同方向弧段和颜色

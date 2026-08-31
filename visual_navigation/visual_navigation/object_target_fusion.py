@@ -10,10 +10,16 @@ import traceback
 import numpy as np
 import rclpy
 import scipy
+from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus
 from rclpy.duration import Duration
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import (
+    DurabilityPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+    qos_profile_sensor_data,
+)
 from scipy.ndimage import binary_dilation
 from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation
@@ -29,7 +35,12 @@ from triangulation3d.target_particle_filter import (
     TargetEstimate as CoreTargetEstimate,
     TargetParticleFilter,
 )
-from visual_navigation.utils.performance_stats import EventRate, TimingWindow
+from visual_navigation.utils.performance_stats import (
+    EventRate,
+    TimingWindow,
+    diagnostic_status,
+    timing_metrics,
+)
 from visual_navigation.object_search_types import (
     normalize_object_search_target,
 )
@@ -38,7 +49,6 @@ from visual_navigation.object_search_types import (
 _LIDAR_BUFFER_SIZE = 40
 _MIN_TARGET_HEIGHT_ABOVE_GROUND = 0.12
 _TARGET_CLUSTER_RADIUS = 0.75
-_DIAGNOSTICS_LOG_PERIOD_SEC = 60.0
 _SLOW_CALLBACK_WARNING_MS = 500.0
 
 
@@ -65,6 +75,8 @@ class ObjectTargetFusion(Node):
         self.declare_parameter("lidar_min_points", 18)
         self.declare_parameter("lidar_mask_dilation_pixels", 3)
         self.declare_parameter("max_lidar_age_sec", 0.25)
+        self.declare_parameter("diagnostics_enabled", True)
+        self.declare_parameter("diagnostics_period_sec", 60.0)
 
         self.max_depth = max(float(self.get_parameter("max_depth").value), 2.0)
         self.particle_config = ParticleFilterConfig(
@@ -154,6 +166,17 @@ class ObjectTargetFusion(Node):
             str(self.get_parameter("target_estimate_topic").value),
             10,
         )
+        self.diagnostics_publisher = None
+        if bool(self.get_parameter("diagnostics_enabled").value):
+            self.diagnostics_publisher = self.create_publisher(
+                DiagnosticArray,
+                "/diagnostics",
+                QoSProfile(
+                    depth=1,
+                    reliability=ReliabilityPolicy.BEST_EFFORT,
+                    durability=DurabilityPolicy.VOLATILE,
+                ),
+            )
         self.create_subscription(
             ObjectMaskWithTf,
             str(self.get_parameter("object_mask_topic").value),
@@ -178,7 +201,14 @@ class ObjectTargetFusion(Node):
             self._on_object_search_target,
             10,
         )
-        self.create_timer(_DIAGNOSTICS_LOG_PERIOD_SEC, self._log_health)
+        if self.diagnostics_publisher is not None:
+            self.create_timer(
+                max(
+                    float(self.get_parameter("diagnostics_period_sec").value),
+                    1.0,
+                ),
+                self._publish_diagnostics,
+            )
 
         self.get_logger().info(
             "目标融合已启动, "
@@ -373,8 +403,8 @@ class ObjectTargetFusion(Node):
             f"threshold={_SLOW_CALLBACK_WARNING_MS:.1f}ms, stage={stage}"
         )
 
-    def _log_health(self) -> None:
-        """周期报告融合存活状态和最近回调阶段"""
+    def _publish_diagnostics(self) -> None:
+        """低频发布目标融合阶段与工作量标量"""
         summaries = {
             name: timing.summary(reset=True)
             for name, timing in self._timings.items()
@@ -383,46 +413,37 @@ class ObjectTargetFusion(Node):
             name: timing.summary(reset=True)
             for name, timing in self._message_ages.items()
         }
-        refine_ratio = 100.0 * self._lidar_refined / max(self._lidar_matched, 1)
-        total = summaries["total"]
-        self.get_logger().info(
-            "目标融合统计, "
-            f"Mask=收到{self._mask_received}/完成{self._mask_processed}/"
-            f"空数据{self._mask_empty}/错误{self._mask_errors}, "
-            f"输入频率=Mask {self._mask_rate.sample(reset=True):.2f}Hz/"
-            f"雷达{self._lidar_rate.sample(reset=True):.1f}Hz, "
-            f"雷达精修={self._lidar_refined}/{self._lidar_matched}"
-            f"({refine_ratio:.1f}%), "
-            f"精修失败={_counter_summary(self._lidar_failures)}, "
-            "雷达点数平均值="
-            f"原始{self._lidar_count_average('cloud'):.0f}/"
-            f"相机内{self._lidar_count_average('visible'):.0f}/"
-            f"Mask内{self._lidar_count_average('mask'):.0f}/"
-            f"去地面{self._lidar_count_average('elevated'):.0f}/"
-            f"最终簇{self._lidar_count_average('cluster'):.0f}, "
-            f"视角=独立{self.particle_filter.accepted_views}/"
-            f"有效权重{self.particle_filter.view_support:.2f}/"
-            f"弱更新{self.particle_filter.weak_view_updates}/"
-            f"重复丢弃{self.particle_filter.duplicate_views_rejected}, "
-            f"雷达视觉关联拒绝{self.particle_filter.lidar_association_rejected}, "
-            f"雷达缓存复用{self._lidar_cache_hits}次, "
-            "消息年龄="
-            f"Mask平均{age_summaries['mask'].average_ms:.0f}/"
-            f"95%上限{age_summaries['mask'].p95_ms:.0f}ms, "
-            f"匹配点云时间差平均{age_summaries['lidar_match'].average_ms:.0f}/"
-            f"95%上限{age_summaries['lidar_match'].p95_ms:.0f}ms, "
-            f"融合状态={_estimate_state_name(self.particle_filter.state)}, "
-            f"总耗时=平均{total.average_ms:.0f}/95%上限{total.p95_ms:.0f}/"
-            f"最大{total.maximum_ms:.0f}ms, "
-            "阶段平均耗时="
-            f"Mask解析{summaries['decode'].average_ms:.0f}ms/"
-            f"视觉融合{summaries['vision'].average_ms:.0f}ms/"
-            f"雷达总计{summaries['lidar'].average_ms:.0f}ms/"
-            f"点云解码{summaries['lidar_decode'].average_ms:.0f}ms/"
-            f"坐标转换{summaries['lidar_transform'].average_ms:.0f}ms/"
-            f"雷达投影{summaries['lidar_project'].average_ms:.0f}ms/"
-            f"结果发布{summaries['publish'].average_ms:.0f}ms"
+        metrics = _target_fusion_diagnostic_metrics(
+            summaries,
+            age_summaries,
+            self._mask_rate.sample(reset=True),
+            self._lidar_rate.sample(reset=True),
+            self._mask_received,
+            self._mask_processed,
+            self._mask_empty,
+            self._mask_errors,
+            self._mask_ignored_reached,
+            self._lidar_matched,
+            self._lidar_refined,
+            self._lidar_failures,
+            {
+                name: self._lidar_count_average(name)
+                for name in self._lidar_point_counts
+            },
+            self.particle_filter,
+            self._lidar_cache_hits,
         )
+        slow = summaries["total"].p95_ms >= _SLOW_CALLBACK_WARNING_MS
+        status = diagnostic_status(
+            "wildos/object_target_fusion",
+            metrics,
+            level=DiagnosticStatus.WARN if slow else DiagnosticStatus.OK,
+            message="processing budget exceeded" if slow else "OK",
+        )
+        message = DiagnosticArray()
+        message.header.stamp = self.get_clock().now().to_msg()
+        message.status = [status]
+        self.diagnostics_publisher.publish(message)
         self._lidar_cache_hits = 0
 
     def _log_estimate_state(self, estimate: CoreTargetEstimate) -> None:
@@ -855,22 +876,61 @@ def _target_surface_measurement_details(
     return (np.median(cluster, axis=0), int(cluster.shape[0])), None, details
 
 
-def _counter_summary(counter: Counter[str]) -> str:
-    if not counter:
-        return "无"
-    names = {
-        "no_time_matched_cloud": "无时间匹配点云",
-        "empty_cloud": "空点云",
-        "tf_unavailable": "点云TF不可用",
-        "no_points_in_mask": "Mask内无投影点",
-        "mask_points_insufficient": "Mask内点数不足",
-        "ground_filter_insufficient": "地面过滤后不足",
-        "foreground_cluster_insufficient": "前景簇不足",
+def _target_fusion_diagnostic_metrics(
+    timings,
+    message_ages,
+    mask_rate,
+    lidar_rate,
+    mask_received,
+    mask_processed,
+    mask_empty,
+    mask_errors,
+    mask_ignored_reached,
+    lidar_matched,
+    lidar_refined,
+    lidar_failures,
+    lidar_points,
+    particle_filter,
+    lidar_cache_hits,
+):
+    """合并目标融合的阶段、输入、粒子状态和工作量标量"""
+    metrics = {
+        "input.rate.mask_hz": mask_rate,
+        "input.rate.lidar_hz": lidar_rate,
+        "input.mask.received_count": mask_received,
+        "input.mask.processed_count": mask_processed,
+        "input.mask.empty_count": mask_empty,
+        "input.mask.error_count": mask_errors,
+        "input.mask.ignored_reached_count": mask_ignored_reached,
+        "lidar.matched_count": lidar_matched,
+        "lidar.refined_count": lidar_refined,
+        "lidar.refine_ratio": lidar_refined / max(lidar_matched, 1),
+        "lidar.cache_hit_count": lidar_cache_hits,
+        "fusion.state": particle_filter.state,
+        "fusion.accepted_views": particle_filter.accepted_views,
+        "fusion.view_support": particle_filter.view_support,
+        "fusion.weak_view_updates": particle_filter.weak_view_updates,
+        "fusion.duplicate_views_rejected": particle_filter.duplicate_views_rejected,
+        "fusion.lidar_association_rejected": particle_filter.lidar_association_rejected,
     }
-    return "/".join(
-        f"{names.get(reason, reason)}{count}"
-        for reason, count in sorted(counter.items())
+    for name, summary in timings.items():
+        prefix = "cycle.total" if name == "total" else f"stage.{name}"
+        metrics.update(timing_metrics(prefix, summary))
+    for name, summary in message_ages.items():
+        metrics.update(timing_metrics(f"message_age.{name}", summary))
+    metrics.update(
+        {
+            f"lidar.failure.{name}_count": count
+            for name, count in sorted(lidar_failures.items())
+        }
     )
+    metrics.update(
+        {
+            f"lidar.points.{name}_average": value
+            for name, value in lidar_points.items()
+        }
+    )
+    return metrics
 
 
 def main(args=None):
