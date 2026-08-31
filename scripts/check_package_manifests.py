@@ -43,7 +43,6 @@ REQUIRED_DEPENDENCIES = {
         "tf2_msgs",
         "tf2_ros",
         "triangulation3d",
-        "visualization_msgs",
     },
     "graphnav_planner": {
         "geometry_msgs",

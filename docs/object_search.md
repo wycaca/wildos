@@ -109,6 +109,8 @@ WildOS 核心只把归一化 `frontier_scores` 写入公开 `/spot1/scored_nav_g
 
 在 100 个 Frontier、每个 16 个方向的合成输入上, 旧核心生成 1601 个 Marker 的中位耗时为 382.254 ms. 拆分后核心耗时为 0 ms; 外部进程生成 2 个 Marker 的中位耗时为 85.108 ms, 比旧构造快 4.49 倍. 生产模式关闭可视化时不订阅 scored graph
 
+旧 `model_visualization` 和 `within_range_geofrontiers` 没有运行时消费者, 且模型拼图依赖未公开的逐像素内部张量. 当前直接删除这两条调试流及绘图工具, 不新增内部热图 Topic. 三路 256×256 合成输入下, 核心每帧减少 6.298 ms 拼图开销和约 1.20 MiB 图像构造. 将来只有在现场诊断明确需要时, 才增加低频、best effort、depth 1 的专用调试输出
+
 具体门槛以以下配置为准:
 
 - `visual_navigation/configs/wildos_nav_conf.yaml`

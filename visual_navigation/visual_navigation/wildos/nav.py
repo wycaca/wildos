@@ -7,7 +7,6 @@ from sensor_msgs.msg import CompressedImage, Image as ImageMsg, CameraInfo
 from message_filters import ApproximateTimeSynchronizer, Subscriber
 from graphnav_msgs.msg import NavigationGraph, KeyValue
 from std_msgs.msg import Bool, Header, String
-from visualization_msgs.msg import MarkerArray
 from cv_bridge import CvBridge
 from object_search_msgs.msg import ObjectMaskWithTf
 
@@ -29,7 +28,6 @@ from visual_navigation.wildos.current_frontier_scores import (
     scored_graph_publish_due,
 )
 from visual_navigation.geofrontier_nav.geofrontier_to_image import GeoFrontierToImage
-from visual_navigation.wildos.viz import VisualizeGoalAgnosticGeoFrontierScoring
 from explorfm import ExploRFMInference
 from visual_navigation.utils.object_search_utils import (
     get_objectmask_msg,
@@ -42,7 +40,6 @@ from visual_navigation.object_reached_evidence import VisualReachedEvidence
 from visual_navigation.object_search_types import normalize_object_search_target
 from visual_navigation.utils.paths import repository_root
 from visual_navigation.utils.performance_stats import EventRate, TimingWindow
-from visual_navigation.utils.publish_gate import PeriodicPublishGate
 from visual_navigation.utils.wildos_input_cache import WildOSInputCache
 
 HOME_DIR = repository_root()
@@ -110,14 +107,10 @@ class WildOS_Nav(TFLookupSubscriber):
 
         # ROS2 发布 topic
         "scored_navgraph_topic": "/spot1/scored_nav_graph",
-        "model_viz_topic": "model_visualization",
-        "valid_geofrontiers_topic": "within_range_geofrontiers",
         "object_mask_topic": "/spot1/object_mask",
         "object_reached_topic": "/spot1/object_search_reached",
         "object_completed_topic": "/spot1/object_search_completed",
         "object_search_target_topic": "/spot1/object_search_target",
-        "visualization_publish_period_sec": 2.0,
-        "visualization_require_subscribers": True,
         "processing_rate_hz": None,
         "scored_graph_heartbeat_sec": 1.0,
         "frontier_score_publish_epsilon": 0.001,
@@ -336,12 +329,6 @@ class WildOS_Nav(TFLookupSubscriber):
             reach_scale=reach_scale
         )
         self.compute_paths = config.compute_paths
-        self.visualization_require_subscribers = self._config_bool(
-            config.get("visualization_require_subscribers", True)
-        )
-        self._visualization_gate = PeriodicPublishGate(
-            config.get("visualization_publish_period_sec", 2.0)
-        )
         self._last_slow_warning = 0.0
         self._processing_rate = EventRate()
         self._processing_timings = {
@@ -402,18 +389,6 @@ class WildOS_Nav(TFLookupSubscriber):
             camera_idx: {}
             for camera_idx in range(self.num_cameras)
         }
-
-        # 可视化
-        self.geofrontier_viz_colors = np.array([
-            [0.528, 0.471, 0.701],
-            [0.772, 0.432, 0.102],
-            [0.572, 0.586, 0.0],
-        ])
-        self.viz = VisualizeGoalAgnosticGeoFrontierScoring(
-            angular_bins=self.scorer.angles,
-            camera_mapping=CAMERA_MAPPING,
-            num_cameras=self.num_cameras
-        )
 
         self.clbk_cntr = 0
 
@@ -521,16 +496,6 @@ class WildOS_Nav(TFLookupSubscriber):
         self.scored_navgraph_pub = self.create_publisher(
             NavigationGraph,
             config.scored_navgraph_topic,
-            10
-        )
-        self.model_viz_pub = self.create_publisher(
-            ImageMsg,
-            config.model_viz_topic,
-            10
-        )
-        self.withinrange_geofront_pub = self.create_publisher(
-            MarkerArray,
-            config.valid_geofrontiers_topic,
             10
         )
         if self.object_search_mode:
@@ -898,44 +863,8 @@ class WildOS_Nav(TFLookupSubscriber):
                 self._scored_graph_heartbeat_publishes += 1
         else:
             self._scored_graph_skipped_publishes += 1
-        if self._should_publish_visualization():
-            if self._visualization_publisher_enabled(self.withinrange_geofront_pub):
-                self.viz.delete_markers(self.withinrange_geofront_pub)
-                self.withinrange_geofront_pub.publish(
-                    self.viz.viz_valid_geofrontiers(
-                        geofrontiers,
-                        all_cam_data,
-                        odom_msg.header,
-                        self.geofrontier_viz_colors,
-                    )
-                )
-            if self._visualization_publisher_enabled(self.model_viz_pub):
-                # 附加源图像时间, 方便 RViz 跟踪 debug 图像流
-                model_viz_msg = self.br.cv2_to_imgmsg(
-                    self.viz.visualize_model_det(nav_data, all_cam_data),
-                    encoding="rgb8",
-                )
-                model_viz_msg.header = image_msgs[0].header
-                self.model_viz_pub.publish(model_viz_msg)
         self._processing_timings["publish"].add_seconds(time.perf_counter() - stage_started)
         self._finish_processing(processing_started)
-
-    def _should_publish_visualization(self) -> bool:
-        """仅在有调试订阅者且达到周期时构建可视化消息"""
-        publishers = (
-            self.withinrange_geofront_pub,
-            self.model_viz_pub,
-        )
-        if not any(self._visualization_publisher_enabled(pub) for pub in publishers):
-            return False
-        return self._visualization_gate.ready()
-
-    def _visualization_publisher_enabled(self, publisher) -> bool:
-        """按配置跳过没有订阅者的调试 topic"""
-        return (
-            not self.visualization_require_subscribers
-            or publisher.get_subscription_count() > 0
-        )
 
     def _finish_processing(self, processing_started: float) -> None:
         """Record total processing time and throttle slow-frame warnings"""

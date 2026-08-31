@@ -175,8 +175,6 @@ def _launch_setup(context):
             "odometry_topic": odom_output_topic,
             "navigation_graph_topic": nav_graph_topic,
             "scored_navgraph_topic": _value(context, profile, "scored_nav_graph_topic", "scored_nav_graph_topic"),
-            "model_viz_topic": _value(context, profile, "model_viz_topic", "model_viz_topic"),
-            "valid_geofrontiers_topic": _value(context, profile, "valid_geofrontiers_topic", "valid_geofrontiers_topic"),
             "object_mask_topic": _value(context, profile, "object_mask_topic", "object_mask_topic"),
             "object_search_target_topic": _value(
                 context,

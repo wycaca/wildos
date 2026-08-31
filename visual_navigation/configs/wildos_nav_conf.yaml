@@ -45,13 +45,9 @@ navigation_graph_topic: /spot1/nav_graph
 
 # ROS2 Publisher topics
 scored_navgraph_topic: /spot1/scored_nav_graph
-model_viz_topic: /spot1/model_visualization
-valid_geofrontiers_topic: /spot1/within_range_geofrontiers
 object_mask_topic: /spot1/object_mask
 object_completed_topic: /spot1/object_search_completed
 object_search_target_topic: /spot1/object_search_target
-visualization_publish_period_sec: 2.0
-visualization_require_subscribers: true
 processing_rate_hz: 10.0
 scored_graph_heartbeat_sec: 1.0
 frontier_score_publish_epsilon: 0.001
