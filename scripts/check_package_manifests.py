@@ -79,6 +79,7 @@ REQUIRED_DEPENDENCIES = {
         "geometry_msgs",
         "graphnav_msgs",
         "nav_msgs",
+        "object_search_msgs",
         "rclpy",
         "std_msgs",
         "visualization_msgs",

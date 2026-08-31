@@ -36,40 +36,6 @@ Visualization Manager:
         Reliability Policy: Best Effort
         Value: /spot1/graph_construction_viz
       Value: true
-    - Alpha: 0.6499999761581421
-      Autocompute Intensity Bounds: false
-      Autocompute Value Bounds:
-        Max Value: 10
-        Min Value: -10
-        Value: false
-      Axis: Z
-      Channel Name: z
-      Class: rviz_default_plugins/PointCloud2
-      Color: 255; 255; 255
-      Color Transformer: FlatColor
-      Decay Time: 0
-      Enabled: true
-      Invert Rainbow: false
-      Max Color: 255; 255; 255
-      Max Intensity: 1
-      Min Color: 255; 255; 255
-      Min Intensity: 0
-      Name: 目标粒子
-      Position Transformer: XYZ
-      Selectable: false
-      Size (Pixels): 2
-      Size (m): 0.019999999552965164
-      Style: Points
-      Topic:
-        Depth: 1
-        Durability Policy: Volatile
-        Filter size: 2
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /spot1/object_target_particles
-      Use Fixed Frame: true
-      Use rainbow: false
-      Value: true
     - Class: rviz_default_plugins/Marker
       Enabled: true
       Name: 目标定位

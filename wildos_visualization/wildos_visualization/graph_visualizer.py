@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 from collections import deque
-from math import cos, hypot, isfinite, pi, sin
+from math import cos, hypot, isfinite, pi, sin, sqrt
 from typing import Iterable, Sequence
 
 from geometry_msgs.msg import Point
 from graphnav_msgs.msg import NavigationGraph, Node as GraphNode
 from nav_msgs.msg import Odometry
+from object_search_msgs.msg import TargetEstimate
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from std_msgs.msg import ColorRGBA, Header
+from std_msgs.msg import ColorRGBA, Header, String
 from visualization_msgs.msg import Marker, MarkerArray
 
 
@@ -409,6 +410,68 @@ class ScoreRingVisualizer:
         return ColorRGBA(r=1.0, g=1.0 - 0.85 * ratio, b=0.0, a=0.75)
 
 
+class TargetVisualizer:
+    """从公开目标估计和 odom 生成目标与观测方向"""
+
+    MAX_SCALE = 1.5
+
+    def __init__(self, minimum_views=2, minimum_confidence=0.45) -> None:
+        self.minimum_views = max(2, int(minimum_views))
+        self.minimum_confidence = max(0.0, float(minimum_confidence))
+
+    def build_markers(self, estimate, odom_position=None) -> tuple[Marker, Marker]:
+        visible = self._visible(estimate)
+        target = self._target_marker(estimate, visible)
+        ray = self._ray_marker(estimate, odom_position, visible)
+        return target, ray
+
+    def _target_marker(self, estimate, visible) -> Marker:
+        marker = Marker(header=estimate.header, ns="object_target_estimate", id=0)
+        marker.type = Marker.SPHERE
+        if not visible:
+            marker.action = Marker.DELETE
+            return marker
+        marker.action = Marker.ADD
+        marker.pose = estimate.pose.pose
+        marker.pose.orientation.w = 1.0
+        marker.scale.x = self._covariance_scale(estimate.pose.covariance[0])
+        marker.scale.y = self._covariance_scale(estimate.pose.covariance[7])
+        marker.scale.z = self._covariance_scale(estimate.pose.covariance[14])
+        marker.color.a = 0.85
+        if estimate.stable:
+            marker.color.g = 1.0
+            marker.color.b = 1.0
+        else:
+            marker.color.r = 1.0
+            marker.color.g = 0.75
+        return marker
+
+    def _ray_marker(self, estimate, odom_position, visible) -> Marker:
+        marker = Marker(header=estimate.header, ns="object_target_rays", id=1)
+        marker.type = Marker.LINE_LIST
+        marker.pose.orientation.w = 1.0
+        marker.scale.x = 0.06
+        marker.color = ColorRGBA(r=0.0, g=1.0, b=0.0, a=0.9)
+        if not visible or odom_position is None:
+            marker.action = Marker.DELETE
+            return marker
+        marker.action = Marker.ADD
+        marker.points = [GraphVisualizer._point(odom_position), estimate.pose.pose.position]
+        return marker
+
+    def _visible(self, estimate) -> bool:
+        coarse_ready = (
+            estimate.state in {"TRACKING", "STABLE_VISION", "LIDAR_LOCKED"}
+            and estimate.accepted_views >= self.minimum_views
+            and estimate.confidence >= self.minimum_confidence
+        )
+        return bool(estimate.stable or coarse_ready)
+
+    def _covariance_scale(self, variance) -> float:
+        standard_deviation = sqrt(max(0.0, float(variance)))
+        return min(max(2.0 * standard_deviation, 0.3), self.MAX_SCALE)
+
+
 class GraphVisualizerNode(Node):
     """独立订阅公开图和 odom, 不进入图构建 executor"""
 
@@ -419,6 +482,11 @@ class GraphVisualizerNode(Node):
         self.declare_parameter("viz_topic", "/spot1/graph_construction_viz")
         self.declare_parameter("scored_graph_topic", "/spot1/scored_nav_graph")
         self.declare_parameter("score_ring_topic", "/spot1/score_rings")
+        self.declare_parameter("target_estimate_topic", "/spot1/object_target_estimate")
+        self.declare_parameter("target_marker_topic", "/spot1/object_target_estimate_viz")
+        self.declare_parameter("object_search_target_topic", "/spot1/object_search_target")
+        self.declare_parameter("target_minimum_views", 2)
+        self.declare_parameter("target_minimum_confidence", 0.45)
         self.declare_parameter("show_radius_markers", False)
         self.declare_parameter("show_full_edges", False)
         self.declare_parameter("trajectory_min_separation", 0.25)
@@ -429,6 +497,10 @@ class GraphVisualizerNode(Node):
             self.get_parameter("show_full_edges").value,
         )
         self.score_ring_visualizer = ScoreRingVisualizer()
+        self.target_visualizer = TargetVisualizer(
+            self.get_parameter("target_minimum_views").value,
+            self.get_parameter("target_minimum_confidence").value,
+        )
         self.trajectory_min_separation = float(
             self.get_parameter("trajectory_min_separation").value
         )
@@ -453,10 +525,27 @@ class GraphVisualizerNode(Node):
                 durability=DurabilityPolicy.VOLATILE,
             ),
         )
+        self.target_marker_publisher = self.create_publisher(
+            Marker,
+            str(self.get_parameter("target_marker_topic").value),
+            10,
+        )
         self.create_subscription(
             NavigationGraph,
             str(self.get_parameter("nav_graph_topic").value),
             self._on_graph,
+            1,
+        )
+        self.create_subscription(
+            TargetEstimate,
+            str(self.get_parameter("target_estimate_topic").value),
+            self._on_target_estimate,
+            1,
+        )
+        self.create_subscription(
+            String,
+            str(self.get_parameter("object_search_target_topic").value),
+            self._on_target_reset,
             1,
         )
         self.create_subscription(
@@ -502,6 +591,19 @@ class GraphVisualizerNode(Node):
         self.score_ring_publisher.publish(
             self.score_ring_visualizer.build_markers(msg)
         )
+
+    def _on_target_estimate(self, msg: TargetEstimate) -> None:
+        if self.target_marker_publisher.get_subscription_count() == 0:
+            return
+        for marker in self.target_visualizer.build_markers(
+            msg,
+            self.latest_odom_position,
+        ):
+            self.target_marker_publisher.publish(marker)
+
+    def _on_target_reset(self, _msg: String) -> None:
+        if self.target_marker_publisher.get_subscription_count() > 0:
+            self.target_marker_publisher.publish(Marker(action=Marker.DELETEALL))
 
 
 def _traversability_index(graph: NavigationGraph) -> int | None:

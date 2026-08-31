@@ -262,6 +262,23 @@ def test_graph_visualization_is_an_optional_external_node():
     assert parameters["viz_topic"] == "/spot1/graph_construction_viz"
     assert parameters["scored_graph_topic"] == "/spot1/scored_nav_graph"
     assert parameters["score_ring_topic"] == "/spot1/score_rings"
+    assert parameters["target_estimate_topic"] == "/spot1/object_target_estimate"
+    assert parameters["target_marker_topic"] == "/spot1/object_target_estimate_viz"
+    assert parameters["object_search_target_topic"] == "/spot1/object_search_target"
+
+    fusion = next(
+        node
+        for node in nodes
+        if _expanded(context, node.node_executable) == "object_target_fusion"
+    )
+    fusion_parameters = {
+        key: value
+        for values in evaluate_parameters(context, fusion._Node__parameters)
+        if isinstance(values, dict)
+        for key, value in values.items()
+    }
+    assert "target_marker_topic" not in fusion_parameters
+    assert "particle_topic" not in fusion_parameters
 
 
 def test_paper_rviz_accepts_best_effort_graph_markers():

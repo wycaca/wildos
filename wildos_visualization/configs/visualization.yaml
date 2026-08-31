@@ -5,6 +5,11 @@ graph_visualizer:
     viz_topic: /spot1/graph_construction_viz
     scored_graph_topic: /spot1/scored_nav_graph
     score_ring_topic: /spot1/score_rings
+    target_estimate_topic: /spot1/object_target_estimate
+    target_marker_topic: /spot1/object_target_estimate_viz
+    object_search_target_topic: /spot1/object_search_target
+    target_minimum_views: 2
+    target_minimum_confidence: 0.45
     show_radius_markers: false
     show_full_edges: false
     trajectory_min_separation: 0.25

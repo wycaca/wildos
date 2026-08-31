@@ -8,11 +8,13 @@ from graphnav_msgs.msg import (
     NodeTraversabilityProperties,
 )
 import pytest
+from object_search_msgs.msg import TargetEstimate
 
 from wildos_visualization.graph_visualizer import (
     GraphVisualizer,
     GraphVisualizerNode,
     ScoreRingVisualizer,
+    TargetVisualizer,
 )
 
 
@@ -151,3 +153,55 @@ def test_score_ring_callback_skips_work_without_rviz_subscriber():
     node.score_ring_visualizer = Visualizer()
 
     node._on_scored_graph(_graph())
+
+
+def _target_estimate(stable=True, state="STABLE_VISION", confidence=0.8):
+    estimate = TargetEstimate(
+        stable=stable,
+        state=state,
+        confidence=confidence,
+        accepted_views=2,
+    )
+    estimate.header.frame_id = "odom"
+    estimate.pose.pose.position.x = 8.0
+    estimate.pose.pose.position.y = 2.0
+    estimate.pose.pose.position.z = 1.0
+    estimate.pose.covariance[0] = 100.0
+    estimate.pose.covariance[7] = 4.0
+    estimate.pose.covariance[14] = 0.25
+    return estimate
+
+
+def test_target_visualizer_uses_public_covariance_and_odom():
+    target, ray = TargetVisualizer().build_markers(
+        _target_estimate(),
+        (0.0, 0.0, 0.5),
+    )
+
+    assert target.action == target.ADD
+    assert target.pose.position.x == 8.0
+    assert target.scale.x == 1.5
+    assert target.scale.y == 1.5
+    assert target.scale.z == 1.0
+    assert target.color.g == 1.0
+    assert target.color.b == 1.0
+    assert ray.action == ray.ADD
+    assert len(ray.points) == 2
+    assert ray.points[0].z == 0.5
+    assert ray.points[1].x == 8.0
+
+
+def test_target_visualizer_matches_coarse_evidence_gate():
+    accepted, _ = TargetVisualizer().build_markers(
+        _target_estimate(False, "TRACKING", 0.46)
+    )
+    rejected, rejected_ray = TargetVisualizer().build_markers(
+        _target_estimate(False, "TRACKING", 0.44),
+        (0.0, 0.0, 0.0),
+    )
+
+    assert accepted.action == accepted.ADD
+    assert accepted.color.r == 1.0
+    assert accepted.color.g == 0.75
+    assert rejected.action == rejected.DELETE
+    assert rejected_ray.action == rejected_ray.DELETE

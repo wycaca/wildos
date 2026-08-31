@@ -5,24 +5,20 @@ from builtin_interfaces.msg import Time
 from sensor_msgs.msg import Image, PointField
 from sensor_msgs_py import point_cloud2
 from std_msgs.msg import Header, MultiArrayDimension, String
-from visualization_msgs.msg import Marker
 
 from object_search_msgs.msg import ObjectMaskWithTf
 from triangulation3d.target_particle_filter import (
     CameraObservation,
     ParticleFilterConfig,
-    TargetEstimate,
     TargetParticleFilter,
 )
 from visual_navigation.object_target_fusion import (
     ObjectTargetFusion,
     _mask_array,
-    _target_ray_marker,
     _target_surface_measurement,
     _target_surface_measurement_with_reason,
     _mean_observation_bearing,
     _projected_mask_support,
-    _target_marker,
     _xyz_points,
 )
 from visual_navigation.utils.object_search_utils import reference_image_stamp
@@ -102,21 +98,11 @@ def test_mask_callback_logs_exception_without_terminating_node():
 
 
 def test_target_change_clears_old_fusion_state():
-    """新目标不能沿用旧目标粒子、点云和可视化"""
+    """新目标不能沿用旧目标粒子和点云"""
 
     class Clock:
         def now(self):
             return type("Now", (), {"nanoseconds": 20_000_000_000})()
-
-    class Publisher:
-        def __init__(self):
-            self.messages = []
-
-        def get_subscription_count(self):
-            return 1
-
-        def publish(self, msg):
-            self.messages.append(msg)
 
     class Logger:
         def info(self, message):
@@ -135,11 +121,9 @@ def test_target_change_clears_old_fusion_state():
             self.particle_filter = TargetParticleFilter(self.particle_config)
             self.particle_filter.particles = np.ones((100, 3))
             self.lidar_buffer = [(1.0, object())]
-            self._latest_camera_origins = [np.ones(3)]
             self._latest_bearing_world = np.ones(3)
             self._last_logged_state = "TRACKING"
             self._first_event_stamps = {"first_mask": 1.0}
-            self.marker_publisher = Publisher()
             self.logger = Logger()
 
         def get_clock(self):
@@ -156,9 +140,7 @@ def test_target_change_clears_old_fusion_state():
     assert node._target_changed_stamp_sec == 20.0
     assert node.particle_filter.particles is None
     assert node.lidar_buffer == []
-    assert node._latest_camera_origins == []
     assert node._latest_bearing_world is None
-    assert node.marker_publisher.messages[-1].action == Marker.DELETEALL
 
 
 def test_xyz_points_accepts_mixed_pointcloud_field_types():
@@ -214,134 +196,6 @@ def test_lidar_cache_reuses_only_matching_stamp_and_frame():
     assert np.array_equal(first[1], second[1])
     assert transform.call_count == 3
     assert fusion._lidar_cache_hits == 1
-
-
-def test_debug_messages_are_not_built_without_subscribers():
-    class Publisher:
-        def get_subscription_count(self):
-            return 0
-
-        def publish(self, msg):
-            raise AssertionError("debug publish must be skipped")
-
-    fusion = object.__new__(ObjectTargetFusion)
-    fusion.marker_publisher = Publisher()
-    fusion.particle_publisher = Publisher()
-    fusion.particle_filter = type("Filter", (), {"particles": np.ones((2, 3))})()
-    with patch("visual_navigation.object_target_fusion._target_marker") as target_marker:
-        with patch(
-            "visual_navigation.object_target_fusion.point_cloud2.create_cloud"
-        ) as create_cloud:
-            fusion._publish_markers(_estimate(True, np.eye(3)), Time())
-            fusion._publish_particles(Time())
-
-            target_marker.assert_not_called()
-            create_cloud.assert_not_called()
-
-
-def _estimate(
-    stable: bool,
-    covariance: np.ndarray,
-    state: str | None = None,
-    confidence: float = 0.8,
-) -> TargetEstimate:
-    return TargetEstimate(
-        position=np.array([8.0, 2.0, 1.0]),
-        covariance=covariance,
-        confidence=confidence,
-        source=1,
-        stable=stable,
-        accepted_views=2,
-        lidar_support=0,
-        state=state or ("STABLE_VISION" if stable else "PENDING"),
-    )
-
-
-def test_pending_estimate_deletes_misleading_position_marker():
-    marker = _target_marker(_estimate(False, np.eye(3) * 100.0), "odom", Time())
-
-    assert marker.action == Marker.DELETE
-
-
-def test_stable_marker_scale_is_bounded():
-    covariance = np.diag([100.0, 4.0, 0.25])
-    marker = _target_marker(_estimate(True, covariance), "odom", Time())
-
-    assert marker.action == Marker.ADD
-    assert marker.pose.position.x == 8.0
-    assert 0.3 <= marker.scale.x <= 1.5
-    assert 0.3 <= marker.scale.y <= 1.5
-    assert 0.3 <= marker.scale.z <= 1.5
-    assert marker.color.r == 0.0
-    assert marker.color.g == 1.0
-    assert marker.color.b == 1.0
-
-
-def test_two_view_tracking_estimate_publishes_coarse_marker():
-    marker = _target_marker(
-        _estimate(False, np.eye(3) * 16.0, state="TRACKING"),
-        "odom",
-        Time(),
-    )
-
-    assert marker.action == Marker.ADD
-    assert marker.color.r == 1.0
-    assert marker.color.g == 0.75
-
-
-def test_coarse_marker_uses_same_confidence_gate_as_navigation():
-    accepted = _target_marker(
-        _estimate(
-            False,
-            np.eye(3) * 16.0,
-            state="TRACKING",
-            confidence=0.46,
-        ),
-        "odom",
-        Time(),
-    )
-    rejected = _target_marker(
-        _estimate(
-            False,
-            np.eye(3) * 16.0,
-            state="TRACKING",
-            confidence=0.44,
-        ),
-        "odom",
-        Time(),
-    )
-
-    assert accepted.action == Marker.ADD
-    assert rejected.action == Marker.DELETE
-
-
-def test_visible_target_publishes_green_camera_rays():
-    estimate = _estimate(True, np.eye(3))
-    marker = _target_ray_marker(
-        estimate,
-        "odom",
-        Time(),
-        [np.array([0.0, 0.0, 0.5]), np.array([0.0, 0.2, 0.5])],
-    )
-
-    assert marker.action == Marker.ADD
-    assert marker.type == Marker.LINE_LIST
-    assert len(marker.points) == 4
-    assert marker.points[1].x == 8.0
-    assert marker.color.r == 0.0
-    assert marker.color.g == 1.0
-    assert marker.color.b == 0.0
-
-
-def test_pending_target_deletes_camera_rays():
-    marker = _target_ray_marker(
-        _estimate(False, np.eye(3), state="PENDING"),
-        "odom",
-        Time(),
-        [np.zeros(3)],
-    )
-
-    assert marker.action == Marker.DELETE
 
 
 def test_reference_image_stamp_uses_middle_camera_time():

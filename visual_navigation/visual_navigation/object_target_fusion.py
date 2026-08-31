@@ -17,12 +17,10 @@ from rclpy.qos import qos_profile_sensor_data
 from scipy.ndimage import binary_dilation
 from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation
-from geometry_msgs.msg import Point
-from sensor_msgs.msg import PointCloud2, PointField
+from sensor_msgs.msg import PointCloud2
 from sensor_msgs_py import point_cloud2
-from std_msgs.msg import Bool, Header, String
+from std_msgs.msg import Bool, String
 from tf2_ros import Buffer, TransformException, TransformListener
-from visualization_msgs.msg import Marker
 
 from object_search_msgs.msg import ObjectMaskWithTf, TargetEstimate
 from triangulation3d.target_particle_filter import (
@@ -33,13 +31,11 @@ from triangulation3d.target_particle_filter import (
 )
 from visual_navigation.utils.performance_stats import EventRate, TimingWindow
 from visual_navigation.object_search_types import (
-    coarse_target_evidence_ready,
     normalize_object_search_target,
 )
 
 
 _LIDAR_BUFFER_SIZE = 40
-_MAX_TARGET_MARKER_SCALE = 1.5
 _MIN_TARGET_HEIGHT_ABOVE_GROUND = 0.12
 _TARGET_CLUSTER_RADIUS = 0.75
 _DIAGNOSTICS_LOG_PERIOD_SEC = 60.0
@@ -55,16 +51,12 @@ class ObjectTargetFusion(Node):
         self.declare_parameter("object_mask_topic", "/spot1/object_mask")
         self.declare_parameter("lidar_topic", "/spot1/lidar/points_aligned")
         self.declare_parameter("target_estimate_topic", "/spot1/object_target_estimate")
-        self.declare_parameter("target_marker_topic", "/spot1/object_target_estimate_viz")
-        self.declare_parameter("particle_topic", "/spot1/object_target_particles")
         self.declare_parameter("completion_topic", "/spot1/object_search_completed")
         self.declare_parameter("object_search_target_topic", "/spot1/object_search_target")
         self.declare_parameter("global_frame", "odom")
         self.declare_parameter("particle_count", 1500)
         self.declare_parameter("max_depth", 100.0)
         self.declare_parameter("stable_min_confidence", 0.6)
-        self.declare_parameter("coarse_target_min_views", 2)
-        self.declare_parameter("coarse_target_min_confidence", 0.45)
         self.declare_parameter("independent_view_translation", 0.12)
         self.declare_parameter("duplicate_view_translation", 0.03)
         self.declare_parameter("duplicate_view_angle_deg", 0.5)
@@ -104,14 +96,6 @@ class ObjectTargetFusion(Node):
         self.current_target: str | None = None
         self._target_changed_stamp_sec: float | None = None
         self.global_frame = str(self.get_parameter("global_frame").value)
-        self.coarse_target_min_views = max(
-            int(self.get_parameter("coarse_target_min_views").value),
-            2,
-        )
-        self.coarse_target_min_confidence = max(
-            float(self.get_parameter("coarse_target_min_confidence").value),
-            0.0,
-        )
         self.lidar_min_points = max(int(self.get_parameter("lidar_min_points").value), 1)
         self.lidar_mask_dilation_pixels = max(
             int(self.get_parameter("lidar_mask_dilation_pixels").value),
@@ -126,7 +110,6 @@ class ObjectTargetFusion(Node):
         self._lidar_cache_world_points: np.ndarray | None = None
         self._lidar_cache_hits = 0
         self._last_logged_state = ""
-        self._latest_camera_origins: list[np.ndarray] = []
         self._latest_bearing_world: np.ndarray | None = None
         self._mask_stage = "idle"
         self._mask_received = 0
@@ -169,16 +152,6 @@ class ObjectTargetFusion(Node):
         self.estimate_publisher = self.create_publisher(
             TargetEstimate,
             str(self.get_parameter("target_estimate_topic").value),
-            10,
-        )
-        self.marker_publisher = self.create_publisher(
-            Marker,
-            str(self.get_parameter("target_marker_topic").value),
-            10,
-        )
-        self.particle_publisher = self.create_publisher(
-            PointCloud2,
-            str(self.get_parameter("particle_topic").value),
             10,
         )
         self.create_subscription(
@@ -242,12 +215,9 @@ class ObjectTargetFusion(Node):
         self._lidar_cache_key = None
         self._lidar_cache_points = None
         self._lidar_cache_world_points = None
-        self._latest_camera_origins.clear()
         self._latest_bearing_world = None
         self._last_logged_state = ""
         self._first_event_stamps.clear()
-        if self.marker_publisher.get_subscription_count() > 0:
-            self.marker_publisher.publish(Marker(action=Marker.DELETEALL))
         self.get_logger().info(f"目标融合状态已重置, target={target!r}")
 
     def _on_completed(self, msg: Bool) -> None:
@@ -263,7 +233,6 @@ class ObjectTargetFusion(Node):
         stamp = self.get_clock().now().to_msg()
         self._log_estimate_state(estimate)
         self._publish_estimate(estimate, stamp)
-        self._publish_markers(estimate, stamp)
         self.get_logger().info("目标融合收到 Mux 完成通知, 状态=任务完成(REACHED)")
 
     def _on_object_mask(self, msg: ObjectMaskWithTf) -> None:
@@ -313,10 +282,6 @@ class ObjectTargetFusion(Node):
         if not observations:
             self._mask_empty += 1
             return
-        self._latest_camera_origins = [
-            observation.translation_world_from_camera.copy()
-            for observation in observations
-        ]
         self._latest_bearing_world = _mean_observation_bearing(observations)
 
         self._set_mask_stage("update_vision", f"observations={len(observations)}")
@@ -364,8 +329,6 @@ class ObjectTargetFusion(Node):
         stage_started = time.perf_counter()
         self._log_estimate_state(estimate)
         self._publish_estimate(estimate, msg.header.stamp)
-        self._publish_markers(estimate, msg.header.stamp)
-        self._publish_particles(msg.header.stamp)
         self._timings["publish"].add_seconds(time.perf_counter() - stage_started)
         self._mask_processed += 1
 
@@ -706,45 +669,6 @@ class ObjectTargetFusion(Node):
             msg.bearing_valid = True
         self.estimate_publisher.publish(msg)
 
-    def _publish_markers(self, estimate: CoreTargetEstimate, stamp) -> None:
-        """在同一 Marker 话题发布目标球和观测射线, 避免增加重复可视化话题"""
-        if self.marker_publisher.get_subscription_count() == 0:
-            return
-        self.marker_publisher.publish(
-            _target_marker(
-                estimate,
-                self.global_frame,
-                stamp,
-                self.coarse_target_min_views,
-                self.coarse_target_min_confidence,
-            )
-        )
-        self.marker_publisher.publish(
-            _target_ray_marker(
-                estimate,
-                self.global_frame,
-                stamp,
-                self._latest_camera_origins,
-                self.coarse_target_min_views,
-                self.coarse_target_min_confidence,
-            )
-        )
-
-    def _publish_particles(self, stamp) -> None:
-        if self.particle_publisher.get_subscription_count() == 0:
-            return
-        particles = self.particle_filter.particles
-        if particles is None:
-            return
-        header = Header(frame_id=self.global_frame, stamp=stamp)
-        fields = [
-            PointField(name="x", offset=0, datatype=PointField.FLOAT32, count=1),
-            PointField(name="y", offset=4, datatype=PointField.FLOAT32, count=1),
-            PointField(name="z", offset=8, datatype=PointField.FLOAT32, count=1),
-        ]
-        self.particle_publisher.publish(point_cloud2.create_cloud(header, fields, particles))
-
-
 def _estimate_state_name(state: str) -> str:
     """保留协议状态码, 同时给运行日志提供中文含义"""
     return {
@@ -947,115 +871,6 @@ def _counter_summary(counter: Counter[str]) -> str:
         f"{names.get(reason, reason)}{count}"
         for reason, count in sorted(counter.items())
     )
-
-
-def _target_marker(
-    estimate: CoreTargetEstimate,
-    frame_id: str,
-    stamp,
-    coarse_min_views: int = 2,
-    coarse_min_confidence: float = 0.45,
-) -> Marker:
-    """显示两视角粗目标和稳定目标, 单视角深度不确定时删除标记"""
-    marker = Marker()
-    marker.header.frame_id = frame_id
-    marker.header.stamp = stamp
-    marker.ns = "object_target_estimate"
-    marker.id = 0
-    marker.type = Marker.SPHERE
-    if not _target_marker_visible(
-        estimate,
-        coarse_min_views,
-        coarse_min_confidence,
-    ):
-        marker.action = Marker.DELETE
-        return marker
-
-    marker.action = Marker.ADD
-    marker.pose.position.x = float(estimate.position[0])
-    marker.pose.position.y = float(estimate.position[1])
-    marker.pose.position.z = float(estimate.position[2])
-    marker.pose.orientation.w = 1.0
-    std = np.sqrt(np.maximum(np.diag(estimate.covariance), 0.0))
-    marker.scale.x = min(max(float(2.0 * std[0]), 0.3), _MAX_TARGET_MARKER_SCALE)
-    marker.scale.y = min(max(float(2.0 * std[1]), 0.3), _MAX_TARGET_MARKER_SCALE)
-    marker.scale.z = min(max(float(2.0 * std[2]), 0.3), _MAX_TARGET_MARKER_SCALE)
-    marker.color.a = 0.85
-    if estimate.stable:
-        marker.color.r = 0.0
-        marker.color.g = 1.0
-        marker.color.b = 1.0
-    else:
-        marker.color.r = 1.0
-        marker.color.g = 0.75
-        marker.color.b = 0.0
-    return marker
-
-
-def _target_ray_marker(
-    estimate: CoreTargetEstimate,
-    frame_id: str,
-    stamp,
-    camera_origins: list[np.ndarray],
-    coarse_min_views: int = 2,
-    coarse_min_confidence: float = 0.45,
-) -> Marker:
-    """用论文风格绿色射线连接有效相机和当前目标估计"""
-    marker = Marker()
-    marker.header.frame_id = frame_id
-    marker.header.stamp = stamp
-    marker.ns = "object_target_rays"
-    marker.id = 1
-    marker.type = Marker.LINE_LIST
-    marker.pose.orientation.w = 1.0
-    marker.scale.x = 0.06
-    marker.color.r = 0.0
-    marker.color.g = 1.0
-    marker.color.b = 0.0
-    marker.color.a = 0.9
-    if (
-        not _target_marker_visible(
-            estimate,
-            coarse_min_views,
-            coarse_min_confidence,
-        )
-        or not camera_origins
-    ):
-        marker.action = Marker.DELETE
-        return marker
-
-    marker.action = Marker.ADD
-    target = Point(
-        x=float(estimate.position[0]),
-        y=float(estimate.position[1]),
-        z=float(estimate.position[2]),
-    )
-    for origin in camera_origins:
-        marker.points.append(
-            Point(
-                x=float(origin[0]),
-                y=float(origin[1]),
-                z=float(origin[2]),
-            )
-        )
-        marker.points.append(target)
-    return marker
-
-
-def _target_marker_visible(
-    estimate: CoreTargetEstimate,
-    coarse_min_views: int = 2,
-    coarse_min_confidence: float = 0.45,
-) -> bool:
-    """黄色标记和导航接管使用相同的粗目标证据规则"""
-    coarse_ready = coarse_target_evidence_ready(
-        estimate.state,
-        estimate.accepted_views,
-        estimate.confidence,
-        coarse_min_views,
-        coarse_min_confidence,
-    )
-    return bool(estimate.stable or coarse_ready)
 
 
 def main(args=None):

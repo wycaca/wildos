@@ -43,7 +43,6 @@ profiles:
     object_search_target_topic: /spot1/object_search_target
     object_target_estimate_topic: /spot1/object_target_estimate
     object_target_estimate_viz_topic: /spot1/object_target_estimate_viz
-    object_target_particles_topic: /spot1/object_target_particles
     object_reached_topic: /spot1/object_search_reached
     object_search_completed_topic: /spot1/object_search_completed
     object_search_status_topic: /spot1/object_search_status

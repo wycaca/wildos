@@ -62,16 +62,13 @@
 
 ### 2.3 把可视化迁出核心回调
 
-- 目标球、观测射线和协方差从 `TargetEstimate` 等公开结果生成, 不再从融合核心同步构造 marker
 - 模型可视化优先使用图像、Mask、scored graph 等现有输出重建, 精确热图确有调试需求时才发布低频、best effort、depth 1 的调试数据
-- 粒子可视化改为估计值和协方差表达, 不为 RViz 复制完整粒子集合
 - RViz 和 visualization package 默认不在生产模式启动, 可在诊断主机或开发机独立启动
 - visualization 进程退出、阻塞或无订阅者时, 核心 Topic 的频率和输出内容保持不变
 
 预计清理范围:
 
 - 从 WildOS 核心回调移除 `visual_navigation/visual_navigation/wildos/viz.py` 和 `geofrontier_nav/viz.py` 的同步调用
-- 从目标融合移除 marker 和粒子点云发布职责
 - 复用现有 launch 增加显式 visualization 开关, 不保留新旧可视化双路径
 
 ### 2.4 先优化 Python 数据路径
@@ -132,7 +129,6 @@ C++ 迁移门槛:
 - 埋点关闭、开启和降采样时不改变核心返回值, 固定容量窗口不会无界增长
 - diagnostics 的指标名称、单位、时间窗口和 reset 行为一致, 非有限时间和时间倒退不会污染统计
 - 外部 graph visualizer 对节点、边、Frontier、current node 和删除事件生成正确 Marker
-- 外部目标 visualizer 对有效、无效和删除状态生成正确 Marker, 不依赖粒子滤波内部对象
 - 点云到栅格测试精确比较 origin、resolution、尺寸、frame、stamp 和每个 cell
 - 点云过滤测试覆盖 NaN、高度、距离、边界和最大样本数
 - Controller 测试精确检查停车条件和状态切换, 浮点速度使用配置定义的容差
@@ -167,7 +163,6 @@ C++ 迁移门槛:
 测试清理:
 
 - WildOS 可视化迁出后, 删除无调用方的 `test_publish_gate.py` 和对应 helper, Marker 行为移入 visualization package
-- 目标融合测试保留融合、时间、TF 和安全门控, 删除或迁移只验证旧 marker 和粒子发布器的部分
 - hardware launch 测试删除“生产 launch 必须包含旧性能监控节点”的断言, 改为验证生产、诊断和可视化模式边界
 - C++ 节点通过等价验收后, 将仍表达公共契约的 Python 测试迁为 gtest 或 launch test, 删除只覆盖已删除私有实现的重复测试
 - 每次删除实现时使用仓库搜索确认 helper、依赖、entry point、配置键和测试无调用方, 不保留 skipped 或永久兼容测试
