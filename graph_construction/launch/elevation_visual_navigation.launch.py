@@ -50,7 +50,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "launch_performance_monitor",
-                default_value="true",
+                default_value="false",
                 description="Launch the pipeline performance monitor",
             ),
             DeclareLaunchArgument(
@@ -433,38 +433,7 @@ def _launch_setup(context):
         condition=IfCondition(LaunchConfiguration("launch_performance_monitor")),
         parameters=[
             {"use_sim_time": use_sim_time},
-            {"raw_lidar_topic": ""},
-            {"raw_imu_topic": ""},
-            {"aligned_pointcloud_topic": aligned_lidar_topic},
-            {"odom_topic": odom_output_topic},
-            {
-                "grid_map_topic": _value(
-                    context,
-                    profile,
-                    "elevation_grid_map_topic",
-                    "elevation_grid_map_topic",
-                )
-            },
-            {"nav_graph_topic": nav_graph_topic},
-            {"scored_nav_graph_topic": scored_nav_graph_topic},
-            {
-                "object_mask_topic": _value(
-                    context,
-                    profile,
-                    "object_mask_topic",
-                    "object_mask_topic",
-                )
-            },
-            {
-                "target_estimate_topic": _value(
-                    context,
-                    profile,
-                    "object_target_estimate_topic",
-                    "object_target_estimate_topic",
-                )
-            },
-            {"goal_topic": goal_pose_topic},
-            {"path_topic": planner_path_topic},
+            {"diagnostics_topic": "/diagnostics"},
         ],
     )
 

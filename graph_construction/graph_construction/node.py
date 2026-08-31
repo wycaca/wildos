@@ -9,19 +9,26 @@ import time
 from typing import Any, Dict, Mapping
 
 from ament_index_python.packages import get_package_share_directory
+from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus
 from grid_map_msgs.msg import GridMap
 from graphnav_msgs.msg import NavigationGraph
 from nav_msgs.msg import Odometry
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Header
 from visualization_msgs.msg import MarkerArray
 
 from graph_construction.graph_builder import GraphBuilderConfig, SparseGraphBuilder
 from graph_construction.grid_adapter import build_repaired_grid_map, classify_grid_map
 from graph_construction.msg_utils import GraphMessageCache, graph_to_msg
-from graph_construction.performance_stats import EventRate, TimingWindow
+from graph_construction.performance_stats import (
+    EventRate,
+    TimingWindow,
+    diagnostic_status,
+    timing_metrics,
+)
 from graph_construction.viz import GraphVisualizer
 
 
@@ -36,6 +43,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "viz_show_full_edges": False,
     "viz_publish_rate_hz": 1.0,
     "publish_rate_hz": 2.0,
+    "diagnostics_enabled": True,
+    "diagnostics_period_sec": 30.0,
     "max_grid_odom_time_delta_sec": 0.5,
     "grid_map_free_threshold": 0.2,
     "grid_map_obstacle_threshold": 0.05,
@@ -46,7 +55,6 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 }
 
 TRAVERSABILITY_CLASS = "default"
-_DIAGNOSTICS_LOG_PERIOD_SEC = 30.0
 _SLOW_CYCLE_WARNING_MS = 250.0
 _GRID_MAP_TRAVERSABILITY_LAYER = "traversability"
 _GRID_MAP_ELEVATION_LAYER = "elevation"
@@ -158,6 +166,17 @@ class GraphConstructionNode(Node):
             1,
         )
         self.viz_pub = self.create_publisher(MarkerArray, self.config["viz_topic"], 10)
+        self.diagnostics_pub = None
+        if self.config["diagnostics_enabled"]:
+            self.diagnostics_pub = self.create_publisher(
+                DiagnosticArray,
+                "/diagnostics",
+                QoSProfile(
+                    depth=1,
+                    reliability=ReliabilityPolicy.BEST_EFFORT,
+                    durability=DurabilityPolicy.VOLATILE,
+                ),
+            )
 
         self.create_subscription(
             GridMap,
@@ -175,7 +194,11 @@ class GraphConstructionNode(Node):
 
         publish_rate = float(self.config["publish_rate_hz"])
         self.create_timer(1.0 / publish_rate, self._on_timer)
-        self.create_timer(_DIAGNOSTICS_LOG_PERIOD_SEC, self._report_diagnostics)
+        if self.diagnostics_pub is not None:
+            self.create_timer(
+                float(self.config["diagnostics_period_sec"]),
+                self._report_diagnostics,
+            )
 
         self.get_logger().info(
             f"Graph construction 已启动, grid_map={self.config['grid_map_topic']}, "
@@ -328,7 +351,9 @@ class GraphConstructionNode(Node):
         )
 
     def _report_diagnostics(self) -> None:
-        """Report per-stage timing without per-cycle log traffic"""
+        """低频发布轻量标量指标, 不在核心进程汇总日志"""
+        if self.diagnostics_pub is None:
+            return
         summaries = {
             name: timing.summary(reset=True)
             for name, timing in self._timings.items()
@@ -340,60 +365,26 @@ class GraphConstructionNode(Node):
             name: timing.summary(reset=True)
             for name, timing in self._graph_update_timings.items()
         }
-        workload = self._format_graph_update_workload()
-        self.get_logger().info(
-            "导航图性能, "
-            f"频率={self._publish_rate.sample(reset=True):.2f}Hz, "
-            f"总耗时=平均{total.average_ms:.0f}/95%上限{total.p95_ms:.0f}/"
-            f"最大{total.maximum_ms:.0f}ms, "
-            "阶段平均耗时="
-            f"地图分类{summaries['classify'].average_ms:.0f}ms/"
-            f"图更新{summaries['update'].average_ms:.0f}ms/"
-            f"消息转换{summaries['message'].average_ms:.0f}ms/"
-            f"可视化{summaries['visualize'].average_ms:.0f}ms, "
-            "图内平均耗时="
-            f"预处理{update_summaries['preprocess'].average_ms:.0f}ms/"
-            f"变化检测{update_summaries['dirty'].average_ms:.0f}ms/"
-            f"距离场{update_summaries['distance'].average_ms:.0f}ms/"
-            f"节点{update_summaries['nodes'].average_ms:.0f}ms/"
-            f"采样{update_summaries['sampling'].average_ms:.0f}ms/"
-            f"压缩{update_summaries['compaction'].average_ms:.0f}ms/"
-            f"Frontier{update_summaries['frontier'].average_ms:.0f}ms/"
-            f"边{update_summaries['edges'].average_ms:.0f}ms"
-            f"(pair{update_summaries['edge_pairs'].average_ms:.0f}/"
-            f"检查{update_summaries['edge_validation'].average_ms:.0f}/"
-            f"delta{update_summaries['edge_delta'].average_ms:.0f}ms)"
-            f"{workload}"
+        metrics = _graph_diagnostic_metrics(
+            summaries,
+            update_summaries,
+            self._publish_rate.sample(reset=True),
+            self._latest_graph_update_stats,
         )
-
-    def _format_graph_update_workload(self) -> str:
-        """格式化最近一帧局部更新工作量"""
-        stats = self._latest_graph_update_stats
-        if stats is None:
-            return ""
-        return (
-            ", 最近工作量="
-            f"局部节点{stats.local_node_count}/{stats.total_node_count}, "
-            f"变化栅格{stats.dirty_cell_count}, "
-            f"新增free栅格{stats.newly_free_cell_count}, "
-            f"新增障碍栅格{stats.newly_obstacle_cell_count}, "
-            f"局部pair{stats.local_pair_count}, "
-            f"边碰撞检查{stats.edge_clearance_check_count}, "
-            f"边模式{stats.edge_update_mode}, "
-            f"边增删保留{stats.edge_add_count}/"
-            f"{stats.edge_remove_count}/{stats.edge_keep_count}, "
-            f"总边{stats.total_edge_count}, "
-            f"压缩节点{stats.compacted_node_count}, "
-            f"图分量{stats.graph_component_count}, "
-            f"current分量{stats.current_component_node_count}"
-            f"(局部{stats.current_component_local_node_count}), "
-            f"启动盲区{stats.blind_zone_status}/"
-            f"填充{stats.blind_zone_filled_count}/"
-            f"连通{stats.blind_zone_connected}/"
-            f"搜索{stats.blind_zone_search_radius:.1f}m, "
-            f"Frontier候选{stats.frontier_candidate_count}, "
-            f"活动Frontier owner{stats.active_frontier_owner_count}"
+        metrics["input.stale_grid_count"] = self._stale_grid_messages
+        metrics["input.stale_odom_count"] = self._stale_odom_messages
+        budget_ms = 1000.0 / float(self.config["publish_rate_hz"])
+        over_budget = total.p95_ms > budget_ms
+        status = diagnostic_status(
+            "wildos/graph_construction",
+            metrics,
+            level=(DiagnosticStatus.WARN if over_budget else DiagnosticStatus.OK),
+            message=("cycle budget exceeded" if over_budget else "OK"),
         )
+        message = DiagnosticArray()
+        message.header.stamp = self.get_clock().now().to_msg()
+        message.status = [status]
+        self.diagnostics_pub.publish(message)
 
     def _take_latest_inputs(self):
         """每个新 GridMap 只处理一次, 并等待时间匹配的 odom 快照"""
@@ -486,6 +477,42 @@ class GraphConstructionNode(Node):
         return header
 
 
+def _graph_diagnostic_metrics(
+    summaries: Mapping[str, Any],
+    update_summaries: Mapping[str, Any],
+    publish_rate_hz: float,
+    stats: Any,
+) -> Dict[str, object]:
+    """把图阶段耗时和工作量转换为机器可读标量"""
+    metrics: Dict[str, object] = {"publish.rate_hz": publish_rate_hz}
+    for name, summary in summaries.items():
+        metrics.update(timing_metrics(f"cycle.{name}", summary))
+    for name, summary in update_summaries.items():
+        metrics.update(timing_metrics(f"graph.{name}", summary))
+    if stats is None:
+        return metrics
+
+    workload_fields = {
+        "workload.local_node_count": "local_node_count",
+        "workload.total_node_count": "total_node_count",
+        "workload.dirty_cell_count": "dirty_cell_count",
+        "workload.local_pair_count": "local_pair_count",
+        "workload.edge_check_count": "edge_clearance_check_count",
+        "workload.edge_add_count": "edge_add_count",
+        "workload.edge_remove_count": "edge_remove_count",
+        "workload.total_edge_count": "total_edge_count",
+        "workload.frontier_candidate_count": "frontier_candidate_count",
+        "workload.active_frontier_owner_count": "active_frontier_owner_count",
+    }
+    metrics.update(
+        {
+            key: getattr(stats, attribute)
+            for key, attribute in workload_fields.items()
+        }
+    )
+    return metrics
+
+
 def _resolve_config(config: Mapping[str, Any]) -> Dict[str, Any]:
     """合并稳定默认值并验证 Graph Construction 配置契约
 
@@ -501,6 +528,8 @@ def _resolve_config(config: Mapping[str, Any]) -> Dict[str, Any]:
     resolved = {**DEFAULT_CONFIG, **config}
     if float(resolved["publish_rate_hz"]) <= 0.0:
         raise ValueError("publish_rate_hz must be greater than 0")
+    if float(resolved["diagnostics_period_sec"]) <= 0.0:
+        raise ValueError("diagnostics_period_sec must be greater than 0")
     if float(resolved["viz_publish_rate_hz"]) <= 0.0:
         raise ValueError("viz_publish_rate_hz must be greater than 0")
     if float(resolved["max_grid_odom_time_delta_sec"]) <= 0.0:

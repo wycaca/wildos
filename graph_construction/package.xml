@@ -8,6 +8,7 @@
   <license>Apache-2.0</license>
 
   <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>diagnostic_msgs</exec_depend>
   <exec_depend>graphnav_msgs</exec_depend>
   <exec_depend>grid_map_msgs</exec_depend>
   <exec_depend>nav_msgs</exec_depend>

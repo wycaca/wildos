@@ -56,8 +56,6 @@
 
 预计修改范围:
 
-- `graph_construction/graph_construction/performance_stats.py` 保留固定容量统计并补充统一 diagnostics 输出
-- `graph_construction/graph_construction/pipeline_performance_monitor.py` 移除高带宽 Topic 订阅, 或迁入独立 observability package 后删除旧入口
 - `graph_construction/graph_construction/node.py`、`visual_navigation/visual_navigation/wildos/nav.py`、`visual_navigation/visual_navigation/object_target_fusion.py` 和 `graphnav_planner/src/planner_node.cpp` 只保留固定开销埋点
 - `wildos_navigation/wildos_navigation/map_pub.py` 和 `wildos_navigation/wildos_navigation/controller_node.py` 增加点云阶段埋点
 - 更新相关 `package.xml`、配置、launch、Docker 启动参数和部署文档, 不新增职责重复的 launch 或 Compose

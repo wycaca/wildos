@@ -4,6 +4,9 @@ from collections import deque
 from dataclasses import dataclass
 import math
 import time
+from typing import Mapping
+
+from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
 
 
 @dataclass(frozen=True)
@@ -65,3 +68,32 @@ def publish_due(now_ns: int, last_ns: int | None, max_rate_hz: float) -> bool:
     if max_rate_hz <= 0.0 or last_ns is None:
         return True
     return now_ns - last_ns >= 1.0e9 / max_rate_hz
+
+
+def timing_metrics(prefix: str, summary: TimingSummary) -> dict[str, float | int]:
+    """把固定窗口统计转换为稳定指标名称"""
+    return {
+        f"{prefix}.count": summary.count,
+        f"{prefix}.average_ms": summary.average_ms,
+        f"{prefix}.p95_ms": summary.p95_ms,
+        f"{prefix}.maximum_ms": summary.maximum_ms,
+    }
+
+
+def diagnostic_status(
+    name: str,
+    metrics: Mapping[str, object],
+    level: int = DiagnosticStatus.OK,
+    message: str = "OK",
+) -> DiagnosticStatus:
+    """使用标准 diagnostics 消息承载轻量标量指标"""
+    return DiagnosticStatus(
+        level=level,
+        name=name,
+        message=message,
+        hardware_id="wildos",
+        values=[
+            KeyValue(key=key, value=str(value))
+            for key, value in metrics.items()
+        ],
+    )

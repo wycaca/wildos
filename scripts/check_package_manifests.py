@@ -6,6 +6,25 @@ import xml.etree.ElementTree as ET
 
 
 REQUIRED_DEPENDENCIES = {
+    "graph_construction": {
+        "ament_index_python",
+        "diagnostic_msgs",
+        "geometry_msgs",
+        "graphnav_msgs",
+        "grid_map_msgs",
+        "nav_msgs",
+        "object_search_msgs",
+        "python3-numpy",
+        "python3-scipy",
+        "python3-skimage",
+        "python3-yaml",
+        "rclpy",
+        "sensor_msgs",
+        "std_msgs",
+        "tf2_msgs",
+        "tf2_ros",
+        "visualization_msgs",
+    },
     "visual_navigation": {
         "ament_index_python",
         "builtin_interfaces",

@@ -77,6 +77,7 @@ odom -> dlio_odom -> base_link -> lidar_link
 - 只有 x86 导航算法可以发布 Domain 2 `/cmd_vel`, 只有 AGX motion gateway 可以发布 Domain 0 `/cmd_vel` 和 Unitree Sport API 请求
 - 速度链路或网关断流时必须发布零速度
 - debug topic 无订阅者时不构造高成本消息
+- 性能监控只消费轻量 diagnostics, 不新增跨机点云、图像、GridMap 或 NavigationGraph 订阅
 - 不新增职责重复的 launch、Compose 或 adapter
 
 ## 配置入口

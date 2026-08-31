@@ -51,6 +51,12 @@ Frontier 是 free 与 unknown 的边界, 挂在附近安全节点上. rolling ma
 
 `current_node` 优先选择机器人附近可安全直达的普通节点. 图发布前必须确认它属于当前可达分量
 
+## 性能指标
+
+图构建使用固定容量窗口记录分类、更新、消息转换和图内各阶段耗时, 每 30 秒向 `/diagnostics` 发布一次 `diagnostic_msgs/msg/DiagnosticArray`. diagnostics 只包含频率、平均/P95/最大耗时、节点、边和局部工作量等标量, 使用 best effort、depth 1, 不在核心回调中生成性能汇总日志
+
+`pipeline_performance_monitor` 是默认关闭的独立进程, 只订阅 `/diagnostics`. 它不订阅 PointCloud2、GridMap、NavigationGraph 或图像, 停止监控不会改变图构建输入、输出和调度
+
 ## 入口和验证
 
 - 实现: `graph_construction/graph_construction/graph_builder.py`
@@ -61,6 +67,7 @@ Frontier 是 free 与 unknown 的边界, 挂在附近安全节点上. rolling ma
 实机检查:
 
 - `ros2 topic hz /elevation_mapping_node/elevation_map_raw`
+- `ros2 topic echo /diagnostics --once`
 - 脚下修补不穿墙、不覆盖机身和近场障碍
 - 运动后历史节点和边保持稳定
 - 新障碍删除危险拓扑

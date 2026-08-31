@@ -108,6 +108,7 @@ def test_launch_defaults_are_hardware_only():
     assert context.launch_configurations["topic_profile"] == "robot"
     assert context.launch_configurations["elevation_config"] == "elevation_mapping.yaml"
     assert context.launch_configurations["visual_config"] == "wildos_nav_conf.yaml"
+    assert context.launch_configurations["launch_performance_monitor"] == "false"
     assert "use_sim_time" not in argument_names
     assert "localization_backend" not in argument_names
     assert "launch_dlio" not in argument_names
@@ -154,10 +155,11 @@ def test_hardware_launch_relays_registered_cloud_locally():
     assert "elevation_mapping_node.py" in executables
     assert "dlio_odom_node" not in executables
     assert "static_transform_publisher" not in executables
-    assert monitor_parameters["raw_lidar_topic"] == ""
-    assert monitor_parameters["aligned_pointcloud_topic"] == (
-        "/spot1/cloud_registered_local"
-    )
+    assert monitor_parameters["diagnostics_topic"] == "/diagnostics"
+    assert "raw_lidar_topic" not in monitor_parameters
+    assert "aligned_pointcloud_topic" not in monitor_parameters
+    assert "grid_map_topic" not in monitor_parameters
+    assert "nav_graph_topic" not in monitor_parameters
     assert relay_parameters["expected_frame"] == "dlio_odom"
     assert relay_parameters["max_output_rate_hz"] == 0.0
     assert "output_frame" not in relay_parameters

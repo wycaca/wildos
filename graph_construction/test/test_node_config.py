@@ -8,9 +8,11 @@ from graph_construction.node import (
     GraphConstructionNode,
     InputFreshnessGate,
     _builder_config,
+    _graph_diagnostic_metrics,
     _load_config,
     _resolve_config,
 )
+from graph_construction.performance_stats import TimingSummary
 
 
 def test_resolve_config_uses_graph_builder_defaults_once():
@@ -44,6 +46,7 @@ def test_resolve_config_rejects_removed_or_misspelled_keys(name):
     [
         {"grid_input_type": "image"},
         {"publish_rate_hz": 0.0},
+        {"diagnostics_period_sec": 0.0},
         {"viz_publish_rate_hz": 0.0},
         {"max_grid_odom_time_delta_sec": 0.0},
         {"grid_map_free_threshold": 0.1, "grid_map_obstacle_threshold": 0.2},
@@ -99,6 +102,52 @@ def test_deployment_config_limits_go2_blind_zone():
     assert builder_config.robot_blind_zone_radius == 0.4
     assert builder_config.robot_blind_zone_elevation_search_radius == 4.0
     assert builder_config.robot_ground_height_offset == 0.70
+
+
+def test_deployment_config_enables_low_rate_diagnostics():
+    config_path = (
+        Path(__file__).parents[1]
+        / "configs"
+        / "graph_construction_elevation.yaml"
+    )
+
+    config = _load_config(str(config_path))
+
+    assert config["diagnostics_enabled"] is True
+    assert config["diagnostics_period_sec"] == 30.0
+
+
+def test_graph_diagnostics_keep_stage_timing_machine_readable():
+    total = TimingSummary(4, 20.0, 25.0, 30.0)
+    stats = type(
+        "Stats",
+        (),
+        {
+            "local_node_count": 10,
+            "total_node_count": 20,
+            "dirty_cell_count": 30,
+            "local_pair_count": 40,
+            "edge_clearance_check_count": 50,
+            "edge_add_count": 2,
+            "edge_remove_count": 1,
+            "total_edge_count": 60,
+            "frontier_candidate_count": 7,
+            "active_frontier_owner_count": 3,
+        },
+    )()
+
+    metrics = _graph_diagnostic_metrics(
+        {"total": total},
+        {"frontier": total},
+        2.0,
+        stats,
+    )
+
+    assert metrics["publish.rate_hz"] == 2.0
+    assert metrics["cycle.total.p95_ms"] == 25.0
+    assert metrics["graph.frontier.maximum_ms"] == 30.0
+    assert metrics["workload.total_node_count"] == 20
+    assert metrics["workload.total_edge_count"] == 60
 
 
 def test_take_latest_inputs_processes_each_grid_once():
