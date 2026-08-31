@@ -16,6 +16,8 @@ def format_status(status: DiagnosticStatus) -> str:
         "cycle.total.average_ms",
         "cycle.total.p95_ms",
         "cycle.total.maximum_ms",
+        "control.total.p95_ms",
+        "graph_update.p95_ms",
         "workload.total_node_count",
         "workload.total_edge_count",
     ):

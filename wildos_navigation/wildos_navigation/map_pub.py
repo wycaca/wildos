@@ -1,3 +1,8 @@
+from collections import Counter
+import math
+import time
+
+from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import PointCloud2
@@ -6,8 +11,33 @@ from nav_msgs.msg import OccupancyGrid
 import numpy as np
 import sensor_msgs_py.point_cloud2 as pc2
 import cv2
-import math
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
+
+from wildos_navigation.performance_stats import (
+    EventRate,
+    TimingWindow,
+    diagnostic_status,
+    message_age_ms,
+    timing_metrics,
+)
+
+
+_TIMING_STAGES = ("total", "decode", "filter", "project", "grid", "publish")
+
+
+def _map_diagnostic_metrics(summaries, cloud_rate, counters, cloud_age_ms):
+    """构造代价地图稳定指标名称"""
+    metrics = {"input.cloud.rate_hz": cloud_rate}
+    if cloud_age_ms is not None:
+        metrics["input.cloud.age_ms"] = cloud_age_ms
+    for stage, summary in summaries.items():
+        metrics.update(timing_metrics(f"stage.{stage}", summary))
+    metrics["cycle.total.average_ms"] = summaries["total"].average_ms
+    metrics["cycle.total.p95_ms"] = summaries["total"].p95_ms
+    metrics["cycle.total.maximum_ms"] = summaries["total"].maximum_ms
+    metrics.update({f"workload.{key}": value for key, value in counters.items()})
+    return metrics
+
 
 class LocalObstacleGridNode(Node):
     def __init__(self):
@@ -23,6 +53,9 @@ class LocalObstacleGridNode(Node):
         self.declare_parameter('odom_topic', '/Odometry')  
         self.declare_parameter('lidar_topic', '/cloud_registered')
         self.declare_parameter('odom_frame', 'odom_3D')
+        self.declare_parameter('diagnostics_enabled', True)
+        self.declare_parameter('diagnostics_period_sec', 30.0)
+        self.declare_parameter('diagnostics_budget_ms', 100.0)
 
         self.grid_width = self.get_parameter('grid_width').value
         self.grid_height = self.get_parameter('grid_height').value
@@ -33,22 +66,35 @@ class LocalObstacleGridNode(Node):
         self.obstacle_height_threshold = self.get_parameter('obstacle_height_threshold').value
         self.lidar_topic = self.get_parameter('lidar_topic').value
         self.odom_frame_id = self.get_parameter('odom_frame').value
+        self.diagnostics_enabled = bool(
+            self.get_parameter('diagnostics_enabled').value
+        )
+        self.diagnostics_period_sec = float(
+            self.get_parameter('diagnostics_period_sec').value
+        )
+        self.diagnostics_budget_ms = float(
+            self.get_parameter('diagnostics_budget_ms').value
+        )
+        if self.diagnostics_period_sec <= 0.0:
+            raise ValueError('diagnostics_period_sec must be positive')
         self.get_logger().info(
             f'Initializing Perfect Pixel-Aligned Rolling Local Costmap ({self.odom_frame_id})'
         )
 
-        # 精确计算网格的行列数，并强制让它们保持为“奇数”
+        # 使用奇数尺寸保证唯一中心栅格
         self.width_cells = int(self.grid_width / self.resolution)
-        if self.width_cells % 2 == 0: self.width_cells += 1
+        if self.width_cells % 2 == 0:
+            self.width_cells += 1
             
         self.height_cells = int(self.grid_height / self.resolution)
-        if self.height_cells % 2 == 0: self.height_cells += 1
+        if self.height_cells % 2 == 0:
+            self.height_cells += 1
         
-        # 重新微调实际网格物理尺寸
+        # 物理尺寸与整数栅格严格一致
         self.grid_width = self.width_cells * self.resolution
         self.grid_height = self.height_cells * self.resolution
 
-        # 锁定中心像素点索引（奇数保证了有唯一确定的中心像素）
+        # 固定中心栅格索引
         self.center_u = self.width_cells // 2
         self.center_v = self.height_cells // 2
 
@@ -70,6 +116,26 @@ class LocalObstacleGridNode(Node):
         )
         self.odom_sub = self.create_subscription(Odometry, self.odom_topic, self.odom_callback, 10)
         self.grid_combined_pub = self.create_publisher(OccupancyGrid, 'combined_grid', 10)
+
+        self._timings = {
+            stage: TimingWindow(max_samples=512)
+            for stage in _TIMING_STAGES
+        }
+        self._cloud_rate = EventRate()
+        self._diagnostic_counters = Counter()
+        self._last_cloud_stamp_ns = None
+        if self.diagnostics_enabled:
+            diagnostic_qos = QoSProfile(depth=1)
+            diagnostic_qos.reliability = ReliabilityPolicy.BEST_EFFORT
+            self.diagnostics_pub = self.create_publisher(
+                DiagnosticArray,
+                '/diagnostics',
+                diagnostic_qos,
+            )
+            self.diagnostics_timer = self.create_timer(
+                self.diagnostics_period_sec,
+                self._publish_diagnostics,
+            )
         
         self.odom_data = None
 
@@ -77,7 +143,17 @@ class LocalObstacleGridNode(Node):
         self.odom_data = msg
 
     def pointcloud_callback(self, msg):
+        total_started = time.perf_counter()
+        self._record_cloud_input(msg)
+        try:
+            self._process_pointcloud(msg)
+        finally:
+            self._record_timing("total", total_started)
+
+    def _process_pointcloud(self, msg):
+        """执行点云到局部代价地图的原始数据路径"""
         if self.odom_data is None:
+            self._count("dropped_no_odom")
             return
 
         # 1. 实时捕获机器狗当前在世界坐标系下的绝对 3D 物理坐标
@@ -85,23 +161,25 @@ class LocalObstacleGridNode(Node):
         robot_y = self.odom_data.pose.pose.position.y
         robot_z = self.odom_data.pose.pose.position.z
 
-        # ==================== 🛠️ 彻底更改完全 A：分辨率取整对齐原点 ====================
-        # 💡 这是消灭微观发抖、让狗百分之百居中死锁的最核心修改！
-        # 使用 math.floor(...) * resolution 迫使连续变动的位置只能以 0.1 米的整数倍跳动。
-        # 这样它的浮点数余数在任何时候都恒等于 0，完美消除了所有的离散截断视差！
+        # 原点按 resolution 离散, 避免滚动窗口产生亚栅格抖动
         origin_x = math.floor((robot_x - (self.center_u * self.resolution)) / self.resolution) * self.resolution
         origin_y = math.floor((robot_y - (self.center_v * self.resolution)) / self.resolution) * self.resolution
         origin_z = robot_z - 0.05  # 固定压低 5cm 贴紧地面
 
         # 2. 读取点云数据
+        stage_started = time.perf_counter()
         points_struct = pc2.read_points(
             msg,
             field_names=("x", "y", "z"),
             skip_nans=True,
         )
+        self._record_timing("decode", stage_started)
+        self._count("input_points", len(points_struct))
         if len(points_struct) == 0:
+            self._count("dropped_empty_cloud")
             return
 
+        stage_started = time.perf_counter()
         X = points_struct['x'].flatten()
         Y = points_struct['y'].flatten()
         Z = points_struct['z'].flatten()
@@ -112,24 +190,32 @@ class LocalObstacleGridNode(Node):
         
         height_mask = (Z >= min_z_dynamic) & (Z <= max_z_dynamic)
         X, Y, Z = X[height_mask], Y[height_mask], Z[height_mask]
+        self._record_timing("filter", stage_started)
+        self._count("height_filtered_points", len(X))
         if len(X) == 0:
+            self._count("dropped_height_filter")
             return
         
-        # ==================== 🛠️ 基于绝对对准原点的安全网格投影 ====================
+        # 使用对齐原点投影栅格坐标
+        stage_started = time.perf_counter()
         gu = ((X - origin_x) / self.resolution).astype(np.int32)
         gv = ((Y - origin_y) / self.resolution).astype(np.int32)
         
-        # 边界过滤，超出当前局域滚动窗口之内的点云直接剪裁掉
+        # 边界过滤, 直接丢弃局部窗口外点云
         valid_bounds_mask = (gu >= 0) & (gu < self.width_cells) & \
                             (gv >= 0) & (gv < self.height_cells)
         gu = gu[valid_bounds_mask]
         gv = gv[valid_bounds_mask]
         Z = Z[valid_bounds_mask]
+        self._record_timing("project", stage_started)
+        self._count("projected_points", len(gu))
         
         if len(gu) == 0:
+            self._count("dropped_outside_grid")
             return
         
         # 3. 网格统计与高度差双重滤波
+        stage_started = time.perf_counter()
         max_z_grid = np.full((self.height_cells, self.width_cells), -1000.0, dtype=np.float32)
         min_z_grid = np.full((self.height_cells, self.width_cells), 1000.0, dtype=np.float32)
         np.maximum.at(max_z_grid, (gv, gu), Z)
@@ -159,24 +245,80 @@ class LocalObstacleGridNode(Node):
         grid_array[mask_l1] = 5          
         grid_array[obstacle_mask] = 100  
 
-        # ==================== 🛠️ 彻底更改完全 B：强行刷白机器狗物理中心 ====================
-        # 💡 在最终发布的地图矩阵里，强制把机器狗正中央的 3x3 像素格刷成 0（安全通行）
-        # 配合上面的 floor 离散，在代数上直接彻底锁死：狗身体中心在任何时候都绝对在 center 格上。
+        # 中心 3x3 栅格保持可通行, 避免机器人自身点云触发障碍
         grid_array[self.center_v-1:self.center_v+2, self.center_u-1:self.center_u+2] = 0
+        self._record_timing("grid", stage_started)
+        self._count("obstacle_cells", int(np.count_nonzero(obstacle_mask)))
 
         # 5. 打包并即时发布
         self.grid_combined.header.stamp = msg.header.stamp
         self.grid_combined.header.frame_id = self.odom_frame_id
         
-        # 将对齐取整后的高精离散原点，丝毫不差地打包发给 Rviz 和 A* 节点
+        # 将对齐后的离散原点写入地图元数据
         self.grid_combined.info.origin.position.x = float(origin_x)
         self.grid_combined.info.origin.position.y = float(origin_y)
         self.grid_combined.info.origin.position.z = float(origin_z) 
         self.grid_combined.info.origin.orientation.w = 1.0
         
+        stage_started = time.perf_counter()
         self.grid_combined.data = grid_array.flatten().tolist()
         self.grid_combined_pub.publish(self.grid_combined)
-    
+        self._record_timing("publish", stage_started)
+        self._count("published_grids")
+
+    def _record_timing(self, stage, started):
+        timings = getattr(self, "_timings", None)
+        if timings is not None:
+            timings[stage].add_seconds(time.perf_counter() - started)
+
+    def _count(self, name, value=1):
+        counters = getattr(self, "_diagnostic_counters", None)
+        if counters is not None:
+            counters[name] += value
+
+    def _record_cloud_input(self, msg):
+        rate = getattr(self, "_cloud_rate", None)
+        if rate is None:
+            return
+        rate.tick()
+        self._diagnostic_counters["received_clouds"] += 1
+        stamp_ns = (
+            msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
+        )
+        self._last_cloud_stamp_ns = stamp_ns if stamp_ns > 0 else None
+
+    def _cloud_age_ms(self):
+        return message_age_ms(
+            self.get_clock().now().nanoseconds,
+            self._last_cloud_stamp_ns,
+        )
+
+    def _publish_diagnostics(self):
+        """低频发布点云代价地图阶段与工作量标量"""
+        summaries = {
+            name: timing.summary(reset=True)
+            for name, timing in self._timings.items()
+        }
+        metrics = _map_diagnostic_metrics(
+            summaries,
+            self._cloud_rate.sample(reset=True),
+            dict(self._diagnostic_counters),
+            self._cloud_age_ms(),
+        )
+        slow = summaries["total"].p95_ms >= self.diagnostics_budget_ms
+        status = diagnostic_status(
+            "wildos/map_pub",
+            metrics,
+            level=DiagnosticStatus.WARN if slow else DiagnosticStatus.OK,
+            message="processing budget exceeded" if slow else "OK",
+        )
+        message = DiagnosticArray()
+        message.header.stamp = self.get_clock().now().to_msg()
+        message.status = [status]
+        self.diagnostics_pub.publish(message)
+        self._diagnostic_counters.clear()
+
+
 def main(args=None):
     rclpy.init(args=args)
     node = LocalObstacleGridNode() 
@@ -188,6 +330,7 @@ def main(args=None):
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()

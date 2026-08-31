@@ -4,7 +4,11 @@ import numpy as np
 from sensor_msgs_py import point_cloud2
 from std_msgs.msg import Header
 
-from wildos_navigation.controller_node import AdvancedGeometricFollower
+from wildos_navigation.controller_node import (
+    AdvancedGeometricFollower,
+    _controller_diagnostic_metrics,
+)
+from wildos_navigation.performance_stats import TimingSummary
 
 
 class _NonIterablePoints(np.ndarray):
@@ -102,3 +106,31 @@ def test_controller_resets_tracker_when_cloud_has_no_obstacles():
     assert node.real_obstacles == []
     assert node.predicted_dynamic_obs == []
     assert not tracker.is_initialized
+
+
+def test_controller_diagnostics_report_scan_control_and_workload():
+    summaries = {
+        stage: TimingSummary(4, 2.0, 3.0, 4.0)
+        for stage in (
+            "scan_total",
+            "scan_decode",
+            "scan_filter",
+            "scan_limit",
+            "scan_cluster",
+            "control_total",
+            "control_publish",
+        )
+    }
+
+    metrics = _controller_diagnostic_metrics(
+        summaries,
+        cloud_rate=10.0,
+        counters={"filtered_points": 140, "published_commands": 4},
+        cloud_age_ms=12.0,
+    )
+
+    assert metrics["scan.cluster.p95_ms"] == 3.0
+    assert metrics["cycle.total.p95_ms"] == 3.0
+    assert metrics["control.publish.maximum_ms"] == 4.0
+    assert metrics["workload.filtered_points"] == 140
+    assert metrics["input.cloud.age_ms"] == 12.0

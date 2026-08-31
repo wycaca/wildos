@@ -19,6 +19,9 @@ map_pub:
     odom_topic: /odom
     lidar_topic: /cloud_registered
     odom_frame: odom
+    diagnostics_enabled: true
+    diagnostics_period_sec: 30.0
+    diagnostics_budget_ms: 100.0
 
 start_nav:
   ros__parameters:
@@ -26,6 +29,10 @@ start_nav:
     odom_topic: /odom
     lidar_topic: /cloud_registered
     cmd_vel_topic: /cmd_vel
+    diagnostics_enabled: true
+    diagnostics_period_sec: 30.0
+    diagnostics_scan_budget_ms: 100.0
+    diagnostics_control_budget_ms: 20.0
 
 wildos_velocity_sender:
   ros__parameters:

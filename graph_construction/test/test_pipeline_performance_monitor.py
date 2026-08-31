@@ -13,6 +13,7 @@ def test_monitor_formats_compact_diagnostics_without_payload_topics():
         values=[
             KeyValue(key="publish.rate_hz", value="2.0"),
             KeyValue(key="cycle.total.p95_ms", value="25.0"),
+            KeyValue(key="control.total.p95_ms", value="4.0"),
             KeyValue(key="graph.frontier.p95_ms", value="5.0"),
             KeyValue(key="workload.total_node_count", value="100"),
         ],
@@ -22,6 +23,7 @@ def test_monitor_formats_compact_diagnostics_without_payload_topics():
 
     assert "publish.rate_hz=2.0" in output
     assert "cycle.total.p95_ms=25.0" in output
+    assert "control.total.p95_ms=4.0" in output
     assert "workload.total_node_count=100" in output
     assert "graph.frontier.p95_ms" not in output
     assert not hasattr(PipelinePerformanceMonitor, "TOPICS")

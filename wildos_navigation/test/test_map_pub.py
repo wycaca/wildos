@@ -5,7 +5,11 @@ from sensor_msgs.msg import PointCloud2
 from sensor_msgs_py import point_cloud2
 from std_msgs.msg import Header
 
-from wildos_navigation.map_pub import LocalObstacleGridNode
+from wildos_navigation.map_pub import (
+    LocalObstacleGridNode,
+    _map_diagnostic_metrics,
+)
+from wildos_navigation.performance_stats import TimingSummary
 
 
 class _Publisher:
@@ -91,3 +95,22 @@ def test_map_pub_reads_real_pointcloud2_message():
 
     assert len(node.grid_combined_pub.messages) == 1
     _assert_grid_contract(node.grid_combined_pub.messages[0])
+
+
+def test_map_diagnostics_report_stages_and_workload():
+    summaries = {
+        stage: TimingSummary(3, 5.0, 8.0, 9.0)
+        for stage in ("total", "decode", "filter", "project", "grid", "publish")
+    }
+
+    metrics = _map_diagnostic_metrics(
+        summaries,
+        cloud_rate=10.0,
+        counters={"input_points": 200_000, "published_grids": 3},
+        cloud_age_ms=12.0,
+    )
+
+    assert metrics["cycle.total.p95_ms"] == 8.0
+    assert metrics["stage.grid.average_ms"] == 5.0
+    assert metrics["workload.input_points"] == 200_000
+    assert metrics["input.cloud.age_ms"] == 12.0

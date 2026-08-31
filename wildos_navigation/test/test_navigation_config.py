@@ -21,9 +21,16 @@ def test_migrated_navigation_topic_contract():
     assert costmap["odom_frame"] == planner["odom_frame"]
     assert costmap["grid_width"] == costmap["grid_height"] == 10.0
     assert costmap["resolution"] == 0.1
+    assert costmap["diagnostics_enabled"] is True
+    assert costmap["diagnostics_period_sec"] == 30.0
+    assert costmap["diagnostics_budget_ms"] == 100.0
     assert controller["odom_topic"] == "/odom"
     assert controller["lidar_topic"] == "/cloud_registered"
     assert controller["cmd_vel_topic"] == "/cmd_vel"
+    assert controller["diagnostics_enabled"] is True
+    assert controller["diagnostics_period_sec"] == 30.0
+    assert controller["diagnostics_scan_budget_ms"] == 100.0
+    assert controller["diagnostics_control_budget_ms"] == 20.0
     assert sender["input_topic"] == controller["cmd_vel_topic"]
     assert sender["target_ip"] == receiver["bind_ip"] == "192.168.50.2"
     assert receiver["expected_source_ip"] == "192.168.50.1"

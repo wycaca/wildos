@@ -46,6 +46,7 @@ REQUIRED_DEPENDENCIES = {
         "triangulation3d",
     },
     "graphnav_planner": {
+        "diagnostic_msgs",
         "geometry_msgs",
         "graaf_vendor",
         "graphnav_msgs",
@@ -60,6 +61,7 @@ REQUIRED_DEPENDENCIES = {
     },
     "wildos_navigation": {
         "ament_index_python",
+        "diagnostic_msgs",
         "geometry_msgs",
         "launch",
         "launch_ros",

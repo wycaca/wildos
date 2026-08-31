@@ -54,10 +54,7 @@
 - `ros2_tracing` 只用于按需快照和专项诊断, 默认不持续写 trace
 - 生产模式只启动核心和轻量埋点, 诊断模式显式启动性能监控, 埋点关闭后核心行为必须保持一致
 
-预计修改范围:
-
-- `wildos_navigation/wildos_navigation/map_pub.py` 和 `wildos_navigation/wildos_navigation/controller_node.py` 增加点云阶段埋点
-- 更新相关 `package.xml`、配置、launch、Docker 启动参数和部署文档, 不新增职责重复的 launch 或 Compose
+- 更新 Docker 启动参数和部署文档, 不新增职责重复的 launch 或 Compose
 
 ### 2.3 把可视化迁出核心回调
 
