@@ -29,9 +29,8 @@
 ### 2.1 建立可重复性能基线
 
 - 录制并版本化固定 rosbag, 覆盖静止、连续行走、密集点云、滚动地图扩展、障碍更新、Frontier 更新和目标搜索
-- 分别记录核心独立运行、核心加轻量埋点、核心加性能监控、核心加可视化四种模式
-- 记录各节点输入频率、消息年龄、丢弃数、处理频率、阶段耗时 P50/P95/最大值、CPU、GPU、内存、显存、温度和跨机带宽
-- 使用统一基准报告格式保存四种实机模式, 禁止用临时日志作为验收依据
+- 使用同一 rosbag 补齐关闭埋点、开启埋点、monitor 和完整 RViz 四种模式的统一报告
+- 补齐 x86 导航节点阶段诊断和跨机带宽, 当前缺少机器狗 x86 SSH 凭据
 - 只有实机报告出现连续 P95 超预算且单一阶段占比达到 30% 时, 才重新打开 C++ 迁移
 
 验收条件:
@@ -42,19 +41,14 @@
 
 ### 2.2 进程和部署隔离
 
-- 核心、observability 和 visualization 使用独立进程, 诊断节点不加入核心 executor
 - 核心进程优先使用保留 CPU, observability 和 visualization 使用剩余 CPU 和较低调度权重
-- debug Topic 使用 best effort、depth 1, 禁止可靠队列阻塞核心 publisher
-- 生产、诊断和可视化模式复用现有 Compose 和 launch 参数组合, 不复制整套启动文件
-- 生产入口默认关闭性能监控、可视化和 trace, 诊断入口按需开启且可以单独停止
 - 可视化优先运行在开发机, AGX 只在现场无法使用外部主机时承担渲染
-- 更新 `compose.orin.wildos-cameras.yaml`、`compose.x86_64.lidar-dlio.yaml`、Docker entrypoint 和启动脚本的资源配置与模式检查
 
 ### 2.3 实机测试
 
 - 固定 rosbag 覆盖真实三相机、点云、odom、TF、GridMap 和目标搜索链路
-- 比较关闭埋点、开启埋点和启动 monitor 后的核心 P95, 观察开销不得超过性能预算
-- 启动 visualization 后单独记录其 CPU、内存和带宽, 核心不得出现持续周期超时
+- 比较关闭埋点和开启埋点后的核心 P95, 观察开销不得超过性能预算
+- 使用真实 RViz 订阅者记录 visualization 的 CPU、内存和带宽, 核心不得出现持续周期超时
 - 高密度点云测试验证无 Python 对象爆发、无队列堆积和无额外跨机订阅
-- 长时间运行检查 RSS、显存、图节点、图边、diagnostics 窗口和 DDS 队列是否有无界增长
-- monitor、visualizer、RViz 和 trace 分别进行退出、卡顿和重启测试, 核心继续运行
+- 长时间运行确认 `elevation_mapping_cupy` RSS 是否进入平台, 静止样本增长约 0.43 MiB/s
+- RViz 和 trace 分别进行退出、卡顿和重启测试, 核心继续运行
