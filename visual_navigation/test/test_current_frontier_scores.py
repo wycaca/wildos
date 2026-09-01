@@ -1,5 +1,7 @@
 import numpy as np
+import torch
 from types import SimpleNamespace
+from torchvision import transforms
 
 from graphnav_msgs.msg import NavigationGraph, Node, NodeTraversabilityProperties
 
@@ -11,7 +13,22 @@ from visual_navigation.wildos.current_frontier_scores import (
     navigation_graph_content_equal,
     scored_graph_publish_due,
 )
-from visual_navigation.wildos.nav import WildOS_Nav, _wildos_diagnostic_metrics
+from visual_navigation.wildos.nav import (
+    WildOS_Nav,
+    _rgb_images_to_tensor,
+    _wildos_diagnostic_metrics,
+)
+
+
+def test_rgb_batch_conversion_matches_previous_pipeline_exactly():
+    image = np.arange(4 * 5 * 3, dtype=np.uint8).reshape(4, 5, 3)
+    images = [image, np.flip(image, axis=0), np.flip(image, axis=1)]
+    convert = transforms.ToTensor()
+
+    previous = torch.stack([convert(item.copy()) for item in images])
+    optimized = _rgb_images_to_tensor(images)
+
+    assert torch.equal(optimized, previous)
 
 
 def test_drops_entries_not_observed_in_current_frame():

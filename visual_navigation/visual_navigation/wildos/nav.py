@@ -19,7 +19,6 @@ import torch
 import time
 from rclpy.serialization import serialize_message
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from torchvision import transforms
 
 from visual_navigation.utils.tf_lookup_sub import TFEdge, TFLookupSubscriber
 from visual_navigation.wildos.goalagnostic_scoring import GoalAgnosticScoring
@@ -62,6 +61,17 @@ CAMERA_LOG_NAMES = {
 }
 _CALLBACK_LOG_INTERVAL = 100
 _SLOW_PROCESSING_WARNING_MS = 1500.0
+
+
+def _rgb_images_to_tensor(rgb_images):
+    """批量转换同尺寸 RGB uint8 图像, 避免逐图复制"""
+    return (
+        torch.from_numpy(np.stack(rgb_images))
+        .permute(0, 3, 1, 2)
+        .contiguous()
+        .float()
+        .div_(255.0)
+    )
 
 
 class WildOS_Nav(TFLookupSubscriber):
@@ -457,9 +467,6 @@ class WildOS_Nav(TFLookupSubscriber):
             static_scale_factor=config.static_scale_factor,
             model_precision=config.model_precision,
         )
-        self.transforms = transforms.Compose([
-            transforms.ToTensor(),
-        ])
         self.object_search_mode = False
         print("WildOS 模型加载完成", flush=True)
         if do_object_search:
@@ -737,8 +744,7 @@ class WildOS_Nav(TFLookupSubscriber):
 
         # 模型前向推理
         stage_started = time.perf_counter()
-        rgb_tensors = [self.transforms(img.copy()) for img in rgb_imgs]
-        batch_tensor = torch.stack(rgb_tensors)
+        batch_tensor = _rgb_images_to_tensor(rgb_imgs)
         batch_img_traversability, batch_img_frontiers, spatial_feats = self.model.forward(batch_tensor)
 
         batch_img_frontiers = batch_img_frontiers.cpu().numpy().astype(np.float32)

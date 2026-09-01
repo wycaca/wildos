@@ -26,6 +26,27 @@ def test_image_forward_uses_inference_mode_without_changing_output():
     assert all(not output.requires_grad for output in outputs)
 
 
+def test_fp16_forward_preserves_previous_input_conversion():
+    received = []
+
+    class Model:
+        def __call__(self, value):
+            received.append(value)
+            return value, value, value
+
+    inference = object.__new__(ExploRFMInference)
+    inference.device = "cpu"
+    inference.model_precision = ModelPrecision.FP16
+    inference.model = Model()
+    source = torch.tensor([1.1, 2.2], dtype=torch.float32)
+
+    outputs = inference.forward(source)
+
+    expected = source.to("cpu").half()
+    assert torch.equal(received[0], expected)
+    assert all(torch.equal(output, expected) for output in outputs)
+
+
 def test_text_forward_uses_inference_mode():
     calls = []
 

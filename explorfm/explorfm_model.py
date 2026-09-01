@@ -276,13 +276,10 @@ class ExploRFMInference:
         :param x: The input tensor.
         :return: A tuple containing the traversability, frontiers, and optional adaptor features.
         """
-        x = x.to(self.device)
         if self.model_precision.is_fp16():
-            x = x.half()
-            """
-            with torch.autocast("cuda", dtype=torch.float16):
-                return self.model(x)
-            """
+            x = x.to(self.device, dtype=torch.float16)
+        else:
+            x = x.to(self.device)
         return self.model(x)
     
     def forward_on_numpy(
