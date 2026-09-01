@@ -1,6 +1,6 @@
 Panels:
   - Class: rviz_common/Displays
-    Help Height: 90
+    Help Height: 70
     Name: Displays
     Property Tree Widget:
       Expanded:
@@ -8,7 +8,7 @@ Panels:
         - /导航图1
         - /Image1
       Splitter Ratio: 0.550000011920929
-    Tree Height: 665
+    Tree Height: 147
   - Class: rviz_common/Views
     Expanded:
       - /Current View1
@@ -40,7 +40,8 @@ Visualization Manager:
       Enabled: true
       Name: 目标定位
       Namespaces:
-        {}
+        object_target_estimate: true
+        object_target_rays: true
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -166,7 +167,7 @@ Visualization Manager:
           Scale: 1
           Value: true
         Value: true
-      Enabled: true
+      Enabled: false
       Keep: 100
       Name: Odometry
       Position Tolerance: 0.10000000149011612
@@ -187,7 +188,7 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /spot1/odom_for_scoring
-      Value: true
+      Value: false
   Enabled: true
   Global Options:
     Background Color: 0; 0; 0
@@ -209,25 +210,25 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 28.43639373779297
+      Distance: 19.55550193786621
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 4.9581756591796875
-        Y: 1.794877529144287
-        Z: 5.152633190155029
+        X: 4.5413336753845215
+        Y: 1.833932876586914
+        Z: 3.5447676181793213
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.4947962760925293
+      Pitch: 1.3497964143753052
       Target Frame: <Fixed Frame>
       Value: Orbit
-      Yaw: 2.7795557975769043
+      Yaw: 3.044556140899658
     Saved: ~
 Window Geometry:
   Displays:
@@ -237,7 +238,7 @@ Window Geometry:
   Hide Right Dock: true
   Image:
     collapsed: false
-  QMainWindow State: 000000ff00000000fd0000000100000000000002000000032efc0200000006fb000000100044006900730070006c006100790073010000003b0000032e000000c700fffffffb0000000a0049006d00610067006500000002a1000000c80000002800fffffffb0000000a0049006d0061006700650000000000ffffffff0000000000000000fb0000000a0056006900650077007300000002c9000000a0000000a000fffffffb0000000a0049006d00610067006500000002a5000000c40000000000000000fb0000000a0049006d00610067006501000002a4000000c500000000000000000000039a0000032e00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  QMainWindow State: 000000ff00000000fd00000001000000000000029b00000328fc0200000006fb000000100044006900730070006c006100790073010000003e00000117000000ca00fffffffb0000000a0049006d006100670065010000015b0000020b0000002800fffffffb0000000a0049006d0061006700650000000000ffffffff0000000000000000fb0000000a0056006900650077007300000002c9000000a0000000a600fffffffb0000000a0049006d00610067006500000002a5000000c40000000000000000fb0000000a0049006d00610067006501000002a4000000c50000000000000000000002ff0000032800000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
   Views:
     collapsed: false
   Width: 1440
