@@ -61,3 +61,22 @@ def test_resource_sampler_reads_host_process_and_temperature(tmp_path: Path):
     assert metrics["process.graph_construction.rss_mib"] > 0.0
     formatted = format_resource_metrics(metrics)
     assert "host.cpu.utilization_percent=80.0" in formatted
+
+
+def test_temperature_skips_unreadable_sysfs_node(tmp_path: Path, monkeypatch):
+    thermal_root = tmp_path / "thermal"
+    temperature = thermal_root / "thermal_zone0" / "temp"
+    temperature.parent.mkdir(parents=True)
+    temperature.write_text("55000\n", encoding="utf-8")
+    sampler = object.__new__(ResourceSampler)
+    sampler.thermal_root = thermal_root
+    original_read_text = Path.read_text
+
+    def read_text(path, *args, **kwargs):
+        if path == temperature:
+            raise TypeError("sysfs read returned no data")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+
+    assert sampler._temperature() == {}

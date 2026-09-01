@@ -143,7 +143,7 @@ class ResourceSampler:
         for path in self.thermal_root.glob("thermal_zone*/temp"):
             try:
                 value = float(path.read_text(encoding="utf-8").strip())
-            except (OSError, ValueError):
+            except (OSError, TypeError, ValueError):
                 continue
             value = value / 1000.0 if value > 1000.0 else value
             if math.isfinite(value):
